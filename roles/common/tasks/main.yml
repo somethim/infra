@@ -1,0 +1,6 @@
+---
+- name: Install essentials
+  ansible.builtin.import_tasks: essentials.yml
+
+- name: Configure strict firewall
+  ansible.builtin.import_tasks: firewall.yml

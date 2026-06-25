@@ -1,0 +1,41 @@
+---
+- name: Fail early if no ACME email is set
+  ansible.builtin.assert:
+    that:
+      - acme_email | length > 0
+    fail_msg: "acme_email is empty (it is baked in defaults/main.yml — restore it)."
+
+- name: Create the edge deploy directory
+  ansible.builtin.file:
+    path: "{{ edge_deploy_path }}"
+    state: directory
+    mode: "0755"
+
+# Shared host networks: `edge` (Traefik routing) and `data` (shared Postgres). Created
+# here, referenced as `external` by every app stack. Idempotent.
+- name: Create shared Docker networks
+  ansible.builtin.shell: "docker network inspect {{ item }} >/dev/null 2>&1 || docker network create {{ item }}"
+  loop:
+    - edge
+    - data
+  register: network_create
+  changed_when: "'Created' not in network_create.stdout and network_create.rc == 0 and network_create.stdout | length > 0"
+
+- name: Render the edge .env (ACME email)
+  ansible.builtin.template:
+    src: edge.env.j2
+    dest: "{{ edge_deploy_path }}/.env"
+    mode: "0600"
+
+- name: Ship the Traefik compose file
+  ansible.builtin.copy:
+    src: docker-compose.yml
+    dest: "{{ edge_deploy_path }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Bring up the edge proxy
+  ansible.builtin.command: docker compose up -d --remove-orphans
+  args:
+    chdir: "{{ edge_deploy_path }}"
+  register: edge_up
+  changed_when: "'Started' in edge_up.stderr or 'Created' in edge_up.stderr or 'Recreated' in edge_up.stderr"

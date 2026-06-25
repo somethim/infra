@@ -1,0 +1,7 @@
+# Real inventory (committed copy is inventory/hosts.example only)
+inventory/hosts
+
+# Ansible noise / local secrets
+*.retry
+ansible_password.txt
+.env

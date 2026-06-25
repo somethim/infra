@@ -1,0 +1,47 @@
+name: Provision host + edge
+
+# Provisions the shared host (base packages, strict firewall, Docker) and brings up the
+# edge Traefik proxy + shared networks. Manually triggered — run it once per server, and
+# again after a server/IP swap (update the SERVER_HOST secret first). Safe to re-run; the
+# playbook is idempotent.
+#
+# Required repo secrets:
+#   SERVER_HOST        Public IP of the shared host (the ONE place the IP lives here)
+#   SERVER_PASSWORD    Root SSH password
+# Optional:
+#   SERVER_USER        SSH user (defaults to root)
+#
+# The ACME email is baked in (roles/edge/defaults/main.yml), not a secret.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible + sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ansible sshpass
+
+      - name: Run provisioning playbook
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          ansible-playbook -i "${SERVER_HOST}," playbook.yml \
+            -e "ansible_user=${SERVER_USER:-root}" \
+            -e "ansible_password=${SERVER_PASSWORD}" \
+            -e "ansible_become_password=${SERVER_PASSWORD}"

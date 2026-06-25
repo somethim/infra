@@ -1,0 +1,14 @@
+---
+# Install Docker Engine + the compose plugin via Docker's official convenience script.
+# `creates` makes it idempotent — skipped once docker is present.
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.shell:
+    cmd: set -o pipefail && curl -fsSL https://get.docker.com | sh
+    executable: /bin/bash
+    creates: /usr/bin/docker
+
+- name: Ensure Docker is enabled and running
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true

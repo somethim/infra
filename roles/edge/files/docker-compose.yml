@@ -1,0 +1,48 @@
+# The ONE shared edge reverse proxy for the host. A single Traefik owns ports 80/443
+# and routes by Host() header to whichever app stack claims that domain. Every app
+# attaches its public-facing container to the external `edge` network and carries its
+# own Traefik labels — so adding a project requires NO change here (label discovery).
+#
+# TLS: Let's Encrypt via the HTTP-01 challenge. The app domains must resolve directly
+# to this host (A records pointing at the server — no proxy in front, or the :80
+# challenge can't reach Traefik). A single LE account (edge-acme volume) issues certs
+# for every routed domain.
+#
+# Ansible (../tasks/main.yml) creates the `edge` + `data` networks, renders this file's
+# .env, and runs `docker compose up -d`.
+name: edge
+
+services:
+  traefik:
+    image: traefik:v3
+    container_name: edge-traefik
+    restart: always
+    command:
+      - --providers.docker=true
+      - --providers.docker.network=edge
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      - --log.level=ERROR
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - edge-acme:/acme
+    networks:
+      - edge
+
+networks:
+  edge:
+    name: edge
+    external: true
+
+volumes:
+  edge-acme:
