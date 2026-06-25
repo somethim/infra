@@ -5,7 +5,7 @@
 # Single hostname: web at hypernova.arbikullakshi.com/, provider API at /api (the shared
 # edge proxy strips /api before forwarding; the provider serves at root). TLS + routing
 # are owned by the shared edge proxy (roles/edge). Postgres is SHARED with CRM — the
-# provider connects to crm-pgsql over the `data` network using its own prizm role + db.
+# provider connects to postgresql over the `data` network using its own prizm role + db.
 name: hypernova
 
 services:

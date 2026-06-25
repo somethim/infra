@@ -22,7 +22,7 @@ services:
 
   pgsql:
     image: postgres:17-alpine
-    container_name: crm-pgsql
+    container_name: postgresql
     restart: always
     environment:
       POSTGRES_DB: ${DB_DATABASE}
@@ -46,7 +46,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: crm-redis
+    container_name: redis
     restart: always
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     volumes:
@@ -62,7 +62,7 @@ services:
 
   app:
     image: ${PROVIDER_IMAGE}
-    container_name: crm-app
+    container_name: crm-provider
     restart: always
     env_file: .env
     environment:
@@ -94,6 +94,10 @@ services:
     env_file: .env
     environment:
       APP_ROLE: worker
+    # The image's baked healthcheck probes the web port /up, which the queue worker
+    # doesn't serve — disable it so the worker isn't perpetually "unhealthy".
+    healthcheck:
+      disable: true
     volumes:
       - crm-storage:/app/storage
     depends_on:
