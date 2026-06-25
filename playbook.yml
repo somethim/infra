@@ -1,19 +1,52 @@
-# Provisions the SHARED host that co-hosts every app stack, and brings up the one
-# edge Traefik proxy. Run this FIRST, once per server (and after a server/IP swap),
-# before any app's deploy pipeline — the app stacks attach to the `edge` and `data`
-# networks created here.
+# The ONE deployer. Provisions the shared host (packages, strict firewall, Docker),
+# runs the edge Traefik proxy + shared networks, starts Watchtower, and deploys every app
+# stack (crm, hypernova). The app repos only BUILD images → GHCR; Watchtower then
+# auto-updates the running containers when a new image is pushed.
 #
-# Idempotent and extensible: adding a new project needs NO change here. Each app
-# self-registers with Traefik via container labels and attaches to the existing
-# `edge` network (and `data` if it wants the shared Postgres); the only per-project
-# step outside this repo is a DNS record.
+# Run this once per server, and again only when a stack's compose or secrets change
+# (image updates happen on their own via Watchtower). Idempotent.
 #
-#   CI:    ansible-playbook -i "${SERVER_HOST}," playbook.yml -e ansible_password=...
-#   local: cp inventory/hosts.example inventory/hosts && edit, then `ansible-playbook playbook.yml --ask-pass`
-- name: Provision shared host and edge proxy
+#   CI:    ansible-playbook -i "${SERVER_HOST}," playbook.yml -e @extra-vars.json -e ansible_password=...
+#   local: cp inventory/hosts.example inventory/hosts && edit, then pass the same -e vars
+- name: Provision shared host and deploy all stacks
   hosts: all
   become: true
+
+  vars:
+    # App stacks to deploy (files under stacks/<name>/). Add a new project here + drop a
+    # stacks/<name>/ dir; nothing else changes.
+    stacks:
+      - { name: crm, has_initdb: true }
+      - { name: hypernova }
+
+  pre_tasks:
+    - name: Require deploy secrets
+      ansible.builtin.assert:
+        that:
+          - ghcr_username | default('') | length > 0
+          - ghcr_token | default('') | length > 0
+          - crm_app_key | default('') | length > 0
+          - crm_db_password | default('') | length > 0
+          - prizm_db_password | default('') | length > 0
+          - crm_redis_password | default('') | length > 0
+          - crm_typesense_api_key | default('') | length > 0
+          - crm_admin_password | default('') | length > 0
+          - hypernova_session_secret | default('') | length > 0
+          - hypernova_admin_password | default('') | length > 0
+        fail_msg: "Missing one or more required deploy secrets (see README)."
+
   roles:
-    - common   # base packages + strict default-deny firewall (only 22/80/443)
-    - docker   # Docker Engine + compose plugin
-    - edge      # shared `edge`/`data` networks + Traefik (ports 80/443, Let's Encrypt)
+    - common      # base packages + strict default-deny firewall (only 22/80/443)
+    - docker      # Docker Engine + compose plugin
+    - edge        # shared edge/data networks + Traefik (80/443, Let's Encrypt HTTP-01)
+    - watchtower   # GHCR login + auto-update agent for the app containers
+
+  tasks:
+    - name: Deploy app stacks
+      ansible.builtin.include_role:
+        name: stack
+      vars:
+        stack: "{{ item }}"
+      loop: "{{ stacks }}"
+      loop_control:
+        label: "{{ item.name }}"
