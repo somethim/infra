@@ -1,65 +1,86 @@
-# infra — shared host provisioning + edge proxy
+# infra — the single deployer
 
-The **one** pipeline that prepares the shared Hetzner box and runs the single Traefik
-edge proxy for every app co-hosted on it (currently `crm` and `prizm-lodge`). Ansible,
-manually triggered from GitHub Actions.
+The **one** repo that touches the server. It provisions the shared Hetzner host, runs the
+edge Traefik proxy, runs **Watchtower**, and deploys every app stack (`crm`, `hypernova`).
 
-Run this **first** — once per server, and again after a server/IP swap. The app repos
-(`crm`, `prizm-lodge`) deploy their own stacks afterward and attach to the networks
-this creates.
+The app repos (`crm`, `hypernova`) are **build-only**: their CI builds images and pushes
+them to GHCR. They never deploy. When a new image lands, **Watchtower** on the server
+pulls it and recreates the container automatically.
 
-## What it does
+```
+crm repo ─┐  build :latest → GHCR ┐
+          │                        │   Watchtower (on the server) sees the new
+hypernova ┘  build :latest → GHCR ┘   digest → docker pull + recreate container
+          ▲
+          │ stack defs (compose + env) + provisioning + edge + watchtower
+        infra (this repo, Ansible) — the only thing that SSHes to the box
+```
 
-1. **common** — base packages + a **strict default-deny firewall** (`ufw`). Only ports
-   **22 / 80 / 443** are reachable; everything else is dropped. No Tailscale, no
-   Cloudflare — the lockdown is the whole story. Data services (Postgres/Redis/Typesense)
-   are never published to the host, so they stay unreachable regardless.
+## What the playbook does
+
+1. **common** — base packages + strict default-deny `ufw` (only **22 / 80 / 443**).
 2. **docker** — Docker Engine + compose plugin.
-3. **edge** — creates the shared `edge` (Traefik routing) and `data` (shared Postgres)
-   Docker networks, then brings up Traefik on 80/443 with a single Let's Encrypt account
-   (**HTTP-01** challenge).
+3. **edge** — shared `edge`/`data` networks + Traefik on 80/443 (Let's Encrypt **HTTP-01**,
+   so the app domains must resolve directly to the host — no proxy in front).
+4. **watchtower** — `docker login ghcr.io` + the Watchtower agent that auto-updates the
+   containers labelled `com.centurylinklabs.watchtower.enable=true` (the app images only —
+   never Postgres/Redis/Typesense/Traefik).
+5. **stack (×N)** — ships each `stacks/<name>/docker-compose.yml` + a rendered `.env`
+   (+ `initdb/` for crm), then `docker compose up -d --pull always`.
 
-> TLS uses the Let's Encrypt **HTTP-01** challenge, so the app domains must resolve
-> **directly to this host** (plain A records at the server IP — no proxy in front, or the
-> port-80 challenge can't reach Traefik).
+`stacks/` holds the deploy definitions moved out of the app repos:
 
-## Run it
+```
+stacks/
+  crm/        docker-compose.yml · env.j2 · initdb/10-prizm.sh
+  hypernova/  docker-compose.yml · env.j2
+```
 
-GitHub → **Actions → "Provision host + edge" → Run workflow**.
+## Deploy
 
-Required repo secrets:
+GitHub → **Actions → "Deploy" → Run workflow**. Runs the whole playbook (idempotent). You
+run this on a fresh server, or when a stack's **compose or secrets** change — **not** for
+routine image updates (Watchtower handles those within ~60s of a push).
+
+Required repo **secrets**:
 
 | Secret | Meaning |
 | --- | --- |
-| `SERVER_HOST` | Public IP of the shared host — **the one place the IP lives in this repo** |
+| `SERVER_HOST` | Public IP of the shared host — **the one place the IP lives** |
 | `SERVER_PASSWORD` | Root SSH password |
+| `GHCR_USERNAME` / `GHCR_TOKEN` | GHCR login; token needs `read:packages` for **both** the crm (`somethim`) and hypernova (`hypernova3643725`) images |
+| `CRM_APP_KEY` | Laravel `APP_KEY` (`php artisan key:generate --show`) |
+| `CRM_DB_PASSWORD` | CRM Postgres password |
+| `PRIZM_DB_PASSWORD` | hypernova's DB role password — **one secret, used by both stacks** (CRM creates the role with it; hypernova connects with it) |
+| `CRM_REDIS_PASSWORD` / `CRM_TYPESENSE_API_KEY` / `CRM_ADMIN_PASSWORD` | CRM service secrets |
+| `HYPERNOVA_SESSION_SECRET` / `HYPERNOVA_ADMIN_PASSWORD` | hypernova provider secrets |
 | `SERVER_USER` | *(optional)* SSH user, defaults to `root` |
 
-The Let's Encrypt email is baked in (`contact@arbikullakshi.com`, in
+The Let's Encrypt email is baked (`contact@arbikullakshi.com`, in
 `roles/edge/defaults/main.yml`) — not a secret.
 
 Local equivalent:
 
 ```bash
 cp inventory/hosts.example inventory/hosts   # edit the IP
-ansible-playbook playbook.yml --ask-pass
+ansible-playbook playbook.yml --ask-pass -e @vars.json   # vars.json = the secrets above
 ```
 
-## Deploy order on a fresh / swapped server
+## First-time / server-swap order
 
-1. Update `SERVER_HOST` (here) + `TF_VAR_server_host` in **crm** and **prizm-lodge**.
-2. **infra** → run this provision workflow.
-3. **crm** → run its deploy workflow (brings up shared Postgres; auto-bootstraps the
-   `prizm` role + database on first init).
-4. **prizm-lodge** → run its deploy job (provider connects to `crm-pgsql`/`prizm`).
-5. Point DNS (`crm.arbikullakshi.com`, `hypernova.arbikullakshi.com`) at the new IP.
+1. Update `SERVER_HOST` (and the other secrets if new).
+2. Point DNS (`crm.` + `hypernova.arbikullakshi.com`) **directly** at the host IP
+   (plain A records — HTTP-01 needs the origin reachable on :80).
+3. Run **Deploy**. It provisions everything and brings up all stacks. The crm Postgres
+   auto-creates hypernova's `prizm` role + database on first init.
 
-## Adding another project later
+After that, just push image tags from the app repos — Watchtower deploys them.
 
-Nothing changes here. The new app just:
-- attaches its public container to the external `edge` network and adds Traefik labels
-  (`Host(...)`), and attaches to `data` if it needs the shared Postgres;
-- gets a DNS record pointing at the host.
+## Adding another project
 
-Traefik discovers it automatically via Docker labels — no edge config edit, no redeploy
-of this stack.
+1. Drop a `stacks/<name>/docker-compose.yml` (+ `env.j2`) — give its public container the
+   edge Traefik labels (unique router names) and the Watchtower enable label.
+2. Add `{ name: <name> }` to the `stacks` list in `playbook.yml`, plus any secrets.
+3. Point a DNS A record at the host.
+
+No change to the edge or the app repos.

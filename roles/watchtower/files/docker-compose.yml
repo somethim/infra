@@ -1,0 +1,20 @@
+# Watchtower — auto-updates the app containers when a new image is pushed to GHCR.
+# Only containers labelled com.centurylinklabs.watchtower.enable=true are watched
+# (WATCHTOWER_LABEL_ENABLE), so Postgres/Redis/Typesense/Traefik are never touched.
+# Registry auth comes from the host's /root/.docker/config.json (written by the
+# `docker login ghcr.io` step in the watchtower role).
+name: watchtower
+
+services:
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: always
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_ROLLING_RESTART: "true"
+      WATCHTOWER_POLL_INTERVAL: "60"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro

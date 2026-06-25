@@ -1,0 +1,77 @@
+# hypernova (prizm-lodge) stack — deployed by the infra Ansible playbook (roles/stack).
+# Ansible ships this file + a rendered .env, then `docker compose up -d`. Images are built
+# by the hypernova repo's CI → GHCR; Watchtower auto-updates the labelled containers.
+#
+# Single hostname: web at hypernova.arbikullakshi.com/, provider API at /api (the shared
+# edge proxy strips /api before forwarding; the provider serves at root). TLS + routing
+# are owned by the shared edge proxy (roles/edge). Postgres is SHARED with CRM — the
+# provider connects to crm-pgsql over the `data` network using its own prizm role + db.
+name: hypernova
+
+services:
+  provider:
+    image: ${PROVIDER_IMAGE}
+    container_name: prizm-provider
+    restart: always
+    env_file: .env
+    volumes:
+      - prizm-storage:/app/storage
+    networks:
+      - data
+      - edge
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      # API under /api on the web host; strip the prefix (provider serves at root).
+      # Higher priority than the web catch-all so /api/* wins.
+      - traefik.http.routers.hypernova-provider.rule=Host(`${WEB_DOMAIN}`) && PathPrefix(`/api`)
+      - traefik.http.routers.hypernova-provider.priority=100
+      - traefik.http.routers.hypernova-provider.entrypoints=websecure
+      - traefik.http.routers.hypernova-provider.tls.certresolver=letsencrypt
+      - traefik.http.middlewares.hypernova-stripapi.stripprefix.prefixes=/api
+      - traefik.http.routers.hypernova-provider.middlewares=hypernova-stripapi
+      - traefik.http.services.hypernova-provider.loadbalancer.server.port=8080
+
+  web:
+    image: ${WEB_IMAGE}
+    container_name: prizm-web
+    restart: always
+    environment:
+      NODE_ENV: production
+      DO_NOT_TRACK: "1"
+    depends_on:
+      provider:
+        condition: service_healthy
+    networks:
+      - edge
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.hypernova-web.rule=Host(`${WEB_DOMAIN}`)
+      - traefik.http.routers.hypernova-web.priority=1
+      - traefik.http.routers.hypernova-web.entrypoints=websecure
+      - traefik.http.routers.hypernova-web.tls.certresolver=letsencrypt
+      - traefik.http.services.hypernova-web.loadbalancer.server.port=3000
+
+networks:
+  edge:
+    name: edge
+    external: true
+  data:
+    name: data
+    external: true
+
+volumes:
+  prizm-storage:

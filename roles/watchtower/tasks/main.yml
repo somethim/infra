@@ -1,0 +1,40 @@
+---
+# Watchtower watches GHCR and auto-pulls + recreates the app containers (those labelled
+# com.centurylinklabs.watchtower.enable=true) when a new image is pushed. This is what
+# makes the app repos build-only: push an image, the server updates itself.
+#
+# The GHCR login here writes /root/.docker/config.json, which is used both for the
+# stacks' image pulls AND mounted into Watchtower so it can check private images.
+- name: Require GHCR credentials
+  ansible.builtin.assert:
+    that:
+      - ghcr_username | default('') | length > 0
+      - ghcr_token | default('') | length > 0
+    fail_msg: "ghcr_username and ghcr_token are required (set the GHCR_USERNAME / GHCR_TOKEN secrets)."
+
+- name: Log in to GHCR (writes /root/.docker/config.json)
+  ansible.builtin.command: "docker login ghcr.io -u {{ ghcr_username }} --password-stdin"
+  args:
+    stdin: "{{ ghcr_token }}"
+  register: ghcr_login
+  changed_when: "'Login Succeeded' in ghcr_login.stdout"
+  no_log: true
+
+- name: Create the watchtower deploy directory
+  ansible.builtin.file:
+    path: /opt/watchtower
+    state: directory
+    mode: "0755"
+
+- name: Ship the watchtower compose file
+  ansible.builtin.copy:
+    src: docker-compose.yml
+    dest: /opt/watchtower/docker-compose.yml
+    mode: "0644"
+
+- name: Bring up watchtower
+  ansible.builtin.command: docker compose up -d --remove-orphans
+  args:
+    chdir: /opt/watchtower
+  register: wt_up
+  changed_when: "'Started' in wt_up.stderr or 'Created' in wt_up.stderr or 'Recreated' in wt_up.stderr"

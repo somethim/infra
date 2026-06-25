@@ -1,0 +1,150 @@
+# CRM stack — deployed by the infra Ansible playbook (roles/stack). Ansible ships this
+# file + a rendered .env + ./initdb, then runs `docker compose up -d`. Images are built
+# by the crm repo's CI and pushed to GHCR; Watchtower auto-updates the labelled
+# containers when a new image is pushed (see roles/watchtower).
+#
+# TLS + routing are owned by the shared edge proxy (roles/edge). Only `web` is exposed to
+# it (the BFF); Laravel (`app`) is internal-only. Postgres also joins `data` to serve the
+# co-hosted hypernova provider.
+services:
+  typesense:
+    image: typesense/typesense:28.0
+    container_name: crm-typesense
+    restart: always
+    environment:
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY}
+      TYPESENSE_DATA_DIR: /data
+      TYPESENSE_ENABLE_CORS: "true"
+    volumes:
+      - crm-typesense:/data
+    networks:
+      - crm
+
+  pgsql:
+    image: postgres:17-alpine
+    container_name: crm-pgsql
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      # Consumed once by the initdb bootstrap to create hypernova's role + database on
+      # this shared instance (see ./initdb/10-prizm.sh). Ignored after first init.
+      PRIZM_DB_PASSWORD: ${PRIZM_DB_PASSWORD}
+    volumes:
+      - crm-pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - crm
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: crm-redis
+    restart: always
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes:
+      - crm-redis:/data
+    networks:
+      - crm
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    image: ${PROVIDER_IMAGE}
+    container_name: crm-app
+    restart: always
+    env_file: .env
+    environment:
+      APP_ROLE: app
+    volumes:
+      - crm-storage:/app/storage
+    depends_on:
+      pgsql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      typesense:
+        condition: service_started
+    networks:
+      - crm
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/up"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  worker:
+    image: ${PROVIDER_IMAGE}
+    container_name: crm-worker
+    restart: always
+    env_file: .env
+    environment:
+      APP_ROLE: worker
+    volumes:
+      - crm-storage:/app/storage
+    depends_on:
+      app:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgsql:
+        condition: service_healthy
+    networks:
+      - crm
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  web:
+    image: ${WEB_IMAGE}
+    container_name: crm-web
+    restart: always
+    environment:
+      NODE_ENV: production
+      DO_NOT_TRACK: "1"
+      PROVIDER_INTERNAL_URL: http://app:8080
+      PROVIDER_INTERNAL_API_URL: http://app:8080/api
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - crm
+      - edge
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.crm-web.rule=Host(`${WEB_DOMAIN}`)
+      - traefik.http.routers.crm-web.entrypoints=websecure
+      - traefik.http.routers.crm-web.tls.certresolver=letsencrypt
+      - traefik.http.services.crm-web.loadbalancer.server.port=3000
+
+networks:
+  crm:
+    name: crm
+    driver: bridge
+  edge:
+    name: edge
+    external: true
+  data:
+    name: data
+    external: true
+
+volumes:
+  crm-storage:
+  crm-typesense:
+  crm-pgdata:
+  crm-redis:
