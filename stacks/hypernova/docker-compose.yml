@@ -50,6 +50,10 @@ services:
     environment:
       NODE_ENV: production
       DO_NOT_TRACK: "1"
+      # Bind Next standalone to all interfaces (Docker defaults $HOSTNAME to the container
+      # id), so Traefik reaches it reliably — robust even if it joins more networks later.
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
     depends_on:
       provider:
         condition: service_healthy

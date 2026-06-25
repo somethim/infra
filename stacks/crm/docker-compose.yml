@@ -119,6 +119,11 @@ services:
     environment:
       NODE_ENV: production
       DO_NOT_TRACK: "1"
+      # Next standalone binds to $HOSTNAME (Docker sets it to the container id, which
+      # resolves to only ONE of this container's two network IPs). Force all interfaces
+      # so Traefik can reach it on the `edge` network.
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
       PROVIDER_INTERNAL_URL: http://app:8080
       PROVIDER_INTERNAL_API_URL: http://app:8080/api
     depends_on:
