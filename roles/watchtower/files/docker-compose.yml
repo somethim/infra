@@ -15,6 +15,10 @@ services:
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_ROLLING_RESTART: "true"
       WATCHTOWER_POLL_INTERVAL: "60"
+      # containrrr/watchtower negotiates an old Docker API (1.25) that newer daemons
+      # reject ("client version is too old, minimum 1.40"). Pin a version the daemon
+      # accepts.
+      DOCKER_API_VERSION: "1.40"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/.docker/config.json:/config.json:ro
