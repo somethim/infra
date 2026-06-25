@@ -1,0 +1,38 @@
+---
+# Deploy one app stack: ship its compose file + a rendered .env (+ optional initdb dir),
+# then pull images and bring it up. Driven by `stack` ({ name, has_initdb }). The stack's
+# files live in {{ playbook_dir }}/stacks/<name>/. Watchtower keeps images fresh after
+# this; re-run the playbook only when compose or secrets change.
+- name: "[{{ stack.name }}] Create deploy directory"
+  ansible.builtin.file:
+    path: "/opt/{{ stack.name }}"
+    state: directory
+    mode: "0755"
+
+- name: "[{{ stack.name }}] Ship docker-compose.yml"
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/stacks/{{ stack.name }}/docker-compose.yml"
+    dest: "/opt/{{ stack.name }}/docker-compose.yml"
+    mode: "0644"
+
+- name: "[{{ stack.name }}] Render .env"
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/stacks/{{ stack.name }}/env.j2"
+    dest: "/opt/{{ stack.name }}/.env"
+    mode: "0600"
+
+- name: "[{{ stack.name }}] Ship initdb scripts"
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/stacks/{{ stack.name }}/initdb/"
+    dest: "/opt/{{ stack.name }}/initdb/"
+    mode: "0755"
+  when: stack.has_initdb | default(false)
+
+- name: "[{{ stack.name }}] Pull images and bring the stack up"
+  ansible.builtin.command: docker compose up -d --remove-orphans --pull always
+  args:
+    chdir: "/opt/{{ stack.name }}"
+  register: stack_up
+  changed_when: >-
+    'Started' in stack_up.stderr or 'Created' in stack_up.stderr
+    or 'Recreated' in stack_up.stderr or 'Pulled' in stack_up.stderr
