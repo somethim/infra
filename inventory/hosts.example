@@ -1,0 +1,7 @@
+# The real server IP is NEVER committed. In CI it is injected as an inline inventory:
+#
+#   ansible-playbook -i "${SERVER_HOST}," playbook.yml      # note the trailing comma
+#
+# For a local run, copy this file to inventory/hosts (gitignored) and edit the IP:
+[edge]
+203.0.113.10 ansible_user=root

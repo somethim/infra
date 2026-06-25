@@ -1,0 +1,21 @@
+---
+- name: Update apt cache and upgrade base packages
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: safe
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - git
+      - htop
+      - ufw
+    state: present
+
+- name: Remove packages no longer required
+  ansible.builtin.apt:
+    autoremove: true

@@ -1,0 +1,19 @@
+# Provisions the SHARED host that co-hosts every app stack, and brings up the one
+# edge Traefik proxy. Run this FIRST, once per server (and after a server/IP swap),
+# before any app's deploy pipeline — the app stacks attach to the `edge` and `data`
+# networks created here.
+#
+# Idempotent and extensible: adding a new project needs NO change here. Each app
+# self-registers with Traefik via container labels and attaches to the existing
+# `edge` network (and `data` if it wants the shared Postgres); the only per-project
+# step outside this repo is a DNS record.
+#
+#   CI:    ansible-playbook -i "${SERVER_HOST}," playbook.yml -e ansible_password=...
+#   local: cp inventory/hosts.example inventory/hosts && edit, then `ansible-playbook playbook.yml --ask-pass`
+- name: Provision shared host and edge proxy
+  hosts: all
+  become: true
+  roles:
+    - common   # base packages + strict default-deny firewall (only 22/80/443)
+    - docker   # Docker Engine + compose plugin
+    - edge      # shared `edge`/`data` networks + Traefik (ports 80/443, Let's Encrypt)

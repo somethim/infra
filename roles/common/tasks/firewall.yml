@@ -1,0 +1,32 @@
+---
+# Strict default-deny firewall: drop ALL inbound except the only ports we require —
+# SSH (22) and the public web ports (80/443, owned by Traefik). Outbound is allowed
+# (image pulls, Let's Encrypt, etc.).
+#
+# This is the whole hardening story (no Tailscale, no Cloudflare): nothing else is
+# exposed. The data services (Postgres, Redis, Typesense) are never PUBLISHED to the
+# host — they live only on Docker networks — so they are unreachable from outside
+# regardless of ufw. The only Docker-published ports are Traefik's 80/443.
+#
+# Order matters: allow SSH BEFORE enabling so turning the firewall on never locks out
+# the session. ufw rules are idempotent, so changed_when is pinned false to keep runs
+# quiet. Implemented via the command module to stay collection-dependency-free.
+- name: Set default incoming policy to deny
+  ansible.builtin.command: ufw default deny incoming
+  changed_when: false
+
+- name: Set default outgoing policy to allow
+  ansible.builtin.command: ufw default allow outgoing
+  changed_when: false
+
+- name: Allow only the required ports (SSH, HTTP, HTTPS)
+  ansible.builtin.command: "ufw allow {{ item }}"
+  loop:
+    - 22/tcp
+    - 80/tcp
+    - 443/tcp
+  changed_when: false
+
+- name: Enable ufw
+  ansible.builtin.command: ufw --force enable
+  changed_when: false
