@@ -7,8 +7,7 @@ name: Deploy
 #
 # Required repo secrets:
 #   SERVER_HOST · SERVER_PASSWORD            shared host IP (the one place it lives) + root SSH pw
-#   GHCR_USERNAME · GHCR_TOKEN               GHCR login; token needs read:packages for the
-#                                            crm (somethim) AND hypernova (hypernova3643725) images
+#   GHCR_USERNAME · GHCR_TOKEN               GHCR login; token needs read:packages for crm,
 #   CRM_APP_KEY · CRM_DB_PASSWORD · CRM_REDIS_PASSWORD · CRM_TYPESENSE_API_KEY · CRM_ADMIN_PASSWORD
 #   PRIZM_DB_PASSWORD                        shared by CRM (creates the role) + hypernova (connects)
 #   HYPERNOVA_SESSION_SECRET · HYPERNOVA_ADMIN_PASSWORD
@@ -58,7 +57,7 @@ jobs:
             crm_typesense_api_key: env.CRM_TYPESENSE_API_KEY,
             crm_admin_password: env.CRM_ADMIN_PASSWORD,
             hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
-            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD
+            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
           }' > "${RUNNER_TEMP}/extra-vars.json"
 
       - name: Run the deploy playbook
