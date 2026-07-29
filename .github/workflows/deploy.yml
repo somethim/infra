@@ -70,7 +70,7 @@ jobs:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
           ansible-playbook -i "${SERVER_HOST}," playbook.yml \
-            -e "ansible_connection=paramiko" \
+            -e "ansible_connection=paramiko_ssh" \
             -e "ansible_user=${SERVER_USER:-root}" \
             -e "ansible_password=${SERVER_PASSWORD}" \
             -e "ansible_become_password=${SERVER_PASSWORD}" \
