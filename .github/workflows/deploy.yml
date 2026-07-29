@@ -33,7 +33,7 @@ jobs:
         run: |
           python -m venv "${RUNNER_TEMP}/ansible-venv"
           "${RUNNER_TEMP}/ansible-venv/bin/pip" install --disable-pip-version-check \
-            ansible-core paramiko
+            "ansible-core<2.19" paramiko
           echo "${RUNNER_TEMP}/ansible-venv/bin" >> "${GITHUB_PATH}"
 
       - name: Build extra-vars file from secrets
