@@ -29,12 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ansible
+      - name: Install Ansible + sshpass + jq
         run: |
-          python -m venv "${RUNNER_TEMP}/ansible-venv"
-          "${RUNNER_TEMP}/ansible-venv/bin/pip" install --disable-pip-version-check \
-            "ansible-core<2.19" paramiko
-          echo "${RUNNER_TEMP}/ansible-venv/bin" >> "${GITHUB_PATH}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ansible sshpass jq
 
       - name: Build extra-vars file from secrets
         env:
@@ -70,7 +68,6 @@ jobs:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
           ansible-playbook -i "${SERVER_HOST}," playbook.yml \
-            -e "ansible_connection=paramiko_ssh" \
             -e "ansible_user=${SERVER_USER:-root}" \
             -e "ansible_password=${SERVER_PASSWORD}" \
             -e "ansible_become_password=${SERVER_PASSWORD}" \
