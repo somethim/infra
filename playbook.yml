@@ -1,5 +1,6 @@
 # The ONE deployer. Provisions the shared host (packages, strict firewall, Docker),
 # runs the edge Traefik proxy + shared networks, starts Watchtower, and deploys every app
+# stack (crm, hypernova). The app repos only BUILD images → GHCR; Watchtower then
 # auto-updates the running containers when a new image is pushed.
 #
 # Run this once per server, and again only when a stack's compose or secrets change
