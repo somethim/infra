@@ -1,6 +1,7 @@
 # infra — the single deployer
 
 The **one** repo that touches the server. It provisions the shared Hetzner host, runs the
+edge Traefik proxy, runs **Watchtower**, and deploys every app stack (`crm`, `hypernova`).
 
 The app repos (`crm`, `hypernova`) are **build-only**: their CI builds images and pushes
 them to GHCR. They never deploy. When a new image lands, **Watchtower** on the server
@@ -47,13 +48,13 @@ Required repo **secrets**:
 | --- | --- |
 | `SERVER_HOST` | Public IP of the shared host — **the one place the IP lives** |
 | `SERVER_PASSWORD` | Root SSH password |
+| `GHCR_USERNAME` / `GHCR_TOKEN` | GHCR login; token needs `read:packages` for the crm (`somethim`) and hypernova (`hypernova3643725`) images |
 | `CRM_APP_KEY` | Laravel `APP_KEY` (`php artisan key:generate --show`) |
 | `CRM_DB_PASSWORD` | CRM Postgres password |
 | `PRIZM_DB_PASSWORD` | hypernova's DB role password — **one secret, used by both stacks** (CRM creates the role with it; hypernova connects with it) |
 | `CRM_REDIS_PASSWORD` / `CRM_TYPESENSE_API_KEY` / `CRM_ADMIN_PASSWORD` | CRM service secrets |
 | `HYPERNOVA_SESSION_SECRET` / `HYPERNOVA_ADMIN_PASSWORD` | hypernova provider secrets |
 | `SERVER_USER` | *(optional)* SSH user, defaults to `root` |
-
 
 The Let's Encrypt email is baked (`contact@arbikullakshi.com`, in
 `roles/edge/defaults/main.yml`) — not a secret.
@@ -68,7 +69,7 @@ ansible-playbook playbook.yml --ask-pass -e @vars.json   # vars.json = the secre
 ## First-time / server-swap order
 
 1. Update `SERVER_HOST` (and the other secrets if new).
-2. Point DNS (`crm.arbikullakshi.com`, `hypernova.arbikullakshi.com`, and
+2. Point DNS (`crm.arbikullakshi.com` and `hypernova.arbikullakshi.com`) **directly** at the host IP
    (plain A records — HTTP-01 needs the origin reachable on :80).
 3. Run **Deploy**. It provisions everything and brings up all stacks. The crm Postgres
    auto-creates hypernova's `prizm` role + database on first init.
