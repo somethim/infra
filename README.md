@@ -56,7 +56,7 @@ Required repo **secrets**:
 | `PRIZM_DB_PASSWORD` | hypernova's DB role password — **one secret, used by both stacks** (CRM creates the role with it; hypernova connects with it) |
 | `CRM_REDIS_PASSWORD` / `CRM_TYPESENSE_API_KEY` / `CRM_ADMIN_PASSWORD` | CRM service secrets |
 | `HYPERNOVA_SESSION_SECRET` / `HYPERNOVA_ADMIN_PASSWORD` | hypernova provider secrets |
-| `PORTFOLIO_RESEND_API_KEY` | Resend API key used only by the portfolio contact server action |
+| `PORTFOLIO_RESEND_API_KEY` | *(optional)* Enables portfolio form delivery through Resend; direct email and Cal.com remain available without it |
 | `SERVER_USER` | *(optional)* SSH user, defaults to `root` |
 
 The Let's Encrypt email is baked (`contact@arbikullakshi.com`, in
