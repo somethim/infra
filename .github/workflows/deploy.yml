@@ -12,8 +12,8 @@ name: Deploy
 #   CRM_APP_KEY · CRM_DB_PASSWORD · CRM_REDIS_PASSWORD · CRM_TYPESENSE_API_KEY · CRM_ADMIN_PASSWORD
 #   PRIZM_DB_PASSWORD                        shared by CRM (creates the role) + hypernova (connects)
 #   HYPERNOVA_SESSION_SECRET · HYPERNOVA_ADMIN_PASSWORD
-#   PORTFOLIO_RESEND_API_KEY                  contact-form delivery through Resend
-# Optional: SERVER_USER (defaults to root). The ACME email is baked, not a secret.
+# Optional: PORTFOLIO_RESEND_API_KEY enables contact-form delivery through Resend;
+#           SERVER_USER defaults to root. The ACME email is baked, not a secret.
 
 on:
   workflow_dispatch:

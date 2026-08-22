@@ -34,7 +34,6 @@
           - crm_admin_password | default('') | length > 0
           - hypernova_session_secret | default('') | length > 0
           - hypernova_admin_password | default('') | length > 0
-          - portfolio_resend_api_key | default('') | length > 0
         fail_msg: "Missing one or more required deploy secrets (see README)."
 
   roles:
