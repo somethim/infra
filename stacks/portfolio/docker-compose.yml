@@ -1,0 +1,81 @@
+# Arbi Kullakshi portfolio — Next.js image built by the portfolio repository and
+# updated automatically by Watchtower. Traefik owns TLS and canonical routing.
+name: portfolio
+
+services:
+  web:
+    image: ${PORTFOLIO_IMAGE}
+    container_name: portfolio-web
+    restart: always
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+      RESEND_API_KEY: ${RESEND_API_KEY}
+    networks:
+      - edge
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.portfolio.rule=Host(`${APEX_DOMAIN}`)
+      - traefik.http.routers.portfolio.entrypoints=websecure
+      - traefik.http.routers.portfolio.tls.certresolver=letsencrypt
+      - traefik.http.services.portfolio.loadbalancer.server.port=3000
+      - traefik.http.routers.portfolio-www.rule=Host(`${WWW_DOMAIN}`)
+      - traefik.http.routers.portfolio-www.entrypoints=websecure
+      - traefik.http.routers.portfolio-www.tls.certresolver=letsencrypt
+      - traefik.http.routers.portfolio-www.middlewares=portfolio-www-redirect
+      - traefik.http.routers.portfolio-www.service=portfolio
+      - traefik.http.middlewares.portfolio-www-redirect.redirectregex.regex=^https://www\.arbikullakshi\.com/(.*)
+      - traefik.http.middlewares.portfolio-www-redirect.redirectregex.replacement=https://arbikullakshi.com/$${1}
+      - traefik.http.middlewares.portfolio-www-redirect.redirectregex.permanent=true
+
+  legacy:
+    image: ${PORTFOLIO_LEGACY_IMAGE}
+    container_name: portfolio-legacy
+    restart: always
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+      RESEND_API_KEY: ${RESEND_API_KEY}
+    networks:
+      - edge
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://127.0.0.1:3000/
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - traefik.http.routers.portfolio-legacy.rule=Host(`${LEGACY_DOMAIN}`)
+      - traefik.http.routers.portfolio-legacy.entrypoints=websecure
+      - traefik.http.routers.portfolio-legacy.tls.certresolver=letsencrypt
+      - traefik.http.services.portfolio-legacy.loadbalancer.server.port=3000
+
+networks:
+  edge:
+    name: edge
+    external: true
