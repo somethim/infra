@@ -1,16 +1,17 @@
 # infra — the single deployer
 
 The **one** repo that touches the server. It provisions the shared Hetzner host, runs the
-edge Traefik proxy, runs **Watchtower**, and deploys every app stack (`crm`, `hypernova`).
+edge Traefik proxy, runs **Watchtower**, and deploys every app stack (`crm`, `hypernova`, `portfolio`).
 
-The app repos (`crm`, `hypernova`) are **build-only**: their CI builds images and pushes
+The app repos (`crm`, `hypernova`, `portfolio`) are **build-only**: their CI builds images and pushes
 them to GHCR. They never deploy. When a new image lands, **Watchtower** on the server
 pulls it and recreates the container automatically.
 
 ```
 crm repo ─┐  build :latest → GHCR ┐
           │                        │   Watchtower (on the server) sees the new
-hypernova ┘  build :latest → GHCR ┘   digest → docker pull + recreate container
+hypernova ─┤  build :latest → GHCR ┤   digest → docker pull + recreate container
+portfolio ┘                         ┘
           ▲
           │ stack defs (compose + env) + provisioning + edge + watchtower
         infra (this repo, Ansible) — the only thing that SSHes to the box
@@ -34,6 +35,7 @@ hypernova ┘  build :latest → GHCR ┘   digest → docker pull + recreate co
 stacks/
   crm/        docker-compose.yml · env.j2 · initdb/10-prizm.sh
   hypernova/  docker-compose.yml · env.j2
+  portfolio/  docker-compose.yml · env.j2
 ```
 
 ## Deploy
@@ -54,10 +56,15 @@ Required repo **secrets**:
 | `PRIZM_DB_PASSWORD` | hypernova's DB role password — **one secret, used by both stacks** (CRM creates the role with it; hypernova connects with it) |
 | `CRM_REDIS_PASSWORD` / `CRM_TYPESENSE_API_KEY` / `CRM_ADMIN_PASSWORD` | CRM service secrets |
 | `HYPERNOVA_SESSION_SECRET` / `HYPERNOVA_ADMIN_PASSWORD` | hypernova provider secrets |
+| `PORTFOLIO_RESEND_API_KEY` | Resend API key used only by the portfolio contact server action |
 | `SERVER_USER` | *(optional)* SSH user, defaults to `root` |
 
 The Let's Encrypt email is baked (`contact@arbikullakshi.com`, in
 `roles/edge/defaults/main.yml`) — not a secret.
+
+The portfolio stack runs two tags from the same GHCR package: `latest` serves
+`arbikullakshi.com`, while `legacy` serves the preserved portfolio at
+`legacy.arbikullakshi.com`.
 
 Local equivalent:
 
