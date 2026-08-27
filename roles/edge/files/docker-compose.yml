@@ -1,15 +1,4 @@
-# The ONE shared edge reverse proxy for the host. A single Traefik owns ports 80/443
-# and routes by Host() header to whichever app stack claims that domain. Every app
-# attaches its public-facing container to the external `edge` network and carries its
-# own Traefik labels — so adding a project requires NO change here (label discovery).
-#
-# TLS: Let's Encrypt via the HTTP-01 challenge. The app domains must resolve directly
-# to this host (A records pointing at the server — no proxy in front, or the :80
-# challenge can't reach Traefik). A single LE account (edge-acme volume) issues certs
-# for every routed domain.
-#
-# Ansible (../tasks/main.yml) creates the `edge` + `data` networks, renders this file's
-# .env, and runs `docker compose up -d`.
+# The shared edge proxy. See docs/edge.md.
 name: edge
 
 services:
@@ -25,10 +14,6 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
-      # Traefik v3 reads a request body for at most 60s by default, which a large
-      # video upload to the portfolio admin exceeds — and it cuts the connection
-      # with nothing on the origin to explain it. Bounded rather than disabled:
-      # 0 would mean a held-open request costs nothing to keep.
       - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=1800s
       - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web

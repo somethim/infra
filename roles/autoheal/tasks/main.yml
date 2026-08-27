@@ -1,5 +1,5 @@
 ---
-# See files/docker-compose.yml for what this watches and why it is opt-in.
+# See docs/agents.md — Autoheal.
 - name: Create the autoheal deploy directory
   ansible.builtin.file:
     path: /opt/autoheal

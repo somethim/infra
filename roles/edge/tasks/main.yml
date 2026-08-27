@@ -1,4 +1,5 @@
 ---
+# See docs/edge.md.
 - name: Fail early if no ACME email is set
   ansible.builtin.assert:
     that:
@@ -11,8 +12,6 @@
     state: directory
     mode: "0755"
 
-# Shared host networks: `edge` (Traefik routing) and `data` (shared Postgres). Created
-# here, referenced as `external` by every app stack. Idempotent.
 - name: Create shared Docker networks
   ansible.builtin.shell: "docker network inspect {{ item }} >/dev/null 2>&1 || docker network create {{ item }}"
   loop:
