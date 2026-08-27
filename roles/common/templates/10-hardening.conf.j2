@@ -1,0 +1,4 @@
+# Managed by Ansible (roles/common). Read BEFORE 50-cloud-init.conf, which Hetzner's
+# cloud-init writes with `PasswordAuthentication yes` — sshd keeps the first value it
+# sees for a keyword, so the lower number is what makes this one win.
+PasswordAuthentication {{ ssh_password_authentication }}

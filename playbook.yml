@@ -18,10 +18,12 @@
     stacks:
       - { name: crm, has_initdb: true }
       - { name: hypernova }
-      - { name: portfolio }
+      - { name: portfolio, pre_role: portfolio-db }
 
   pre_tasks:
+    # Tagged, so the host-level work below can run on its own without them.
     - name: Require deploy secrets
+      tags: [secrets]
       ansible.builtin.assert:
         that:
           - ghcr_username | default('') | length > 0
@@ -34,16 +36,34 @@
           - crm_admin_password | default('') | length > 0
           - hypernova_session_secret | default('') | length > 0
           - hypernova_admin_password | default('') | length > 0
+          - portfolio_db_password | default('') | length > 0
+          - portfolio_admin_password | default('') | length > 0
         fail_msg: "Missing one or more required deploy secrets (see README)."
 
+  # Tags exist for one reason: the host-level roles need no secrets and touch no stack,
+  # so `--tags host` is safe to run at a moment when the stacks must NOT be redeployed —
+  # for instance while an app's compose file expects an image that is not published yet.
+  # No tags at all still runs everything.
   roles:
-    - common      # base packages + strict default-deny firewall (only 22/80/443)
-    - docker      # Docker Engine + compose plugin
-    - edge        # shared edge/data networks + Traefik (80/443, Let's Encrypt HTTP-01)
-    - watchtower   # GHCR login + auto-update agent for the app containers
+    # base packages, strict default-deny firewall (22/80/443), fail2ban, reboot policy
+    - role: common
+      tags: [host, hardening]
+    # Docker Engine + compose plugin + daemon log rotation
+    - role: docker
+      tags: [host, docker]
+    # shared edge/data networks + Traefik (80/443, Let's Encrypt HTTP-01)
+    - role: edge
+      tags: [host, edge]
+    # GHCR login + auto-update agent. Needs the GHCR secrets, so it is not `host`.
+    - role: watchtower
+      tags: [secrets, watchtower]
+    # restarts a container that reports unhealthy (opt-in by label)
+    - role: autoheal
+      tags: [host, autoheal]
 
   tasks:
     - name: Deploy app stacks
+      tags: [secrets, stacks]
       ansible.builtin.include_role:
         name: stack
       vars:

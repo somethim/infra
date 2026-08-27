@@ -1,0 +1,7 @@
+---
+# Reload, never restart. `systemctl restart docker` takes every container on the host
+# down with it; SIGHUP re-reads daemon.json in place and nothing stops.
+- name: Reload Docker
+  ansible.builtin.service:
+    name: docker
+    state: reloaded

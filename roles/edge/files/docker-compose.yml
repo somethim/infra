@@ -25,6 +25,11 @@ services:
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
       - --entrypoints.websecure.address=:443
+      # Traefik v3 reads a request body for at most 60s by default, which a large
+      # video upload to the portfolio admin exceeds — and it cuts the connection
+      # with nothing on the origin to explain it. Bounded rather than disabled:
+      # 0 would mean a held-open request costs nothing to keep.
+      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=1800s
       - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
       - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}

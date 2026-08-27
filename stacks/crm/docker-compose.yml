@@ -21,7 +21,11 @@ services:
       - crm
 
   pgsql:
-    image: postgres:17-alpine
+    # Shared by every stack on this host: crm, prizm (hypernova) and portfolio each
+    # have a database and a role of their own in here. Never move this to a newer
+    # major by editing the tag — the on-disk formats are incompatible, so it takes a
+    # dump and restore into a fresh volume.
+    image: postgres:18-alpine
     container_name: postgresql
     restart: always
     environment:
@@ -32,7 +36,7 @@ services:
       # this shared instance (see ./initdb/10-prizm.sh). Ignored after first init.
       PRIZM_DB_PASSWORD: ${PRIZM_DB_PASSWORD}
     volumes:
-      - crm-pgdata:/var/lib/postgresql/data
+      - crm-pgdata-v18:/var/lib/postgresql
       - ./initdb:/docker-entrypoint-initdb.d:ro
     networks:
       - crm
@@ -63,6 +67,7 @@ services:
   app:
     image: ${PROVIDER_IMAGE}
     container_name: crm-provider
+    mem_limit: 512m
     restart: always
     env_file: .env
     environment:
@@ -86,10 +91,12 @@ services:
       start_period: 40s
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - autoheal=true
 
   worker:
     image: ${PROVIDER_IMAGE}
     container_name: crm-worker
+    mem_limit: 512m
     restart: always
     env_file: .env
     environment:
@@ -115,6 +122,7 @@ services:
   web:
     image: ${WEB_IMAGE}
     container_name: crm-web
+    mem_limit: 512m
     restart: always
     environment:
       NODE_ENV: production
@@ -155,5 +163,8 @@ networks:
 volumes:
   crm-storage:
   crm-typesense:
-  crm-pgdata:
+  # Named for the major it holds, and explicitly so a backup or a restore can address
+  # it without deriving the project prefix. The 17 volume it replaced is gone.
+  crm-pgdata-v18:
+    name: crm-pgdata-v18
   crm-redis:
