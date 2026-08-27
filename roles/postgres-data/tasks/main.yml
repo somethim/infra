@@ -1,0 +1,83 @@
+---
+# See docs/database.md — The data volume.
+- name: Pull the PostgreSQL image
+  ansible.builtin.command:
+    argv: [docker, pull, "{{ postgres_image }}"]
+  register: postgres_pull
+  changed_when: "'Downloaded newer image' in postgres_pull.stdout"
+
+- name: Find a postgresql container still owned by the crm stack
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --all
+      - --quiet
+      - --filter=name=^postgresql$
+      - --filter=label=com.docker.compose.project=crm
+  register: postgres_legacy_container
+  changed_when: false
+
+- name: Stop the container the crm stack owns
+  ansible.builtin.command:
+    argv: [docker, stop, --time=60, "{{ postgres_container }}"]
+  when: postgres_legacy_container.stdout | length > 0
+  changed_when: true
+
+- name: Remove the container the crm stack owns
+  ansible.builtin.command:
+    argv: [docker, rm, "{{ postgres_container }}"]
+  when: postgres_legacy_container.stdout | length > 0
+  changed_when: true
+
+- name: Look for the crm-owned data volume
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, "{{ postgres_legacy_volume }}"]
+  register: postgres_legacy_volume_state
+  failed_when: false
+  changed_when: false
+
+- name: Look for the shared data volume
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, "{{ postgres_volume }}"]
+  register: postgres_volume_state
+  failed_when: false
+  changed_when: false
+
+- name: Create the shared data volume
+  ansible.builtin.command:
+    argv: [docker, volume, create, "{{ postgres_volume }}"]
+  when: postgres_volume_state.rc != 0
+  changed_when: true
+
+- name: Check whether the shared data volume already holds a cluster
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint=sh
+      - "--volume={{ postgres_volume }}:/volume:ro"
+      - "{{ postgres_image }}"
+      - -c
+      - ls -A /volume
+  register: postgres_volume_contents
+  when: postgres_legacy_volume_state.rc == 0
+  changed_when: false
+
+- name: Copy the cluster onto the shared data volume
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint=sh
+      - "--volume={{ postgres_legacy_volume }}:/from:ro"
+      - "--volume={{ postgres_volume }}:/to"
+      - "{{ postgres_image }}"
+      - -c
+      - cp -a /from/. /to/
+  when:
+    - postgres_legacy_volume_state.rc == 0
+    - postgres_volume_contents.stdout | default('') | trim | length == 0
+  changed_when: true

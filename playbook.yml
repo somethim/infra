@@ -1,33 +1,37 @@
-# The ONE deployer. Provisions the shared host (packages, strict firewall, Docker),
-# runs the edge Traefik proxy + shared networks, starts Watchtower, and deploys every app
-# stack (crm, hypernova, portfolio). The app repos only BUILD images → GHCR; Watchtower then
-# auto-updates the running containers when a new image is pushed.
-#
-# Run this once per server, and again only when a stack's compose or secrets change
-# (image updates happen on their own via Watchtower). Idempotent.
-#
-#   CI:    ansible-playbook -i "${SERVER_HOST}," playbook.yml -e @extra-vars.json -e ansible_password=...
-#   local: cp inventory/hosts.example inventory/hosts && edit, then pass the same -e vars
+# The one deployer. See docs/architecture.md and docs/deploying.md.
 - name: Provision shared host and deploy all stacks
   hosts: all
   become: true
 
   vars:
-    # App stacks to deploy (files under stacks/<name>/). Add a new project here + drop a
-    # stacks/<name>/ dir; nothing else changes.
+    # Order is load-bearing. See docs/architecture.md — Deploy order.
     stacks:
-      - { name: crm, has_initdb: true }
+      - { name: database, pre_role: postgres-data, post_role: postgres-provision }
+      - { name: crm }
       - { name: hypernova }
-      - { name: portfolio, pre_role: portfolio-db }
+      - { name: portfolio }
+
+    # See docs/database.md.
+    postgres_image: postgres:18-alpine
+    postgres_container: postgresql
+    postgres_volume: pgdata-v18
+    postgres_legacy_volume: crm-pgdata-v18
+    postgres_superuser: postgres
+    postgres_bootstrap_database: postgres
+
+    postgres_consumers:
+      - { name: crm, password: "{{ crm_db_password }}" }
+      - { name: prizm, password: "{{ prizm_db_password }}" }
+      - { name: portfolio, password: "{{ portfolio_db_password }}" }
 
   pre_tasks:
-    # Tagged, so the host-level work below can run on its own without them.
     - name: Require deploy secrets
       tags: [secrets]
       ansible.builtin.assert:
         that:
           - ghcr_username | default('') | length > 0
           - ghcr_token | default('') | length > 0
+          - postgres_superuser_password | default('') | length > 0
           - crm_app_key | default('') | length > 0
           - crm_db_password | default('') | length > 0
           - prizm_db_password | default('') | length > 0
@@ -38,31 +42,23 @@
           - hypernova_admin_password | default('') | length > 0
           - portfolio_db_password | default('') | length > 0
           - portfolio_admin_password | default('') | length > 0
-        fail_msg: "Missing one or more required deploy secrets (see README)."
+        fail_msg: "Missing one or more required deploy secrets (see docs/deploying.md)."
 
-  # Tags exist for one reason: the host-level roles need no secrets and touch no stack,
-  # so `--tags host` is safe to run at a moment when the stacks must NOT be redeployed —
-  # for instance while an app's compose file expects an image that is not published yet.
-  # No tags at all still runs everything.
+  # See docs/deploying.md — Tags.
   roles:
-    # base packages, strict default-deny firewall (22/80/443), fail2ban, reboot policy
     - role: common
       tags: [host, hardening]
-    # Docker Engine + compose plugin + daemon log rotation
     - role: docker
       tags: [host, docker]
-    # shared edge/data networks + Traefik (80/443, Let's Encrypt HTTP-01)
     - role: edge
       tags: [host, edge]
-    # GHCR login + auto-update agent. Needs the GHCR secrets, so it is not `host`.
     - role: watchtower
       tags: [secrets, watchtower]
-    # restarts a container that reports unhealthy (opt-in by label)
     - role: autoheal
       tags: [host, autoheal]
 
   tasks:
-    - name: Deploy app stacks
+    - name: Deploy stacks
       tags: [secrets, stacks]
       ansible.builtin.include_role:
         name: stack

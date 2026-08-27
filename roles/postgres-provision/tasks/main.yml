@@ -1,0 +1,106 @@
+---
+# See docs/database.md — Roles and databases.
+- name: Wait for PostgreSQL to accept connections
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ postgres_container }}"
+      - pg_isready
+      - "--username={{ postgres_superuser }}"
+      - "--dbname={{ postgres_bootstrap_database }}"
+  register: postgres_ready
+  until: postgres_ready.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Find a role that can open a superuser session
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ postgres_container }}"
+      - psql
+      - "--username={{ item }}"
+      - "--dbname={{ postgres_bootstrap_database }}"
+      - --tuples-only
+      - --no-align
+      - "--command=SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
+  loop: "{{ postgres_superuser_candidates }}"
+  register: postgres_superuser_probe
+  failed_when: false
+  changed_when: false
+
+- name: Select the superuser to provision with
+  ansible.builtin.set_fact:
+    postgres_admin: >-
+      {{ (postgres_superuser_probe.results
+          | selectattr('rc', 'equalto', 0)
+          | selectattr('stdout', 'search', '^t')
+          | map(attribute='item') | list | first) | default('', true) }}
+
+- name: Require a superuser to provision with
+  ansible.builtin.assert:
+    that:
+      - postgres_admin | length > 0
+    fail_msg: >-
+      None of {{ postgres_superuser_candidates | join(', ') }} can open a superuser
+      session on {{ postgres_container }}. Create one from the host
+      (`docker exec -it {{ postgres_container }} psql -U <a superuser> -c
+      "CREATE ROLE {{ postgres_superuser }} SUPERUSER LOGIN"`) and re-run.
+
+- name: Ensure the cluster has a superuser of its own
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - "{{ postgres_container }}"
+      - psql
+      - --set=ON_ERROR_STOP=1
+      - "--set=pw={{ postgres_superuser_password }}"
+      - "--username={{ postgres_admin }}"
+      - "--dbname={{ postgres_bootstrap_database }}"
+    stdin: |
+      SELECT 'CREATE ROLE {{ postgres_superuser }} SUPERUSER LOGIN PASSWORD ' || quote_literal(:'pw')
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ postgres_superuser }}')\gexec
+
+      ALTER ROLE {{ postgres_superuser }} WITH SUPERUSER LOGIN PASSWORD :'pw';
+  register: postgres_superuser_ensure
+  changed_when: "'CREATE ROLE' in postgres_superuser_ensure.stdout"
+  no_log: true
+
+- name: Provision each application's role and database
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - "{{ postgres_container }}"
+      - psql
+      - --set=ON_ERROR_STOP=1
+      - "--set=pw={{ item.password }}"
+      - "--username={{ postgres_superuser }}"
+      - "--dbname={{ postgres_bootstrap_database }}"
+    stdin: |
+      SELECT 'CREATE ROLE {{ item.name }} LOGIN PASSWORD ' || quote_literal(:'pw')
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ item.name }}')\gexec
+
+      ALTER ROLE {{ item.name }} WITH LOGIN PASSWORD :'pw';
+
+      SELECT 'ALTER ROLE {{ item.name }} WITH NOSUPERUSER NOCREATEDB NOCREATEROLE'
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ item.name }}' AND oid = 10)\gexec
+
+      SELECT 'CREATE DATABASE {{ item.name }} OWNER {{ item.name }}'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ item.name }}')\gexec
+
+      ALTER DATABASE {{ item.name }} OWNER TO {{ item.name }};
+      REVOKE CONNECT ON DATABASE {{ item.name }} FROM PUBLIC;
+      GRANT CONNECT, TEMPORARY ON DATABASE {{ item.name }} TO {{ item.name }};
+  loop: "{{ postgres_consumers }}"
+  register: postgres_consumer_provision
+  changed_when: >-
+    'CREATE ROLE' in postgres_consumer_provision.stdout
+    or 'CREATE DATABASE' in postgres_consumer_provision.stdout
+  no_log: true
