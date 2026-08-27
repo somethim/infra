@@ -1,0 +1,14 @@
+[Unit]
+Description=Reclaim dangling Docker images
+Documentation=https://docs.docker.com/reference/cli/docker/image/prune/
+
+[Service]
+Type=oneshot
+# Dangling images ONLY — no `-a`. A dangling image is untagged and referenced by
+# nothing, so removing one cannot take an image a container might still need.
+# `-a` would delete anything not attached to a *running* container, which on this
+# host would eat the legacy portfolio image the moment its container is stopped.
+#
+# Deliberately not pruning containers: `docker container prune` would delete a
+# stopped-on-purpose container, and Watchtower gets stopped by hand during a cutover.
+ExecStart=/usr/bin/docker image prune --force
