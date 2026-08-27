@@ -2,9 +2,9 @@
 name: portfolio
 
 services:
-  web:
+  portfolio:
     image: ${PORTFOLIO_IMAGE}
-    container_name: portfolio-web
+    container_name: portfolio
     mem_limit: 768m
     restart: always
     env_file: .env
