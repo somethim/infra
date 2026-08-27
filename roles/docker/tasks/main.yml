@@ -26,3 +26,22 @@
     name: docker
     state: started
     enabled: true
+
+# Every image swap — a Watchtower update, a `compose up --pull always` — leaves the
+# replaced image behind untagged. Watchtower cleans up only the swaps it performed
+# itself, so a deploy-driven one accumulates until something reclaims it.
+- name: Install the image-prune timer
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    mode: "0644"
+  loop:
+    - docker-prune.service
+    - docker-prune.timer
+
+- name: Enable the image-prune timer
+  ansible.builtin.systemd:
+    name: docker-prune.timer
+    enabled: true
+    state: started
+    daemon_reload: true

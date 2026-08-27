@@ -144,6 +144,12 @@ Three things run on the host besides the stacks, all idempotent and all in `play
   worth adding.
 - **fail2ban** — bans an SSH source for a day after ten failures, doubling to a week for
   anything that comes back (`roles/common/tasks/hardening.yml`).
+- **`docker-prune.timer`** — reclaims dangling images every Sunday at 03:00
+  (`roles/docker`). Dangling only, never `-a`: an untagged image is referenced by
+  nothing, while `-a` would delete anything without a *running* container and would
+  eat the legacy portfolio image the moment its container stopped. Containers are not
+  pruned at all, so a deliberately stopped one — Watchtower during a cutover — survives.
+  Run it early with `systemctl start docker-prune.service`.
 
   If you ever lock yourself out — the realistic path is a dead SSH key and a fumbled
   password — **the Hetzner Cloud console gets you in without SSH**. From there:
