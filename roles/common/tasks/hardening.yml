@@ -29,6 +29,16 @@
     dest: /etc/apt/apt.conf.d/20auto-upgrades-reboot
     mode: "0644"
 
+# Present on this host already, but not on a rebuilt one — and `lineinfile` below
+# creates a missing file, never a missing parent.
+- name: Ensure root's .ssh directory exists
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 # The deploy workflow's own key. Public halves are not secret, so this lives in the
 # repo: a rebuilt host then trusts CI without anyone remembering to paste anything.
 # `lineinfile` rather than the authorized_key module, which lives in a collection this
