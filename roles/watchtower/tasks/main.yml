@@ -1,10 +1,5 @@
 ---
-# Watchtower watches GHCR and auto-pulls + recreates the app containers (those labelled
-# com.centurylinklabs.watchtower.enable=true) when a new image is pushed. This is what
-# makes the app repos build-only: push an image, the server updates itself.
-#
-# The GHCR login here writes /root/.docker/config.json, which is used both for the
-# stacks' image pulls AND mounted into Watchtower so it can check private images.
+# See docs/agents.md — Watchtower.
 - name: Require GHCR credentials
   ansible.builtin.assert:
     that:

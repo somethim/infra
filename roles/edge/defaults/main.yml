@@ -1,7 +1,3 @@
 ---
-# Where the edge proxy's compose file + rendered .env live on the host.
 edge_deploy_path: /opt/edge
-
-# Let's Encrypt account email (baked — not a secret). Override at runtime if ever needed:
-# `-e acme_email=other@example.com`.
 acme_email: "contact@arbikullakshi.com"

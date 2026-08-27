@@ -1,8 +1,3 @@
 ---
-# The flip that closes SSH password brute-force. Left ON so that adopting the deploy
-# key changes nothing on its own — turn it off ONLY once a Deploy run has authenticated
-# with the key, because the CI workflow is the one client that cannot be fixed from a
-# terminal afterwards.
-#
-#   ansible-playbook playbook.yml --tags hardening -e ssh_password_authentication=no
+# See docs/host.md — Password authentication.
 ssh_password_authentication: "yes"

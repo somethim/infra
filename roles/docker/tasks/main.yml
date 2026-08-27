@@ -1,19 +1,11 @@
 ---
-# Install Docker Engine + the compose plugin via Docker's official convenience script.
-# `creates` makes it idempotent — skipped once docker is present.
+# See docs/host.md — The Docker daemon; docs/agents.md — The prune timer.
 - name: Install Docker Engine + compose plugin
   ansible.builtin.shell:
     cmd: set -o pipefail && curl -fsSL https://get.docker.com | sh
     executable: /bin/bash
     creates: /usr/bin/docker
 
-# Without this the json-file driver keeps every line a container has ever written.
-# One crash-looping container fills the disk, and PostgreSQL's data directory is on
-# the same one. Caps each container at 30 MB (3 x 10 MB).
-#
-# It applies to containers CREATED after the daemon picks it up — the running ones
-# keep their current unbounded logs until they are next recreated, which Watchtower
-# does on the next image push.
 - name: Configure the Docker daemon (log rotation)
   ansible.builtin.copy:
     src: daemon.json
@@ -27,9 +19,6 @@
     state: started
     enabled: true
 
-# Every image swap — a Watchtower update, a `compose up --pull always` — leaves the
-# replaced image behind untagged. Watchtower cleans up only the swaps it performed
-# itself, so a deploy-driven one accumulates until something reclaims it.
 - name: Install the image-prune timer
   ansible.builtin.copy:
     src: "{{ item }}"
