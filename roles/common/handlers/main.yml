@@ -4,8 +4,6 @@
     name: fail2ban
     state: restarted
 
-# Reload, not restart: established sessions survive, so a mistake here is still
-# recoverable from the terminal that made it.
 - name: Reload sshd
   ansible.builtin.service:
     name: ssh

@@ -1,7 +1,4 @@
-// unattended-upgrades installs security updates but, by default, never reboots — so a
-// kernel update sits on disk while the old kernel keeps running. Reboot in the quiet
-// hours instead, and do it even when someone is logged in: an SSH session left open is
-// otherwise enough to defer a kernel patch indefinitely.
+// See docs/host.md — Patching.
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";
