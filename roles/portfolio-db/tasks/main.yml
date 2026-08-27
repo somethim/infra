@@ -1,0 +1,56 @@
+---
+# Gives the portfolio its own least-privilege role and database inside the shared
+# PostgreSQL instance. An initdb script cannot do this: those run only when the
+# cluster initializes a fresh data directory, and this one has been serving crm
+# and hypernova for a while.
+#
+# Runs before the portfolio stack comes up, so the DSN rendered into its .env
+# resolves the first time the container tries it.
+- name: Wait for the shared PostgreSQL to accept connections
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ portfolio_db_container }}"
+      - pg_isready
+      - "--username={{ portfolio_db_superuser }}"
+      - "--dbname={{ portfolio_db_superuser_database }}"
+  register: portfolio_db_ready
+  until: portfolio_db_ready.rc == 0
+  retries: 30
+  delay: 5
+  changed_when: false
+
+# One statement per concern, guarded the way ../../stacks/crm/initdb/10-prizm.sh
+# guards its own: `\gexec` runs the CREATE only when the SELECT produced it, so
+# re-running is a no-op and the command tags in stdout say which ones fired.
+#
+# The ALTER is deliberately unguarded. Rotating PORTFOLIO_DB_PASSWORD re-renders
+# the DSN in .env, and a role left on the old password would simply stop
+# answering it.
+- name: Provision the portfolio role and database
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - -i
+      - "{{ portfolio_db_container }}"
+      - psql
+      - --set=ON_ERROR_STOP=1
+      - "--set=pw={{ portfolio_db_password }}"
+      - "--username={{ portfolio_db_superuser }}"
+      - "--dbname={{ portfolio_db_superuser_database }}"
+    stdin: |
+      SELECT 'CREATE ROLE {{ portfolio_db_role }} LOGIN PASSWORD ' || quote_literal(:'pw')
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ portfolio_db_role }}')\gexec
+
+      ALTER ROLE {{ portfolio_db_role }} WITH LOGIN PASSWORD :'pw';
+
+      SELECT 'CREATE DATABASE {{ portfolio_db_name }} OWNER {{ portfolio_db_role }}'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ portfolio_db_name }}')\gexec
+  register: portfolio_db_provision
+  changed_when: >-
+    'CREATE ROLE' in portfolio_db_provision.stdout
+    or 'CREATE DATABASE' in portfolio_db_provision.stdout
+  # The password is in argv. Nothing here is worth reading back in the clear.
+  no_log: true

@@ -1,6 +1,6 @@
 ---
 # Deploy one app stack: ship its compose file + a rendered .env (+ optional initdb dir),
-# then pull images and bring it up. Driven by `stack` ({ name, has_initdb }). The stack's
+# then pull images and bring it up. Driven by `stack` ({ name, has_initdb, pre_role }). The stack's
 # files live in {{ playbook_dir }}/stacks/<name>/. Watchtower keeps images fresh after
 # this; re-run the playbook only when compose or secrets change.
 - name: "[{{ stack.name }}] Create deploy directory"
@@ -8,6 +8,14 @@
     path: "/opt/{{ stack.name }}"
     state: directory
     mode: "0755"
+
+# Whatever a stack needs to exist before its containers start and cannot create
+# for itself — portfolio's role and database inside the PostgreSQL that the crm
+# stack, deployed earlier in the loop, runs.
+- name: "[{{ stack.name }}] Run the stack's pre-role"
+  ansible.builtin.include_role:
+    name: "{{ stack.pre_role }}"
+  when: stack.pre_role is defined
 
 - name: "[{{ stack.name }}] Ship docker-compose.yml"
   ansible.builtin.copy:

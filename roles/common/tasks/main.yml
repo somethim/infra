@@ -4,3 +4,6 @@
 
 - name: Configure strict firewall
   ansible.builtin.import_tasks: firewall.yml
+
+- name: Harden SSH exposure and patching
+  ansible.builtin.import_tasks: hardening.yml

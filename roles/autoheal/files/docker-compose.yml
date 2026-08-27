@@ -1,0 +1,23 @@
+# Docker does nothing when a container's healthcheck fails, and Traefik does not read
+# that status either — so a hung app stays in the routing table and keeps taking
+# traffic. This restarts a container once it reports `unhealthy`.
+#
+# Opt-in per container via the `autoheal=true` label (AUTOHEAL_CONTAINER_LABEL), the
+# same shape as the Watchtower agent beside it: nothing is touched unless its stack
+# asked for it. Never label a database — restarting a slow PostgreSQL under load is
+# how a slow database becomes a broken one.
+name: autoheal
+
+services:
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: always
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Grace after a restart before the container is eligible again, so a service
+      # that is slow to warm up is not restarted into a loop.
+      AUTOHEAL_START_PERIOD: "300"
+      AUTOHEAL_INTERVAL: "30"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

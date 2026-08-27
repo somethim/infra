@@ -12,6 +12,7 @@ services:
   provider:
     image: ${PROVIDER_IMAGE}
     container_name: prizm-provider
+    mem_limit: 384m
     restart: always
     env_file: .env
     volumes:
@@ -31,6 +32,7 @@ services:
       start_period: 40s
     labels:
       - com.centurylinklabs.watchtower.enable=true
+      - autoheal=true
       - traefik.enable=true
       - traefik.docker.network=edge
       # API under /api on the web host; strip the prefix (provider serves at root).
@@ -46,6 +48,7 @@ services:
   web:
     image: ${WEB_IMAGE}
     container_name: prizm-web
+    mem_limit: 512m
     restart: always
     environment:
       NODE_ENV: production
