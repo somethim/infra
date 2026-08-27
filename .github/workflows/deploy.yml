@@ -1,24 +1,6 @@
 name: Deploy
 
-# The ONE deployer. Runs the Ansible playbook: provisions the host, runs the edge proxy +
-# Watchtower, and (re)deploys every app stack. Manually triggered — run it on a fresh
-# server, or when a stack's compose/secrets change. Routine image updates happen on their
-# own via Watchtower, so you rarely click this.
-#
-# Required repo secrets:
-#   SERVER_HOST · SSH_PRIVATE_KEY            shared host IP (the one place it lives) + the
-#                                            deploy key's private half. Its public half is
-#                                            committed at roles/common/files/deploy_key.pub
-#                                            and installed by the common role.
-#   GHCR_USERNAME · GHCR_TOKEN               GHCR login; token needs read:packages for the
-#                                            crm (somethim) and hypernova (hypernova3643725) images
-#   CRM_APP_KEY · CRM_DB_PASSWORD · CRM_REDIS_PASSWORD · CRM_TYPESENSE_API_KEY · CRM_ADMIN_PASSWORD
-#   PRIZM_DB_PASSWORD                        shared by CRM (creates the role) + hypernova (connects)
-#   HYPERNOVA_SESSION_SECRET · HYPERNOVA_ADMIN_PASSWORD
-#   PORTFOLIO_DB_PASSWORD                    the portfolio's role in the shared Postgres
-#   PORTFOLIO_ADMIN_PASSWORD                 seeds the site's only operator account
-# Optional: PORTFOLIO_RESEND_API_KEY enables the portfolio's outgoing mail;
-#           SERVER_USER defaults to root. The ACME email is baked, not a secret.
+# The one deployer. See docs/deploying.md for the secrets and the tag system.
 
 on:
   workflow_dispatch:
@@ -52,6 +34,7 @@ jobs:
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          POSTGRES_SUPERUSER_PASSWORD: ${{ secrets.POSTGRES_SUPERUSER_PASSWORD }}
           CRM_APP_KEY: ${{ secrets.CRM_APP_KEY }}
           CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}
           PRIZM_DB_PASSWORD: ${{ secrets.PRIZM_DB_PASSWORD }}
@@ -67,6 +50,7 @@ jobs:
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
             ghcr_token: env.GHCR_TOKEN,
+            postgres_superuser_password: env.POSTGRES_SUPERUSER_PASSWORD,
             crm_app_key: env.CRM_APP_KEY,
             crm_db_password: env.CRM_DB_PASSWORD,
             prizm_db_password: env.PRIZM_DB_PASSWORD,
@@ -87,8 +71,6 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/deploy_key"
           chmod 600 "${RUNNER_TEMP}/deploy_key"
 
-      # No become password: the playbook connects as root, so `become: true` is root
-      # escalating to root and sudo never asks.
       - name: Run the deploy playbook
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"

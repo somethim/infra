@@ -1,14 +1,4 @@
-# Arbi Kullakshi portfolio — a Leptos/Axum server built by the portfolio repository
-# and updated automatically by Watchtower. Traefik owns TLS and canonical routing.
-#
-# `web` is the current site (Rust). `legacy` is the preserved Next.js portfolio,
-# built from the `legacy` branch of the same repository and published as a second
-# tag of the same GHCR package. It has no database and no volume.
-#
-# The application's own configuration is not listed here: it arrives through
-# `env_file`, rendered by Ansible from env.j2. Interpolation is reserved for the
-# few literals this file needs, so a secret containing `$` cannot be mangled on
-# its way in.
+# Portfolio stack. See docs/stacks.md.
 name: portfolio
 
 services:
@@ -19,19 +9,10 @@ services:
     restart: always
     env_file: .env
     networks:
-      # `data` reaches the shared PostgreSQL on the crm stack, where the site has
-      # a role and database of its own (see roles/portfolio-db).
       - data
       - edge
     volumes:
-      # Uploaded images and video, and the previews generated beside them. The
-      # only application state outside PostgreSQL, and the `media` table is a
-      # ledger of what is on it — the two have to be backed up and restored
-      # together, or the site comes back with broken images rather than an error.
       - portfolio-media:/app/media
-    # The image carries this same probe. Repeated here for one reason: on a first
-    # boot the container applies migrations and seeds ~70 MB of media, generating
-    # a preview for each, and the image's 15 s grace is not enough for that.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -56,40 +37,6 @@ services:
       - traefik.http.middlewares.portfolio-www-redirect.redirectregex.replacement=https://arbikullakshi.com/$${1}
       - traefik.http.middlewares.portfolio-www-redirect.redirectregex.permanent=true
 
-  legacy:
-    image: ${PORTFOLIO_LEGACY_IMAGE}
-    container_name: portfolio-legacy
-    mem_limit: 256m
-    restart: always
-    environment:
-      NODE_ENV: production
-      NEXT_TELEMETRY_DISABLED: "1"
-      HOSTNAME: "0.0.0.0"
-      PORT: "3000"
-    networks:
-      - edge
-    healthcheck:
-      test:
-        - CMD
-        - wget
-        - --quiet
-        - --tries=1
-        - --spider
-        - http://127.0.0.1:3000/
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    labels:
-      - com.centurylinklabs.watchtower.enable=true
-      - autoheal=true
-      - traefik.enable=true
-      - traefik.docker.network=edge
-      - traefik.http.routers.portfolio-legacy.rule=Host(`${LEGACY_DOMAIN}`)
-      - traefik.http.routers.portfolio-legacy.entrypoints=websecure
-      - traefik.http.routers.portfolio-legacy.tls.certresolver=letsencrypt
-      - traefik.http.services.portfolio-legacy.loadbalancer.server.port=3000
-
 networks:
   edge:
     name: edge
@@ -99,7 +46,5 @@ networks:
     external: true
 
 volumes:
-  # Explicitly named so a backup or a restore can address it without deriving
-  # the project prefix.
   portfolio-media:
     name: portfolio-media
