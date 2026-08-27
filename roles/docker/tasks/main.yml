@@ -7,6 +7,20 @@
     executable: /bin/bash
     creates: /usr/bin/docker
 
+# Without this the json-file driver keeps every line a container has ever written.
+# One crash-looping container fills the disk, and PostgreSQL's data directory is on
+# the same one. Caps each container at 30 MB (3 x 10 MB).
+#
+# It applies to containers CREATED after the daemon picks it up — the running ones
+# keep their current unbounded logs until they are next recreated, which Watchtower
+# does on the next image push.
+- name: Configure the Docker daemon (log rotation)
+  ansible.builtin.copy:
+    src: daemon.json
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+  notify: Reload Docker
+
 - name: Ensure Docker is enabled and running
   ansible.builtin.service:
     name: docker

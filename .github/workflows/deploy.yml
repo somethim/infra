@@ -6,17 +6,29 @@ name: Deploy
 # own via Watchtower, so you rarely click this.
 #
 # Required repo secrets:
-#   SERVER_HOST · SERVER_PASSWORD            shared host IP (the one place it lives) + root SSH pw
+#   SERVER_HOST · SSH_PRIVATE_KEY            shared host IP (the one place it lives) + the
+#                                            deploy key's private half. Its public half is
+#                                            committed at roles/common/files/deploy_key.pub
+#                                            and installed by the common role.
 #   GHCR_USERNAME · GHCR_TOKEN               GHCR login; token needs read:packages for the
 #                                            crm (somethim) and hypernova (hypernova3643725) images
 #   CRM_APP_KEY · CRM_DB_PASSWORD · CRM_REDIS_PASSWORD · CRM_TYPESENSE_API_KEY · CRM_ADMIN_PASSWORD
 #   PRIZM_DB_PASSWORD                        shared by CRM (creates the role) + hypernova (connects)
 #   HYPERNOVA_SESSION_SECRET · HYPERNOVA_ADMIN_PASSWORD
-# Optional: PORTFOLIO_RESEND_API_KEY enables contact-form delivery through Resend;
+#   PORTFOLIO_DB_PASSWORD                    the portfolio's role in the shared Postgres
+#   PORTFOLIO_ADMIN_PASSWORD                 seeds the site's only operator account
+# Optional: PORTFOLIO_RESEND_API_KEY enables the portfolio's outgoing mail;
 #           SERVER_USER defaults to root. The ACME email is baked, not a secret.
 
 on:
   workflow_dispatch:
+    inputs:
+      tags:
+        description: "Ansible tags to limit the run. Blank runs everything. `host` applies
+          host-level changes only and touches no stack — which is how you prove a change to
+          this workflow works without redeploying the sites."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -31,10 +43,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ansible + sshpass + jq
+      - name: Install Ansible + jq
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ansible sshpass jq
+          sudo apt-get install -y -qq ansible jq
 
       - name: Build extra-vars file from secrets
         env:
@@ -48,6 +60,8 @@ jobs:
           CRM_ADMIN_PASSWORD: ${{ secrets.CRM_ADMIN_PASSWORD }}
           HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
           HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
+          PORTFOLIO_DB_PASSWORD: ${{ secrets.PORTFOLIO_DB_PASSWORD }}
+          PORTFOLIO_ADMIN_PASSWORD: ${{ secrets.PORTFOLIO_ADMIN_PASSWORD }}
           PORTFOLIO_RESEND_API_KEY: ${{ secrets.PORTFOLIO_RESEND_API_KEY }}
         run: |
           jq -n '{
@@ -61,22 +75,33 @@ jobs:
             crm_admin_password: env.CRM_ADMIN_PASSWORD,
             hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
             hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
+            portfolio_db_password: env.PORTFOLIO_DB_PASSWORD,
+            portfolio_admin_password: env.PORTFOLIO_ADMIN_PASSWORD,
             portfolio_resend_api_key: env.PORTFOLIO_RESEND_API_KEY
           }' > "${RUNNER_TEMP}/extra-vars.json"
 
+      - name: Write the deploy key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/deploy_key"
+          chmod 600 "${RUNNER_TEMP}/deploy_key"
+
+      # No become password: the playbook connects as root, so `become: true` is root
+      # escalating to root and sudo never asks.
       - name: Run the deploy playbook
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          TAGS: ${{ inputs.tags }}
         run: |
           ansible-playbook -i "${SERVER_HOST}," playbook.yml \
+            --private-key "${RUNNER_TEMP}/deploy_key" \
+            ${TAGS:+--tags "$TAGS"} \
             -e "ansible_user=${SERVER_USER:-root}" \
-            -e "ansible_password=${SERVER_PASSWORD}" \
-            -e "ansible_become_password=${SERVER_PASSWORD}" \
             -e "@${RUNNER_TEMP}/extra-vars.json"
 
-      - name: Remove the extra-vars file
+      - name: Remove the secrets from the runner
         if: always()
-        run: rm -f "${RUNNER_TEMP}/extra-vars.json"
+        run: rm -f "${RUNNER_TEMP}/extra-vars.json" "${RUNNER_TEMP}/deploy_key"

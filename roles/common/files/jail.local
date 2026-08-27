@@ -1,0 +1,26 @@
+# Only the SSH jail. The web ports are Traefik's, and it has a rate limiter of its
+# own; banning at the firewall on HTTP patterns would sooner or later ban a reader.
+[DEFAULT]
+# Never ban the host itself or the Docker bridges — a container talking to the host
+# must not be able to lock the operator out.
+ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12 10.0.0.0/8
+
+# A day to start, doubling for anything that comes back, up to a week. Flat long bans
+# punish the wrong mistake: a bot burns through any threshold in seconds and earns the
+# week on its second visit anyway, while the one human who ever authenticates with a
+# password here is doing it because their key stopped working — and that is the worst
+# possible moment to be locked out for a week.
+bantime          = 1d
+bantime.increment = true
+bantime.factor   = 2
+bantime.maxtime  = 1w
+
+findtime = 10m
+# Ten, not five, for the same reason. A bot spends this in one second; a person
+# replacing a key gets room to fumble.
+maxretry = 10
+
+backend = systemd
+
+[sshd]
+enabled = true
