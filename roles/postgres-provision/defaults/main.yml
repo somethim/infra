@@ -1,0 +1,5 @@
+---
+# See docs/database.md — Finding a way in.
+postgres_superuser_candidates:
+  - "{{ postgres_superuser }}"
+  - crm

@@ -1,11 +1,4 @@
-# CRM stack — deployed by the infra Ansible playbook (roles/stack). Ansible ships this
-# file + a rendered .env + ./initdb, then runs `docker compose up -d`. Images are built
-# by the crm repo's CI and pushed to GHCR; Watchtower auto-updates the labelled
-# containers when a new image is pushed (see roles/watchtower).
-#
-# TLS + routing are owned by the shared edge proxy (roles/edge). Only `web` is exposed to
-# it (the BFF); Laravel (`app`) is internal-only. Postgres also joins `data` to serve the
-# co-hosted hypernova provider.
+# CRM stack. See docs/stacks.md.
 services:
   typesense:
     image: typesense/typesense:28.0
@@ -19,34 +12,6 @@ services:
       - crm-typesense:/data
     networks:
       - crm
-
-  pgsql:
-    # Shared by every stack on this host: crm, prizm (hypernova) and portfolio each
-    # have a database and a role of their own in here. Never move this to a newer
-    # major by editing the tag — the on-disk formats are incompatible, so it takes a
-    # dump and restore into a fresh volume.
-    image: postgres:18-alpine
-    container_name: postgresql
-    restart: always
-    environment:
-      POSTGRES_DB: ${DB_DATABASE}
-      POSTGRES_USER: ${DB_USERNAME}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      # Consumed once by the initdb bootstrap to create hypernova's role + database on
-      # this shared instance (see ./initdb/10-prizm.sh). Ignored after first init.
-      PRIZM_DB_PASSWORD: ${PRIZM_DB_PASSWORD}
-    volumes:
-      - crm-pgdata-v18:/var/lib/postgresql
-      - ./initdb:/docker-entrypoint-initdb.d:ro
-    networks:
-      - crm
-      - data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
   redis:
     image: redis:7-alpine
@@ -75,14 +40,13 @@ services:
     volumes:
       - crm-storage:/app/storage
     depends_on:
-      pgsql:
-        condition: service_healthy
       redis:
         condition: service_healthy
       typesense:
         condition: service_started
     networks:
       - crm
+      - data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/up"]
       interval: 30s
@@ -101,8 +65,6 @@ services:
     env_file: .env
     environment:
       APP_ROLE: worker
-    # The image's baked healthcheck probes the web port /up, which the queue worker
-    # doesn't serve — disable it so the worker isn't perpetually "unhealthy".
     healthcheck:
       disable: true
     volumes:
@@ -112,10 +74,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      pgsql:
-        condition: service_healthy
     networks:
       - crm
+      - data
     labels:
       - com.centurylinklabs.watchtower.enable=true
 
@@ -127,9 +88,6 @@ services:
     environment:
       NODE_ENV: production
       DO_NOT_TRACK: "1"
-      # Next standalone binds to $HOSTNAME (Docker sets it to the container id, which
-      # resolves to only ONE of this container's two network IPs). Force all interfaces
-      # so Traefik can reach it on the `edge` network.
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
       PROVIDER_INTERNAL_URL: http://app:8080
@@ -163,8 +121,4 @@ networks:
 volumes:
   crm-storage:
   crm-typesense:
-  # Named for the major it holds, and explicitly so a backup or a restore can address
-  # it without deriving the project prefix. The 17 volume it replaced is gone.
-  crm-pgdata-v18:
-    name: crm-pgdata-v18
   crm-redis:
