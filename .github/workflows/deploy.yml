@@ -46,6 +46,7 @@ jobs:
           PORTFOLIO_DB_PASSWORD: ${{ secrets.PORTFOLIO_DB_PASSWORD }}
           PORTFOLIO_ADMIN_PASSWORD: ${{ secrets.PORTFOLIO_ADMIN_PASSWORD }}
           PORTFOLIO_RESEND_API_KEY: ${{ secrets.PORTFOLIO_RESEND_API_KEY }}
+          PORTFOLIO_TOTP_ENCRYPTION_KEY: ${{ secrets.PORTFOLIO_TOTP_ENCRYPTION_KEY }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -61,7 +62,8 @@ jobs:
             hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
             portfolio_db_password: env.PORTFOLIO_DB_PASSWORD,
             portfolio_admin_password: env.PORTFOLIO_ADMIN_PASSWORD,
-            portfolio_resend_api_key: env.PORTFOLIO_RESEND_API_KEY
+            portfolio_resend_api_key: env.PORTFOLIO_RESEND_API_KEY,
+            portfolio_totp_encryption_key: env.PORTFOLIO_TOTP_ENCRYPTION_KEY
           }' > "${RUNNER_TEMP}/extra-vars.json"
 
       - name: Write the deploy key
