@@ -55,10 +55,11 @@ container would be killed mid-seed and start again from the beginning.
 and every enrolled credential stops working — there is no migration path, only
 re-enrolment. It is also the base for links in outgoing mail.
 
-**`CLIENT_IP_SOURCE=RightmostForwardedFor:1`** declares exactly one trusted hop, the edge
-Traefik, so the visitor's address is the rightmost entry of `X-Forwarded-For`. This keys
-the rate limiter; with the default every visitor would share Traefik's bucket and the
-first burst would throttle the whole site.
+**`CLIENT_IP_SOURCE=Cloudflare`** reads Cloudflare's authenticated `CF-Connecting-IP`
+header instead of selecting an address from `X-Forwarded-For`. The public request reaches
+Traefik through Cloudflare, so the rightmost forwarded address is a Cloudflare edge (and
+was incorrectly reported as the visitor). This also keys the rate limiter by the actual
+visitor instead of the edge proxy.
 
 **Mail is optional.** Without `RESEND_API_KEY` the site still runs: contact messages and
 comments are recorded and only the notifications are skipped and logged. The `From`
