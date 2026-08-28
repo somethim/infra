@@ -42,6 +42,7 @@
           - hypernova_admin_password | default('') | length > 0
           - portfolio_db_password | default('') | length > 0
           - portfolio_admin_password | default('') | length > 0
+          - portfolio_totp_encryption_key | default('') | length > 0
         fail_msg: "Missing one or more required deploy secrets (see docs/deploying.md)."
 
   # See docs/deploying.md — Tags.
