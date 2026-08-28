@@ -65,6 +65,12 @@ visitor instead of the edge proxy.
 comments are recorded and only the notifications are skipped and logged. The `From`
 domain must be verified in Resend or every send is rejected.
 
+**`TOTP_ENCRYPTION_KEY` is required for TOTP to work at all**, and the deploy-time
+assertion in `playbook.yml` catches it being unset before the host is even touched. It
+can never be rotated casually: losing it makes every already-enrolled TOTP secret
+permanently unreadable, with no fallback to plaintext — re-enrollment is the only
+recovery.
+
 The operator account is seeded on first boot against an empty database, because the site
 has no signup path — without it nobody can sign in.
 

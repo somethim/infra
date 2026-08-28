@@ -26,9 +26,10 @@ missing secret fails in seconds rather than halfway through.
 | `PORTFOLIO_DB_PASSWORD` | the portfolio's role in the shared cluster |
 | `PORTFOLIO_ADMIN_PASSWORD` | Seeds the portfolio's only operator account on first boot against an empty database. Changing it later does **not** change an existing account — do that in `/admin` |
 | `PORTFOLIO_RESEND_API_KEY` | *(optional)* Outgoing mail. Without it, messages are still recorded and only the notification is skipped |
+| `PORTFOLIO_TOTP_ENCRYPTION_KEY` | Encrypts enrolled TOTP secrets at rest. **Rotating or losing it makes every already-enrolled TOTP secret permanently unreadable** — re-enrollment is the only recovery. Generate with `openssl rand -base64 32`, not the `-hex 24` used below — the app expects exactly 32 raw bytes, base64-encoded |
 | `SERVER_USER` | *(optional)* SSH user; defaults to `root` |
 
-Generate every value with `openssl rand -hex 24`. A `$` in a secret that compose
+Generate every other value with `openssl rand -hex 24`. A `$` in a secret that compose
 interpolates is eaten as interpolation syntax — see
 [architecture.md](architecture.md#the-env-file-does-double-duty).
 
