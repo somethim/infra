@@ -10,6 +10,8 @@ services:
       - --providers.docker=true
       - --providers.docker.network=edge
       - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/dynamic
+      - --providers.file.watch=true
       - --entrypoints.web.address=:80
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
@@ -26,6 +28,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - edge-acme:/acme
+      # Directory mount, not a single-file mount: Ansible's copy module
+      # writes atomically (temp file + rename), so a file bind-mount would
+      # pin the old inode and --providers.file.watch would never see updates.
+      - ./dynamic:/dynamic:ro
     networks:
       - edge
 

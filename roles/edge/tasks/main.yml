@@ -32,6 +32,18 @@
     dest: "{{ edge_deploy_path }}/docker-compose.yml"
     mode: "0644"
 
+- name: Create the dynamic config directory
+  ansible.builtin.file:
+    path: "{{ edge_deploy_path }}/dynamic"
+    state: directory
+    mode: "0755"
+
+- name: Ship the Traefik dynamic config (Cloudflare IP allowlist)
+  ansible.builtin.copy:
+    src: dynamic.yml
+    dest: "{{ edge_deploy_path }}/dynamic/dynamic.yml"
+    mode: "0644"
+
 - name: Bring up the edge proxy
   ansible.builtin.command: docker compose up -d --remove-orphans
   args:

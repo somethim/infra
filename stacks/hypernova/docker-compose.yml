@@ -33,7 +33,7 @@ services:
       - traefik.http.routers.hypernova-provider.entrypoints=websecure
       - traefik.http.routers.hypernova-provider.tls.certresolver=letsencrypt
       - traefik.http.middlewares.hypernova-stripapi.stripprefix.prefixes=/api
-      - traefik.http.routers.hypernova-provider.middlewares=hypernova-stripapi
+      - traefik.http.routers.hypernova-provider.middlewares=cloudflare-only@file,hypernova-stripapi
       - traefik.http.services.hypernova-provider.loadbalancer.server.port=8080
 
   web:
@@ -59,6 +59,7 @@ services:
       - traefik.http.routers.hypernova-web.priority=1
       - traefik.http.routers.hypernova-web.entrypoints=websecure
       - traefik.http.routers.hypernova-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.hypernova-web.middlewares=cloudflare-only@file
       - traefik.http.services.hypernova-web.loadbalancer.server.port=3000
 
 networks:

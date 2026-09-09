@@ -27,11 +27,12 @@ services:
       - traefik.http.routers.portfolio.rule=Host(`${APEX_DOMAIN}`)
       - traefik.http.routers.portfolio.entrypoints=websecure
       - traefik.http.routers.portfolio.tls.certresolver=letsencrypt
+      - traefik.http.routers.portfolio.middlewares=cloudflare-only@file
       - traefik.http.services.portfolio.loadbalancer.server.port=3000
       - traefik.http.routers.portfolio-www.rule=Host(`${WWW_DOMAIN}`)
       - traefik.http.routers.portfolio-www.entrypoints=websecure
       - traefik.http.routers.portfolio-www.tls.certresolver=letsencrypt
-      - traefik.http.routers.portfolio-www.middlewares=portfolio-www-redirect
+      - traefik.http.routers.portfolio-www.middlewares=cloudflare-only@file,portfolio-www-redirect
       - traefik.http.routers.portfolio-www.service=portfolio
       - traefik.http.middlewares.portfolio-www-redirect.redirectregex.regex=^https://www\.arbikullakshi\.com/(.*)
       - traefik.http.middlewares.portfolio-www-redirect.redirectregex.replacement=https://arbikullakshi.com/$${1}
