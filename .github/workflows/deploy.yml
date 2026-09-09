@@ -73,18 +73,6 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/deploy_key"
           chmod 600 "${RUNNER_TEMP}/deploy_key"
 
-      - name: TEMP DEBUG - verify deploy key and raw SSH connectivity
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-        run: |
-          echo "Deploy key fingerprint (compare against: SHA256:bOyvJiWNI7XE2y2+M/2+EndpCT94h9FRr5b9cJlDIec):"
-          ssh-keygen -lf "${RUNNER_TEMP}/deploy_key"
-          echo "Raw SSH connectivity test:"
-          ssh -vvv -o StrictHostKeyChecking=no -o BatchMode=yes \
-            -i "${RUNNER_TEMP}/deploy_key" \
-            "${SERVER_USER:-root}@${SERVER_HOST}" whoami
-
       - name: Run the deploy playbook
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
