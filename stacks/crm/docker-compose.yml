@@ -105,6 +105,7 @@ services:
       - traefik.http.routers.crm-web.rule=Host(`${WEB_DOMAIN}`)
       - traefik.http.routers.crm-web.entrypoints=websecure
       - traefik.http.routers.crm-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.crm-web.middlewares=cloudflare-only@file
       - traefik.http.services.crm-web.loadbalancer.server.port=3000
 
 networks:

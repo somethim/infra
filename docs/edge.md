@@ -25,6 +25,14 @@ are attached to more than one network. Without it Traefik may pick the wrong add
 - Set `traefik.http.services.<name>.loadbalancer.server.port` explicitly. Traefik guesses
   otherwise, and guesses wrong on images that expose several ports.
 - Attach the container to `edge`.
+- Add `traefik.http.routers.<name>.middlewares=cloudflare-only@file` (first in the list,
+  ahead of any other middleware) to every router. All three app domains are
+  Cloudflare-proxied, and `stacks/portfolio` trusts the `Cf-Connecting-Ip` header for
+  rate-limit keying — that header is only trustworthy if the origin is reachable *only*
+  through Cloudflare's edge. `cloudflare-only` is defined in
+  `roles/edge/files/dynamic.yml` via Traefik's file provider and restricts every router
+  to Cloudflare's published IP ranges. See that file's header comment for the full
+  rationale and for what to do if a domain is ever un-proxied.
 
 ### Priorities
 
@@ -45,10 +53,14 @@ with `service=portfolio` so both routers share one backend.
 Certificates come from Let's Encrypt over the **HTTP-01** challenge, with a single ACME
 account shared by every domain, stored in the `edge-acme` volume.
 
-HTTP-01 means **the app domains must resolve directly to this host** — plain A records,
-no proxy in front. If anything terminates :80 before Traefik does, the challenge fails
-and the certificate never issues. This is the constraint to remember before putting a
-CDN in front of anything.
+All three app domains are actually Cloudflare-proxied (orange-clouded), not plain A
+records — Cloudflare forwards the `.well-known/acme-challenge` request through to this
+host on :80, so HTTP-01 issuance still works. The real constraint is that nothing may
+*terminate* :80 before Traefik does — if Cloudflare's proxying were ever replaced with
+something that intercepts or answers on :80 itself (a different CDN, a WAF appliance,
+Cloudflare's "Always Use HTTPS" acting at the edge in a way that never reaches origin),
+the challenge fails and the certificate never issues. This is the constraint to remember
+before changing what sits in front of the origin.
 
 Certificates for domains no longer routed are simply left in `acme.json`. Traefik does
 not renew what no router references, so a retired subdomain needs no cleanup.
