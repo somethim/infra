@@ -26,6 +26,7 @@ missing secret fails in seconds rather than halfway through.
 | `PORTFOLIO_DB_PASSWORD` | the portfolio's role in the shared cluster |
 | `PORTFOLIO_ADMIN_PASSWORD` | Seeds the portfolio's only operator account on first boot against an empty database. Changing it later does **not** change an existing account — do that in `/admin` |
 | `PORTFOLIO_RESEND_API_KEY` | *(optional)* Outgoing mail. Without it, messages are still recorded and only the notification is skipped |
+| `PORTFOLIO_GOOGLE_CLIENT_ID` / `PORTFOLIO_GOOGLE_CLIENT_SECRET` | *(optional)* Google Cloud Console OAuth client backing the Calendar integration that mints a Meet link per booking. Without them, "Connect Google Calendar" just fails with a clear error instead of the server refusing to start. Create a "Web application" OAuth client, enable the Calendar API, and register `https://arbikullakshi.com/api/google/callback` as an authorized redirect URI exactly |
 | `PORTFOLIO_TOTP_ENCRYPTION_KEY` | Encrypts enrolled TOTP secrets at rest. **Rotating or losing it makes every already-enrolled TOTP secret permanently unreadable** — re-enrollment is the only recovery. Generate with `openssl rand -base64 32`, not the `-hex 24` used below — the app expects exactly 32 raw bytes, base64-encoded |
 | `SERVER_USER` | *(optional)* SSH user; defaults to `root` |
 
