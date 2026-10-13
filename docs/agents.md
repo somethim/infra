@@ -1,67 +1,121 @@
 # Autonomous agents
 
-Three things act on the host without anyone asking. All are idempotent, all live in
-`playbook.yml`, and all are opt-in per container rather than blanket.
+Three things act on the host without anyone asking: Watchtower, autoheal and the prune timer.
+All are installed by provisioning (`roles/watchtower`, `roles/autoheal`, `roles/docker`), all
+are opt-in per container rather than blanket, and the two containers reach Docker only
+through a socket proxy of their own.
+
+## Socket proxies
+
+Watchtower and autoheal (and Traefik, [edge.md](edge.md#the-socket-proxy)) never mount the
+Docker socket. Each talks to its own `wollomatic/socket-proxy` container over an internal
+network that only the two of them share (`watchtower-socket`, `autoheal-socket`). The proxy
+mounts the socket read-only, accepts only its one client, and allows only the API calls that
+client needs:
+
+| Proxy | Allows |
+| --- | --- |
+| `watchtower-socket-proxy` | `GET` ping, info, containers, image JSON; `POST` container create/stop/start/rename, image pull, network connect; `DELETE` containers and images |
+| `autoheal-socket-proxy` | `GET` the container list; `POST` a container restart |
+
+Everything else is refused and logged as `blocked request`. Provisioning and every release
+check that each proxy runs and refused none of its client's calls since the client started;
+a new client version that needs another endpoint shows up there, and the fix is to allow
+exactly what the log names in that role's `files/docker-compose.yml`.
 
 ## Watchtower
 
-Polls GHCR every 60 seconds and, when a watched image has a new digest, pulls it and
-recreates the container. This is what makes the application repositories build-only: a
-push is a deploy.
+`nickfedor/watchtower` (pinned by digest), the maintained fork of `containrrr/watchtower`:
+the original is unmaintained and negotiates a Docker API version current Engines refuse.
+
+It polls GHCR every 60 seconds and, when a watched image's tag has a new digest, pulls it and
+recreates the container. This is what makes the application repositories build-only: a push
+to `:latest` is a deploy.
 
 - `WATCHTOWER_LABEL_ENABLE=true` — only containers labelled
-  `com.centurylinklabs.watchtower.enable=true` are considered. PostgreSQL and
-  Traefik carry no such label and are never touched. **Never label a
-  database**: an unattended image swap on a stateful container is a restore, not an
+  `com.centurylinklabs.watchtower.enable=true` are considered: `portfolio`, `prizm-provider`,
+  `prizm-web`. PostgreSQL and Traefik carry no such label and are never touched. **Never
+  label a database**: an unattended image swap on a stateful container is a restore, not an
   update.
-- `WATCHTOWER_CLEANUP=true` — removes the image it replaced. Without this every update
-  leaves an untagged layer set behind.
-- `WATCHTOWER_ROLLING_RESTART=true` — updates one container at a time instead of stopping
-  everything and starting everything.
-- `DOCKER_API_VERSION=1.40` — `containrrr/watchtower` negotiates API 1.25, which newer
-  daemons reject outright (`client version is too old, minimum 1.40`). Pinning a version
-  the daemon accepts is the workaround; without it the container exits at startup.
+- **Digest pins are skipped.** A rollback runs an app as `<repo>:latest@sha256:<digest>`,
+  which Watchtower cannot move, so auto-updates pause for exactly the pinned apps until
+  `resume` puts them back on `:latest`.
+- `WATCHTOWER_CLEANUP=false` — the image it replaced stays on the host. That keeps a recent
+  local copy of the previous version as an extra rollback hint (`known` lines in `status`)
+  until the prune timer reclaims it. The primary record is each release's
+  `running-images.env`.
+- `WATCHTOWER_ROLLING_RESTART=true` — one container at a time.
+- `WATCHTOWER_INCLUDE_STOPPED` and `WATCHTOWER_REVIVE_STOPPED` — a stopped labelled container
+  is updated and started again.
 
-Registry authentication is the host's `/root/.docker/config.json`, mounted read-only.
-That file is written by the `docker login ghcr.io` step in `roles/watchtower`, so the
-same credentials serve both the stacks' image pulls and Watchtower's digest checks.
+Registry authentication is the host's `/root/.docker/config.json`, mounted read-only. That
+file is written by `docker login ghcr.io` in `infra-apply` on every release, so the same
+credentials serve the release's image pulls and Watchtower's digest checks; rotating
+`GHCR_TOKEN` takes effect for Watchtower at the next release.
 
-**Watchtower updates containers; it does not create them.** If a container is missing,
-Watchtower will not bring it back — a deploy will. This matters when reasoning about
-what a wipe-and-wait will actually do.
+**Watchtower updates containers; it does not create them.** A missing app container comes
+back from a `release`, not from Watchtower.
+
+Provisioning waits for one completed Watchtower update session and stops if it reported
+failed containers or a Docker API error.
 
 ## Autoheal
 
-Restarts a container that reports `unhealthy`.
+`willfarrell/autoheal` (pinned by digest). Restarts a container that reports `unhealthy`.
 
-This exists because Docker does nothing when a healthcheck fails — it records the status
-and moves on — and Traefik does not read that status either. Without autoheal, a hung
-application stays in the routing table and keeps taking traffic that it will never
-answer.
+This exists because Docker does nothing when a healthcheck fails — it records the status and
+moves on — and Traefik does not read that status either. Without autoheal, a hung application
+stays in the routing table and keeps taking traffic that it will never answer.
 
-- Opt in with `autoheal=true`, the same shape as Watchtower's label.
-- `AUTOHEAL_START_PERIOD=300` — grace after a restart before a container is eligible
-  again, so something slow to warm up is not restarted into a loop.
-- **Never label a database.** Restarting a slow PostgreSQL under load is how a slow
-  database becomes a broken one.
+- Opt in with the label `autoheal=true` (`AUTOHEAL_CONTAINER_LABEL=autoheal`): `portfolio`
+  and `prizm-provider`.
+- Checks every 30 seconds (`AUTOHEAL_INTERVAL=30`).
+- `AUTOHEAL_START_PERIOD=300` — grace after autoheal itself starts, so a host that is still
+  booting is not restarted into a loop.
+- **Never label a database.** Restarting a slow PostgreSQL under load is how a slow database
+  becomes a broken one.
 
-`prizm-web` is deliberately not labelled: it neither defines a healthcheck nor bakes one
-into its image, so there is nothing for autoheal to act on. Give it one and the label
-becomes worth adding.
+`prizm-web` is deliberately not labelled: it defines no healthcheck, so there is nothing for
+autoheal to act on.
 
 ## The prune timer
 
-`docker-prune.timer` reclaims dangling images every Sunday at 03:00.
+`docker-prune.timer` runs every Sunday at 03:00 (with up to 30 minutes of jitter, ahead of
+the reboot window, and catching up after a reboot):
 
-Every image swap leaves the replaced image behind untagged. Watchtower cleans up the
-swaps it performed itself, but a deploy-driven one (`compose up --pull always`)
-accumulates until something reclaims it.
+```
+docker image prune --all --force --filter until=168h
+```
 
-**Dangling only, never `-a`.** An untagged image is referenced by nothing and is safe to
-remove. `-a` deletes anything without a *running* container, which includes every image
-belonging to a stack that happens to be down mid-deploy, and any tag being kept
-deliberately.
+That removes every image **no container uses** that was **created** more than a week ago.
+Watchtower keeps replaced images (`CLEANUP=false`), so without this they would accumulate.
 
-Containers are not pruned at all, so a deliberately stopped one survives.
+`until` filters by image creation time, not by when the image stopped being used, so a local
+copy of a previous version survives only while it is young; that is why the rollback record
+is each release's `running-images.env`, and why a digest is always pulled from GHCR, which
+keeps untagged versions.
 
-Run it early with `systemctl start docker-prune.service`.
+Containers are not pruned at all, so a deliberately stopped one survives. Run it early with
+`sudo systemctl start docker-prune.service`.
+
+## Re-pinning third-party images
+
+Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: PostgreSQL
+(`stack/database/docker-compose.yml`), Traefik, Watchtower, autoheal and the socket proxy
+(`roles/{edge,watchtower,autoheal}/files/docker-compose.yml`). `build-bundle.sh` refuses a
+release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
+one in a stack on the host. One version per repository: the socket proxy appears in three files, with the same pin.
+
+To move one:
+
+1. Read the multi-arch digest of the new tag:
+
+   ```bash
+   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' <image>:<tag>
+   ```
+
+2. Replace `<tag>@sha256:<digest>` in every file that runs that repository, and merge to
+   `master`.
+3. Apply it: provision with that role's tag (`--tags edge`, `--tags watchtower` or
+   `--tags autoheal`; the socket proxy needs all three), or run `release` for PostgreSQL. A
+   PostgreSQL pin may move only within the major ([database.md](database.md#upgrades)).

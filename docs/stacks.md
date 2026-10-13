@@ -9,8 +9,13 @@ One hostname serves both halves: the web app at `/` and the provider's API at `/
 split by router priority with a `stripprefix` middleware. See [edge.md](edge.md#priorities).
 
 The provider connects to PostgreSQL with its own `prizm` role. The role name predates the
-stack name — `prizm-lodge` was the original project — which is why the container names,
-the database, and the role all say `prizm` while the stack says `hypernova`.
+stack name — `prizm-lodge` was the original project — which is why the container names
+(`prizm-provider`, `prizm-web`), the database, and the role all say `prizm` while the stack
+says `hypernova`. Its secrets are in `provider.env`; `prizm-web` has none, and starts only
+once the provider reports healthy.
+
+Its only image tag is `:latest`, so a rollback names a digest (see
+[RUNBOOK.md](../RUNBOOK.md#8-releases-status-rollback-resume)).
 
 ## portfolio
 
@@ -33,7 +38,7 @@ The entrypoint never seeds content: a seed run re-creates entries the admin has 
 so seeding is a manual step, run on purpose:
 
 ```bash
-docker exec portfolio /app/portfolio-seed
+sudo docker exec portfolio /app/portfolio-seed
 ```
 
 (The comment in the portfolio repo's `docker/entrypoint.sh` says
@@ -53,14 +58,19 @@ visitor instead of the edge proxy.
 comments are recorded and only the notifications are skipped and logged. The `From`
 domain must be verified in Resend or every send is rejected.
 
-**`TOTP_ENCRYPTION_KEY` is required for TOTP to work at all**, and the deploy-time
-assertion in `playbook.yml` catches it being unset before the host is even touched. It
-can never be rotated casually: losing it makes every already-enrolled TOTP secret
+**`TOTP_ENCRYPTION_KEY` is required for TOTP to work at all**, and `release.yml` refuses
+a release without it (base64 of 32 bytes) before the host is even touched. It can never be
+rotated casually: losing it makes every already-enrolled TOTP secret
 permanently unreadable, with no fallback to plaintext — re-enrollment is the only
 recovery.
 
-The operator account is created by that bootstrap when it does not exist yet, because
-the site has no signup path — without it nobody can sign in.
+The operator account is created by that bootstrap when it does not exist yet, with
+`ADMIN_PASSWORD` (`PORTFOLIO_ADMIN_PASSWORD`), because the site has no signup path — without
+it nobody can sign in. An existing account keeps its password whatever that secret says;
+change it in `/admin`.
+
+The portfolio publishes `:latest` and `:<full commit sha>` for every `master` build, so a
+rollback can name a commit.
 
 ### The legacy site
 

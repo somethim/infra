@@ -1,95 +1,86 @@
-# Runbook
+# Operations
 
-## Rotating a secret
+The procedures — first setup, the cut-over, releases, rollback, rotating a secret, a lockout,
+re-pinning an image — are in [RUNBOOK.md](../RUNBOOK.md). This page keeps the short recipes
+that are not part of a procedure. Every command runs as `admin` over the tailnet
+(`ssh admin@infra-host`).
 
-Change it in the repository secrets, run **Deploy**. That is the whole procedure for
-every database password: `roles/postgres-provision` re-sets the role's password on every
-run from the same value that renders the application's DSN, so the two cannot drift.
-
-`PORTFOLIO_ADMIN_PASSWORD` is the exception. It seeds the operator account on first boot
-against an empty database and is ignored afterwards — change that password in `/admin`.
+| Situation | Where |
+| --- | --- |
+| A release failed, or an app must go back a version | [RUNBOOK.md, Releases, status, rollback, resume](../RUNBOOK.md#8-releases-status-rollback-resume) |
+| A secret must change | [RUNBOOK.md, Rotating a secret](../RUNBOOK.md#9-rotating-a-secret) |
+| SSH does not let you in | [RUNBOOK.md, Locked out](../RUNBOOK.md#10-locked-out) |
+| A third-party image must move | [RUNBOOK.md, Re-pinning third-party images](../RUNBOOK.md#11-re-pinning-third-party-images) |
 
 ## Getting into PostgreSQL
 
-The image trusts connections over the local Unix socket, so a lost superuser password is
-not a lockout:
+The image trusts connections over the local Unix socket, so a lost superuser password is not
+a lockout:
 
 ```bash
-docker exec -it postgresql psql -U postgres
+sudo docker exec -it postgresql psql -U postgres
 ```
 
-Re-running the deploy re-sets every password from the repository secrets.
+The next `release` re-sets every role's password from the `production` Environment.
 
 ## Reclaiming disk
 
 ```bash
-docker image prune -f              # dangling only — same as the Sunday timer
-systemctl start docker-prune.service
+sudo systemctl start docker-prune.service   # the Sunday timer, now: unused images older than a week
+sudo docker system df
 ```
 
-Never `docker image prune -a`. See [agents.md](agents.md#the-prune-timer).
+Old releases need no cleanup: `infra-apply` keeps only `current` and `previous`. See
+[agents.md](agents.md#the-prune-timer).
 
 ## Backups
 
-Two things must be captured together:
+Nothing is backed up automatically. Two things must be captured together:
 
-- the `portfolio` database
+- the `portfolio` database (`sudo docker exec postgresql pg_dump -U postgres -Fc portfolio`)
 - the `portfolio-media` volume
 
-The `media` table is a ledger of what is on that volume. Restoring one without the other
-gives a working site with broken images rather than an error, which is the failure mode
-that goes unnoticed longest.
+The `media` table is a ledger of what is on that volume. Restoring one without the other gives
+a working site with broken images rather than an error, which is the failure mode that goes
+unnoticed longest.
 
 ## A major PostgreSQL upgrade
 
-Never by editing the image tag — the on-disk formats are incompatible and the server
-will refuse to start.
+Never by editing the image tag — the on-disk formats are incompatible and the server will
+refuse to start.
 
-1. Stop every writer (the application stacks, not the database).
+1. Stop every writer: `sudo docker stop portfolio prizm-provider prizm-web` (not the database).
+   Watchtower revives stopped labelled containers, so stop it first:
+   `sudo docker stop watchtower`.
 2. `pg_dumpall` from the running container.
-3. Create a fresh volume named for the new major.
-4. Start the new image against it and restore.
-5. Update `postgres_image` and `postgres_volume` in `playbook.yml`.
-6. Deploy, verify, then delete the old volume.
-
-## Locked out of SSH
-
-The realistic path is a dead key and a fumbled password, and the answer is the **Hetzner
-Cloud console** — it does not go through sshd. From there:
-
-```bash
-fail2ban-client set sshd unbanip <your-ip>
-```
-
-That console is the reason a long ban is safe to run at all.
-
-If sshd itself will not start, the drop-in at `/etc/ssh/sshd_config.d/10-hardening.conf`
-is the first thing to check — though the deploy validates it with `sshd -t` before
-installing, so this should not happen from a deploy.
+3. Create a fresh volume named for the new major, start the new image against it, and restore.
+4. Change the image pin and the volume name in `stack/database/docker-compose.yml`,
+   `roles/host/tasks/main.yml`, `roles/common/files/infra-compose-guard` and the fixtures in
+   `ci/release-scripts.sh` ([database.md](database.md#upgrades)); merge to `master`.
+5. Provision (it creates the new volume if missing and starts Watchtower again), then run
+   `release`, verify, and only then delete the old volume.
 
 ## Watchtower is not updating anything
 
-Check it is running at all:
-
 ```bash
-docker ps -a --filter name=watchtower
-docker logs watchtower --tail 50
+sudo docker ps -a --filter name=watchtower
+sudo docker logs watchtower --tail 50
 ```
 
-It exits at startup on a bad `/root/.docker/config.json`. Two ways that happens: the
-GHCR token expired, or the file is missing on the host — Docker then creates a
-*directory* at that bind-mount path, which Watchtower cannot parse. A full deploy
-re-runs `docker login ghcr.io` and recreates the container, which fixes both.
+An expired GHCR token, or a missing `/root/.docker/config.json`, leaves it unable to check
+digests: store a new `GHCR_TOKEN` and run `release`, which logs in again. A missing or
+stopped `watchtower` container comes back with `provision.yml --tags watchtower`. An "API
+version too old" error means the pinned image must move
+([RUNBOOK.md](../RUNBOOK.md#11-re-pinning-third-party-images)).
 
-Remember that Watchtower only updates containers that already exist. A missing container
-comes back from a deploy, not from Watchtower.
+Remember that Watchtower only updates containers that already exist, and never one pinned by
+a rollback. A missing app container comes back from a `release`.
 
 ## A site is up but hung
 
-Autoheal restarts containers that report `unhealthy`, but only those labelled
-`autoheal=true` and only those that define a healthcheck. `prizm-web` has neither, so a
-hang there needs:
+Autoheal restarts containers that report `unhealthy`, but only those labelled `autoheal=true`
+that define a healthcheck. `prizm-web` has neither, so a hang there needs:
 
 ```bash
-docker restart prizm-web
+sudo docker restart prizm-web
 ```
