@@ -16,6 +16,9 @@
       PUBLIC_INTERFACE={{ ansible_facts['default_ipv4']['interface'] }}
       PUBLIC_PORTS={{ public_ports | join(',') }}
       ORIGIN_PULL={{ 1 if (edge_origin_pull_enabled | default(false) | bool) else 0 }}
+      PORTFOLIO_IMAGE_REPO={{ portfolio_image_repo }}
+      HYPERNOVA_PROVIDER_IMAGE_REPO={{ hypernova_provider_image_repo }}
+      HYPERNOVA_WEB_IMAGE_REPO={{ hypernova_web_image_repo }}
     owner: root
     group: root
     mode: "0644"

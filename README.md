@@ -30,12 +30,14 @@ ansible-playbook playbook.yml -e @vars.json
 ## Layout
 
 ```
-playbook.yml           the deployer: host roles, then stacks in order
+provision.yml          the host: owner's machine, over Tailscale (production.yml holds the facts)
+release.yml            renders the release bundle on the runner; build-bundle.sh packs it
+release-images.sh      turns rollback targets into digest pins
 ansible.cfg            auto-loaded; points at inventory/hosts
 inventory/             hosts.example only — the real IP is never committed
-roles/                 common · docker · edge · watchtower · autoheal
-                       stack · postgres-data · postgres-provision
-stacks/                database · hypernova · portfolio
+roles/                 common · tailscale · docker · host · edge · watchtower · autoheal
+stack/                 database · portfolio · hypernova (compose files and env templates)
+ci/                    release-scripts.sh, the release path tested against fakes
 docs/                  why any of it is the way it is
 ```
 

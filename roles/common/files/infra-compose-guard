@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Refuse a release's compose model that could reach past its stack.
+
+    python3 -I infra-compose-guard <model.json> <stack_dir> <stack> [<app image repository>...]
+
+<model.json> is `docker compose config --no-env-resolution --format json` for
+<stack_dir>/docker-compose.yml; <stack> is database, portfolio or hypernova; the
+repositories are the app images /etc/infra/host.env allows for that stack.
+infra-apply runs this on every stack of a bundle before anything changes.
+Prints one summary line on success; prints `docker-compose.yml: <reason>` and
+exits 1 on a refusal. Installed as /usr/local/libexec/infra-compose-guard.
+"""
+import json
+import os
+import re
+import sys
+
+STACKS = {
+    "database": {
+        "networks": {"data"},
+        "volumes": {"pgdata": {"name": "pgdata-v18", "external": True}},
+        "containers": {"postgresql"},
+        "env_files": ("postgres.env",),
+        "labels_allowed": False,
+    },
+    "portfolio": {
+        "networks": {"data", "edge"},
+        "volumes": {"portfolio-media": {"name": "portfolio-media", "external": False}},
+        "containers": {"portfolio"},
+        "env_files": ("portfolio.env",),
+        "labels_allowed": True,
+    },
+    "hypernova": {
+        "networks": {"data", "edge"},
+        "volumes": {"prizm-storage": {"name": "hypernova_prizm-storage", "external": False}},
+        "containers": {"prizm-provider", "prizm-web"},
+        "env_files": ("provider.env",),
+        "labels_allowed": True,
+    },
+}
+
+SERVICE_FIELDS = {
+    "command", "container_name", "cpus", "depends_on", "entrypoint", "env_file",
+    "environment", "extra_hosts", "healthcheck", "image", "labels", "mem_limit", "networks",
+    "restart", "stop_grace_period", "stop_signal", "volumes", "profiles",
+    "user", "security_opt", "cap_drop", "read_only", "init", "working_dir", "tmpfs",
+}
+FIELD_REASONS = {
+    "privileged": "which gives it root on the host",
+    "cap_add": "which adds kernel capabilities",
+    "devices": "which passes host devices into it",
+    "device_cgroup_rules": "which opens host devices to it",
+    "gpus": "which passes host devices into it",
+    "sysctls": "which changes kernel parameters",
+    "cgroup_parent": "which places it outside the stack's cgroup",
+    "cgroup": "which can share the host's cgroup namespace",
+    "uts": "which shares the host's UTS namespace",
+    "userns_mode": "which turns off user namespace remapping",
+    "runtime": "which picks another container runtime",
+    "use_api_socket": "which hands it the Docker socket",
+    "volumes_from": "which mounts another container's volumes",
+    "build": "which builds an image from files on the host",
+    "label_file": "which reads a file on the host",
+    "ports": "which publishes a host port past the firewall",
+}
+NETWORK_FIELDS = {"name", "external", "ipam", "labels"}
+SAFE_SECURITY_OPTS = {"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"}
+HOST_LABELS = re.compile(r"^(traefik\.|com\.centurylinklabs\.watchtower\.enable$|autoheal$)")
+PINNED = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
+
+
+def refuse(reason):
+    print("docker-compose.yml: " + reason)
+    sys.exit(1)
+
+
+def show(value):
+    return json.dumps(value)
+
+
+def repository(ref):
+    ref = ref.split("@", 1)[0]
+    head, _, last = ref.rpartition("/")
+    if ":" in last:
+        last = last.rsplit(":", 1)[0]
+    return (head + "/" if head else "") + last
+
+
+def raw_lines(path):
+    """Yield (indent, text) for the non-comment lines of a YAML file."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        text = line.split(" #", 1)[0].rstrip()
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        yield len(text) - len(text.lstrip(" ")), text.strip()
+
+
+def raw_checks(path):
+    """Refuse what `compose config` resolves away before the model shows it."""
+    top = service = None
+    block = None
+    for indent, stripped in raw_lines(path):
+        key = stripped[2:] if stripped.startswith("- ") else stripped
+        if "<<" in key.split(":", 1)[0] and ":" in key:
+            refuse("uses a YAML merge key (<<), which can pull settings from elsewhere")
+        if indent == 0 and stripped.split(":", 1)[0] == "include":
+            refuse("includes another compose file")
+        if block is not None:
+            if indent > block:
+                item = key[5:].strip() if key.startswith("path:") else key
+                if stripped.startswith("- ") or key.startswith("path:"):
+                    yield service, item.strip("'\"")
+                continue
+            block = None
+        if indent == 0 and stripped.endswith(":"):
+            top, service = stripped[:-1], None
+            continue
+        if top == "services" and indent == 2 and stripped.endswith(":"):
+            service = stripped[:-1].strip("'\"")
+            continue
+        if top == "services" and service and indent == 4 and ":" in stripped and not stripped.startswith("- "):
+            field, _, value = stripped.partition(":")
+            field = field.strip("'\"")
+            if field == "extends":
+                refuse(f"service {service} extends another service, which can pull settings from another file")
+            if field == "profiles":
+                refuse(f"service {service} sets profiles, which hides it from the checked model")
+            if field in FIELD_REASONS:
+                refuse(f"service {service} sets {field}, {FIELD_REASONS[field]}")
+            if field == "env_file":
+                value = value.strip()
+                if not value:
+                    block = indent
+                elif value.startswith("["):
+                    for item in value.strip("[]").split(","):
+                        if item.strip():
+                            yield service, item.strip().strip("'\"")
+                else:
+                    yield service, value.strip("'\"")
+
+
+def env_keys(path):
+    keys = set()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    keys.add(line.split("=", 1)[0].strip())
+    except OSError:
+        pass
+    return keys
+
+
+def main():
+    if len(sys.argv) < 4 or sys.argv[3] not in STACKS:
+        print("usage: infra-compose-guard <model.json> <stack_dir> database|portfolio|hypernova [<app image repository>...]")
+        sys.exit(64)
+    model_path, project, stack = sys.argv[1], os.path.normpath(sys.argv[2]), sys.argv[3]
+    app_repos = set(sys.argv[4:])
+    spec_for = STACKS[stack]
+    bundle_env_files = {os.path.join(project, name) for name in spec_for["env_files"]}
+    allowed_env_list = ", ".join(spec_for["env_files"])
+
+    entries = sorted(os.listdir(project)) if os.path.isdir(project) else []
+    for entry in entries:
+        if entry.endswith((".yml", ".yaml")):
+            for service_name, raw in raw_checks(os.path.join(project, entry)):
+                resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(project, raw))
+                if resolved not in bundle_env_files:
+                    refuse(f"service {service_name or '?'} reads env_file {show(raw)}; the {stack} stack may only read {allowed_env_list} from the bundle")
+
+    # Keys a service could only have from an env file the stack may not read
+    # (the interpolation file .env and the stack's own env file are fine).
+    allowed_keys = set().union(*(env_keys(path) for path in bundle_env_files | {os.path.join(project, ".env")}))
+    foreign_env_keys = {}
+    for entry in entries:
+        path = os.path.join(project, entry)
+        if entry.endswith(".env") and entry != ".env" and path not in bundle_env_files and os.path.isfile(path):
+            for key in env_keys(path) - allowed_keys:
+                foreign_env_keys.setdefault(key, path)
+
+    try:
+        with open(model_path, encoding="utf-8") as handle:
+            model = json.load(handle)
+    except (OSError, ValueError):
+        refuse("docker compose config did not print a readable model")
+    if not isinstance(model, dict):
+        refuse("docker compose config did not print a readable model")
+
+    for key in sorted(model):
+        if key not in {"name", "services", "networks", "volumes"}:
+            refuse(f"the top-level {key} is not something a release may set")
+    if model.get("name") != stack:
+        refuse(f"the project name is {show(model.get('name'))}, not {stack}")
+
+    services = model.get("services") or {}
+    networks = model.get("networks") or {}
+    volumes = model.get("volumes") or {}
+    if not services:
+        refuse("the stack has no services")
+
+    for key, spec in sorted(networks.items()):
+        spec = spec or {}
+        for field in sorted(spec):
+            if field not in NETWORK_FIELDS:
+                refuse(f"network {key} sets {field}, which a release may not set")
+        name = spec.get("name", "")
+        if not spec.get("external") or name not in spec_for["networks"]:
+            allowed = " and ".join(sorted(spec_for["networks"]))
+            refuse(f"network {key} is {show(name)}{'' if spec.get('external') else ' and not external'}; the {stack} stack may only join the existing network(s) {allowed}")
+
+    if set(volumes) != set(spec_for["volumes"]):
+        refuse(f"the volumes are {show(sorted(volumes))}; the {stack} stack uses exactly {show(sorted(spec_for['volumes']))}")
+    for key, spec in sorted(volumes.items()):
+        spec = spec or {}
+        want = spec_for["volumes"][key]
+        for field in sorted(spec):
+            if field == "driver_opts":
+                refuse(f"volume {key} sets driver_opts, which can mount a host path")
+            if field not in {"name", "external", "labels"}:
+                refuse(f"volume {key} sets {field}, which a release may not set")
+        if spec.get("name") != want["name"] or bool(spec.get("external")) != want["external"]:
+            refuse(f"volume {key} is {show(spec.get('name'))}{' (external)' if spec.get('external') else ''}; the {stack} stack keeps its data in {show(want['name'])}{' (external)' if want['external'] else ''}")
+
+    for name, spec in sorted(services.items()):
+        for field in sorted(spec):
+            if field not in SERVICE_FIELDS:
+                refuse(f"service {name} sets {field}, {FIELD_REASONS.get(field, 'which a release may not set')}")
+        container_name = spec.get("container_name")
+        if container_name not in spec_for["containers"]:
+            refuse(f"service {name} sets container_name {show(container_name)}; the {stack} stack names its containers {' or '.join(sorted(spec_for['containers']))}")
+        user = spec.get("user")
+        if user is not None:
+            uid = str(user).split(":", 1)[0].strip()
+            if uid in {"", "root"} or (uid.isdigit() and int(uid) == 0):
+                refuse(f"service {name} sets user {show(user)}; a release may not name root")
+        for option in spec.get("security_opt") or []:
+            if str(option) not in SAFE_SECURITY_OPTS:
+                refuse(f"service {name} sets security_opt {show(option)}; a release may only add no-new-privileges")
+        image = str(spec.get("image", ""))
+        if repository(image) in app_repos:
+            pass
+        elif not PINNED.match(image):
+            refuse(f"service {name} runs {show(image)}, which is neither an app image from /etc/infra/host.env nor pinned to a tag and a digest")
+        for entry in spec.get("env_file") or []:
+            path = entry.get("path") if isinstance(entry, dict) else entry
+            if os.path.normpath(str(path)) not in bundle_env_files:
+                refuse(f"service {name} reads env_file {show(path)}; the {stack} stack may only read {allowed_env_list} from the bundle")
+        environment = spec.get("environment") or {}
+        keys = environment.keys() if isinstance(environment, dict) else [str(item).split("=", 1)[0] for item in environment]
+        for key in sorted(keys):
+            if key in foreign_env_keys:
+                refuse(f"service {name} reads env_file {show(foreign_env_keys[key])}; the {stack} stack may only read {allowed_env_list} from the bundle")
+        labels = spec.get("labels") or {}
+        labels = labels.keys() if isinstance(labels, dict) else [str(item).split("=", 1)[0] for item in labels]
+        if not spec_for["labels_allowed"]:
+            for label in sorted(labels):
+                if HOST_LABELS.match(label):
+                    refuse(f"service {name} sets the label {label}; the database is never routed, auto-updated or auto-healed")
+        for mount in spec.get("volumes") or []:
+            kind = mount.get("type") if isinstance(mount, dict) else None
+            if kind in {"volume", "tmpfs"}:
+                continue
+            source = str(mount.get("source", "")) if isinstance(mount, dict) else str(mount)
+            if "docker.sock" in source:
+                refuse(f"service {name} mounts the Docker socket {show(source)}")
+            refuse(f"service {name} has a {show(kind)} mount of {show(source)}; a release may only use its named volumes and tmpfs")
+
+    print(f"{len(services)} service(s) in the {stack} stack, no privileged settings, host ports, bind mounts or Docker socket")
+
+
+main()

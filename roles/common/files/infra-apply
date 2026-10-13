@@ -1,0 +1,624 @@
+#!/bin/bash
+# Host side of a release. The deploy user reaches it only through
+# infra-deploy-gate and sudo, with one of two verbs:
+#
+#   infra-apply release < bundle.tgz   validate, install, start and verify a release
+#   infra-apply status                 print the releases and the images that run
+#
+# A release is checked completely (size, file list, checksums, env files,
+# release.env, image references, the compose model of each stack) before
+# anything changes. It is then installed as /opt/infra/releases/<id>, the
+# stacks start in order database, provision.sql, portfolio, hypernova, and the
+# release is verified (containers healthy, Traefik routes, socket proxies)
+# before it is marked .verified. `previous` only ever points at a verified
+# release. Output lines start with "infra-apply: "; failures with
+# "infra-apply: FAILED: ". Never prints a secret.
+set -euo pipefail
+umask 077
+
+if [ -n "${SUDO_USER-}" ]; then
+  unset INFRA_APPLY_STACK_DIR INFRA_APPLY_EDGE_DIR INFRA_APPLY_HOST_FILE INFRA_APPLY_GUARD INFRA_APPLY_DOCKER_CONFIG \
+    INFRA_APPLY_WAIT_SECONDS INFRA_APPLY_ROUTE_WAIT_SECONDS INFRA_APPLY_POLL_SECONDS
+fi
+
+readonly stack_dir="${INFRA_APPLY_STACK_DIR:-/opt/infra}"
+readonly edge_dir="${INFRA_APPLY_EDGE_DIR:-/opt/edge}"
+readonly host_file="${INFRA_APPLY_HOST_FILE:-/etc/infra/host.env}"
+readonly guard="${INFRA_APPLY_GUARD:-/usr/local/libexec/infra-compose-guard}"
+readonly wait_seconds="${INFRA_APPLY_WAIT_SECONDS:-600}"
+readonly route_wait_seconds="${INFRA_APPLY_ROUTE_WAIT_SECONDS:-60}"
+readonly poll_seconds="${INFRA_APPLY_POLL_SECONDS:-5}"
+readonly max_bundle_bytes=1048576
+readonly max_file_bytes=262144
+readonly releases_dir="$stack_dir/releases"
+readonly release_id_pattern='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$'
+readonly repo_pattern='^[a-z0-9.-]+(/[a-z0-9._-]+)+$'
+readonly stacks=(database portfolio hypernova)
+readonly bundle_files=(
+  manifest.sha256 release.env ghcr.env
+  database/docker-compose.yml database/postgres.env database/provision.sql
+  portfolio/docker-compose.yml portfolio/.env portfolio/portfolio.env
+  hypernova/docker-compose.yml hypernova/.env hypernova/provider.env
+)
+readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env)
+readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env manifest.sha256)
+# image key, the env file that sets it, the host.env key naming its repository, its container
+readonly image_specs=(
+  "PORTFOLIO_IMAGE portfolio/.env PORTFOLIO_IMAGE_REPO portfolio"
+  "PROVIDER_IMAGE hypernova/.env HYPERNOVA_PROVIDER_IMAGE_REPO prizm-provider"
+  "WEB_IMAGE hypernova/.env HYPERNOVA_WEB_IMAGE_REPO prizm-web"
+)
+
+export DOCKER_CONFIG="${INFRA_APPLY_DOCKER_CONFIG:-/root/.docker}"
+
+declare -A repo_of=()
+origin_pull=0
+failure_hint=""
+work_dir=""
+
+log() {
+  printf 'infra-apply: %s\n' "$*"
+}
+
+fail() {
+  printf 'infra-apply: FAILED: %s\n' "$*" >&2
+  if [ -n "$failure_hint" ]; then
+    printf 'infra-apply: %s\n' "$failure_hint" >&2
+  fi
+  exit 1
+}
+
+cleanup() {
+  if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+    rm -rf "$work_dir"
+  fi
+}
+
+usage() {
+  printf 'usage: infra-apply release|status\n' >&2
+  exit 64
+}
+
+require_root() {
+  if [ -z "${INFRA_APPLY_STACK_DIR-}" ] && [ "$(id -u)" -ne 0 ]; then
+    fail "infra-apply must run as root"
+  fi
+}
+
+take_lock() {
+  [ -d "$stack_dir" ] || fail "$stack_dir does not exist; run provisioning first"
+  exec 9>"$stack_dir/.lock"
+  flock -n 9 || fail "another release or status is running"
+}
+
+host_value() {
+  local key="$1"
+  [ "$(grep -c "^$key=" "$host_file" || true)" -le 1 ] || fail "$host_file sets $key more than once; run provisioning"
+  sed -n "s/^$key=//p" "$host_file"
+}
+
+load_host() {
+  local spec key file repo_key container repo
+  [ -f "$host_file" ] || fail "$host_file does not exist; run provisioning"
+  for spec in "${image_specs[@]}"; do
+    read -r key file repo_key container <<<"$spec"
+    repo="$(host_value "$repo_key")"
+    [[ "$repo" =~ $repo_pattern ]] || fail "$host_file $repo_key is not an image repository; run provisioning"
+    repo_of[$key]="$repo"
+  done
+  origin_pull="$(host_value ORIGIN_PULL)"
+  origin_pull="${origin_pull:-0}"
+  [[ "$origin_pull" =~ ^[01]$ ]] || fail "$host_file ORIGIN_PULL must be 0 or 1; run provisioning"
+}
+
+compose_in() {
+  local dir="$1"
+  shift
+  docker compose --file "$dir/docker-compose.yml" --project-directory "$dir" "$@"
+}
+
+allowed_name() {
+  local name="$1" wanted
+  for wanted in "${bundle_files[@]}"; do
+    [ "$name" != "$wanted" ] || return 0
+  done
+  return 1
+}
+
+untouched() {
+  fail "$1; the running release is untouched"
+}
+
+read_bundle() {
+  local dest="$1" size
+  head -c "$((max_bundle_bytes + 1))" >"$dest"
+  size="$(wc -c <"$dest")"
+  [ "$size" -gt 0 ] || untouched "no bundle arrived on stdin"
+  [ "$size" -le "$max_bundle_bytes" ] || untouched "the bundle is larger than $max_bundle_bytes bytes"
+}
+
+validate_listing() {
+  local bundle="$1" names="$2" types="$3" entry type name wanted
+  LC_ALL=C tar -tzf "$bundle" >"$names" 2>/dev/null || untouched "the bundle is not a gzip-compressed tar archive"
+  LC_ALL=C tar -tvzf "$bundle" 2>/dev/null | cut -c1 >"$types" || untouched "the bundle is not a gzip-compressed tar archive"
+  [ "$(wc -l <"$names")" -eq "$(wc -l <"$types")" ] || untouched "the bundle listing is inconsistent"
+  [ -z "$(LC_ALL=C sort "$names" | uniq -d)" ] || untouched "the bundle names an entry more than once"
+  while IFS= read -r entry; do
+    type="${entry:0:1}"
+    name="${entry:2}"
+    allowed_name "$name" || untouched "the bundle holds an unexpected entry: $(printf '%q' "$name")"
+    [ "$type" = - ] || untouched "the bundle entry $(printf '%q' "$name") is not a regular file"
+  done < <(paste -d ' ' "$types" "$names")
+  for wanted in "${bundle_files[@]}"; do
+    grep -qxF -- "$wanted" "$names" || untouched "the bundle is missing $wanted"
+  done
+}
+
+extract_bundle() {
+  local bundle="$1" dest="$2" expected="$3" found="$4" other
+  mkdir "$dest"
+  if ! (
+    ulimit -f "$((max_file_bytes / 1024))"
+    LC_ALL=C tar -xzf "$bundle" -C "$dest" --no-same-owner --no-same-permissions --keep-old-files
+  ) 2>/dev/null; then
+    untouched "the bundle did not extract cleanly"
+  fi
+  other="$(cd "$dest" && find . -mindepth 1 ! -type f ! \( -type d \( -path ./database -o -path ./portfolio -o -path ./hypernova \) \) -print -quit)"
+  [ -z "$other" ] || untouched "the bundle extracted to something other than regular files: $(printf '%q' "${other#./}")"
+  [ -z "$(find "$dest" -type f -size +"${max_file_bytes}c" -print -quit)" ] || untouched "a file in the bundle is larger than $max_file_bytes bytes"
+  (cd "$dest" && find . -mindepth 1 -type f -printf '%P\n' | LC_ALL=C sort) >"$found"
+  cmp -s "$expected" "$found" || untouched "the extracted files differ from the bundle listing"
+}
+
+validate_manifest() {
+  local dir="$1" found="$2" listed="$3" line path
+  : >"$listed"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[0-9a-f]{64}\ \ (.+)$ ]] || untouched "manifest.sha256 has a malformed line"
+    path="${BASH_REMATCH[1]}"
+    if [ "$path" = manifest.sha256 ] || ! allowed_name "$path"; then
+      untouched "manifest.sha256 names an unexpected file: $(printf '%q' "$path")"
+    fi
+    printf '%s\n' "$path" >>"$listed"
+  done <"$dir/manifest.sha256"
+  grep -vxF manifest.sha256 "$found" | cmp -s - <(LC_ALL=C sort "$listed") ||
+    untouched "manifest.sha256 does not list exactly the files in the bundle"
+  (cd "$dir" && LC_ALL=C sha256sum --check --strict --quiet manifest.sha256) >/dev/null 2>&1 ||
+    untouched "a file in the bundle does not match its manifest.sha256 checksum"
+}
+
+validate_env_files() {
+  local dir="$1" file line number
+  for file in "${env_files[@]}"; do
+    number=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      number=$((number + 1))
+      if [ -n "$line" ] && ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+        untouched "$file line $number is not KEY=value"
+      fi
+    done <"$dir/$file"
+  done
+  if ! grep -qE '^GHCR_USERNAME=[^[:space:]]+$' "$dir/ghcr.env" || ! grep -qE '^GHCR_TOKEN=[^[:space:]]+$' "$dir/ghcr.env" ||
+    [ "$(grep -c . "$dir/ghcr.env")" -ne 2 ]; then
+    untouched "ghcr.env must set exactly GHCR_USERNAME and GHCR_TOKEN"
+  fi
+}
+
+validate_release_env() {
+  local dir="$1" mode commit spec key file repo_key container value repo digests=0
+  if [ "$(grep -c . "$dir/release.env")" -ne 2 ] || [ "$(grep -cE '^RELEASE_(MODE|COMMIT)=' "$dir/release.env")" -ne 2 ] ||
+    [ "$(cut -d= -f1 "$dir/release.env" | grep . | LC_ALL=C sort -u | wc -l)" -ne 2 ]; then
+    untouched "release.env must set exactly RELEASE_MODE and RELEASE_COMMIT"
+  fi
+  mode="$(sed -n 's/^RELEASE_MODE=//p' "$dir/release.env")"
+  commit="$(sed -n 's/^RELEASE_COMMIT=//p' "$dir/release.env")"
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || untouched "release.env RELEASE_COMMIT is not a full commit sha"
+  case "$mode" in
+    latest | pinned) ;;
+    *) untouched "release.env RELEASE_MODE must be latest or pinned" ;;
+  esac
+  for spec in "${image_specs[@]}"; do
+    read -r key file repo_key container <<<"$spec"
+    repo="${repo_of[$key]}"
+    [ "$(grep -c "^$key=" "$dir/$file")" -eq 1 ] || untouched "$file must set $key exactly once"
+    value="$(sed -n "s/^$key=//p" "$dir/$file")"
+    if [ "$(image_repository "$value")" != "$repo" ]; then
+      untouched "$file $key runs $(printf '%q' "$value"), not an image of $repo (from $host_file)"
+    fi
+    if [ "$value" = "$repo:latest" ]; then
+      continue
+    fi
+    if [ "$mode" = latest ]; then
+      untouched "$file $key must be $repo:latest in a latest release"
+    fi
+    if ! [[ "$value" =~ ^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]]; then
+      untouched "$file $key must be $repo:latest or $repo:<tag>@sha256:<digest> in a pinned release"
+    fi
+    digests=$((digests + 1))
+  done
+  if [ "$mode" = pinned ] && [ "$digests" -eq 0 ]; then
+    untouched "a pinned release must pin at least one image to a digest"
+  fi
+}
+
+image_repository() {
+  local ref="${1%@*}"
+  if [[ "${ref##*/}" == *:* ]]; then
+    ref="${ref%:*}"
+  fi
+  printf '%s\n' "$ref"
+}
+
+stack_repos() {
+  case "$1" in
+    portfolio) printf '%s\n' "${repo_of[PORTFOLIO_IMAGE]}" ;;
+    hypernova) printf '%s\n' "${repo_of[PROVIDER_IMAGE]}" "${repo_of[WEB_IMAGE]}" ;;
+  esac
+}
+
+guard_stacks() {
+  local dir="$1" stack guarded
+  local -a repos
+  for stack in "${stacks[@]}"; do
+    if ! compose_in "$dir/$stack" config --no-env-resolution --format json >"$dir.$stack.json" 2>"$dir.$stack.err"; then
+      untouched "docker compose rejects $stack/docker-compose.yml: $(tail -n 3 "$dir.$stack.err" | tr '\n' ' ')"
+    fi
+    mapfile -t repos < <(stack_repos "$stack")
+    if ! guarded="$(python3 -I "$guard" "$dir.$stack.json" "$dir/$stack" "$stack" "${repos[@]}")"; then
+      untouched "$stack/${guarded:-docker-compose.yml: the compose model could not be checked}"
+    fi
+    log "compose model accepted: $guarded"
+  done
+}
+
+registry_login() {
+  local dir="$1" user token
+  user="$(sed -n 's/^GHCR_USERNAME=//p' "$dir/ghcr.env")"
+  token="$(sed -n 's/^GHCR_TOKEN=//p' "$dir/ghcr.env")"
+  if ! printf '%s' "$token" | docker login ghcr.io --username "$user" --password-stdin >/dev/null 2>&1; then
+    untouched "docker login to ghcr.io was refused; check the GHCR_USERNAME variable and the GHCR_TOKEN secret"
+  fi
+}
+
+set_modes() {
+  local dir="$1" file
+  find "$dir" -type d -exec chmod 0755 {} +
+  find "$dir" -type f -exec chmod 0644 {} +
+  for file in "${secret_files[@]}"; do
+    chmod 0600 "$dir/$file"
+  done
+}
+
+prepare() {
+  local bundle="$1" dest="$2"
+  validate_listing "$bundle" "$dest.names" "$dest.types"
+  LC_ALL=C sort "$dest.names" >"$dest.expected"
+  extract_bundle "$bundle" "$dest" "$dest.expected" "$dest.found"
+  validate_manifest "$dest" "$dest.found" "$dest.listed"
+  validate_env_files "$dest"
+  validate_release_env "$dest"
+  set_modes "$dest"
+  guard_stacks "$dest"
+  log "bundle accepted: $(grep -c . "$dest.expected") files, manifest checksums match"
+}
+
+release_summary() {
+  local dir="$1" mode="" spec key file repo_key container
+  local -a pinned=()
+  [ -f "$dir/release.env" ] && mode="$(sed -n 's/^RELEASE_MODE=//p' "$dir/release.env")"
+  case "$mode" in
+    pinned)
+      for spec in "${image_specs[@]}"; do
+        read -r key file repo_key container <<<"$spec"
+        if grep -qE "^$key=.*@sha256:" "$dir/$file" 2>/dev/null; then
+          pinned+=("$key")
+        fi
+      done
+      printf 'pinned (%s), auto-updates paused for them\n' "${pinned[*]}"
+      ;;
+    latest) printf 'following :latest, auto-updates on\n' ;;
+    *) printf 'no release metadata\n' ;;
+  esac
+}
+
+link_release() {
+  local name="$1" id="$2"
+  ln -sfn "releases/$id" "$stack_dir/.$name.new"
+  mv -Tf "$stack_dir/.$name.new" "$stack_dir/$name"
+}
+
+linked_release() {
+  local name="$1" target id
+  [ -L "$stack_dir/$name" ] || return 0
+  target="$(readlink "$stack_dir/$name")"
+  id="${target#releases/}"
+  if ! [[ "$id" =~ $release_id_pattern ]] || [ ! -d "$releases_dir/$id" ]; then
+    fail "$stack_dir/$name points at $(printf '%q' "$target"), which is not a release"
+  fi
+  printf '%s\n' "$id"
+}
+
+prune_releases() {
+  local keep_current="$1" keep_previous="$2" dir id
+  for dir in "$releases_dir"/*; do
+    [ -d "$dir" ] || continue
+    id="${dir##*/}"
+    if [ "$id" != "$keep_current" ] && [ "$id" != "$keep_previous" ]; then
+      rm -rf "$dir"
+    fi
+  done
+}
+
+# Prints psql's error lines with every quoted literal masked, so a failed
+# ALTER ROLE never echoes a password.
+provision_errors() {
+  grep -E 'ERROR|FATAL|psql:' "$1" | sed -E "s/'[^']*'/'***'/g" | tail -n 3 | tr '\n' ' '
+}
+
+provision_database() {
+  local release="$1" out="$work_dir/provision.out"
+  if ! docker exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d postgres <"$release/database/provision.sql" >"$out" 2>&1; then
+    fail "before the app stacks changed, provision.sql failed (the database runs the new definition; portfolio and hypernova still run the previous one): $(provision_errors "$out")"
+  fi
+  log "database roles, passwords and grants are in place"
+}
+
+wait_for_stacks() {
+  local deadline=$((SECONDS + wait_seconds)) stack name status policy health
+  local -a ids pending
+  while :; do
+    pending=()
+    ids=()
+    for stack in "${stacks[@]}"; do
+      mapfile -t -O "${#ids[@]}" ids < <(compose_in "$stack_dir/current/$stack" ps --all --quiet)
+    done
+    [ "${#ids[@]}" -gt 0 ] || fail "the stacks have no containers"
+    while read -r name status policy health; do
+      name="${name#/}"
+      if [ "$policy" = no ] || [ -z "$policy" ]; then
+        continue
+      fi
+      if [ "$status" != running ]; then
+        pending+=("$name:$status")
+      elif [ "$health" != none ] && [ "$health" != healthy ]; then
+        pending+=("$name:$health")
+      fi
+    done < <(docker inspect --format '{{.Name}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${ids[@]}")
+    if [ "${#pending[@]}" -eq 0 ]; then
+      log "every container is running and healthy"
+      return 0
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      fail "not ready after ${wait_seconds}s: ${pending[*]}"
+    fi
+    sleep "$poll_seconds"
+  done
+}
+
+route_targets() {
+  local release="$1" apex www web
+  apex="$(sed -n 's/^APEX_DOMAIN=//p' "$release/portfolio/.env")"
+  www="$(sed -n 's/^WWW_DOMAIN=//p' "$release/portfolio/.env")"
+  web="$(sed -n 's/^WEB_DOMAIN=//p' "$release/hypernova/.env")"
+  printf '%s\n' "$apex /" "$www /" "$web /" "$web /api/"
+}
+
+check_routes() {
+  local release="$1" target host path code rc deadline unproven=""
+  local -a targets hosts=()
+  mapfile -t targets < <(route_targets "$release")
+  for target in "${targets[@]}"; do
+    host="${target% *}"
+    path="${target#* }"
+    [[ "$host" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected host name $(printf '%q' "$host") in the release's .env files"
+    deadline=$((SECONDS + route_wait_seconds))
+    while :; do
+      rc=0
+      code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 --resolve "$host:443:127.0.0.1" "https://$host$path")" || rc=$?
+      if [ "$code" = 403 ]; then
+        break
+      fi
+      if [ "$origin_pull" = 1 ] && [ "${code:-000}" = 000 ] && { [ "$rc" = 35 ] || [ "$rc" = 56 ]; }; then
+        unproven="$unproven $host$path"
+        break
+      fi
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        fail "Traefik answered ${code:-000} for $host$path on the host itself, expected 403 from the cloudflare-only allowlist (404 means no router serves $host$path)"
+      fi
+      sleep "$poll_seconds"
+    done
+    hosts+=("$host$path")
+  done
+  if [ -n "$unproven" ]; then
+    log "origin pull on: route presence not proven locally for${unproven}"
+  fi
+  log "Traefik routes ${hosts[*]} and keeps them behind the cloudflare-only allowlist"
+}
+
+container_state() {
+  docker container inspect --format '{{.State.Running}} {{.State.Restarting}}' "$1" 2>/dev/null || true
+}
+
+check_proxy() {
+  local proxy="$1" client="$2" started blocked
+  [ "$(container_state "$proxy")" = "true false" ] || fail "$proxy is not running, so $client has no Docker API; run provisioning"
+  [ "$(container_state "$client")" = "true false" ] || fail "$client is not running; run provisioning"
+  started="$(docker container inspect --format '{{.State.StartedAt}}' "$client")"
+  blocked="$(docker logs --since "$started" "$proxy" 2>&1 | grep 'blocked request' || true)"
+  if [ -n "$blocked" ]; then
+    fail "$proxy refused Docker API calls $client made: $(tail -n 3 <<<"$blocked" | tr '\n' ' ')"
+  fi
+}
+
+check_socket_clients() {
+  local started errors
+  check_proxy edge-socket-proxy edge-traefik
+  check_proxy watchtower-socket-proxy watchtower
+  check_proxy autoheal-socket-proxy autoheal
+  started="$(docker container inspect --format '{{.State.StartedAt}}' watchtower)"
+  errors="$(docker logs --since "$started" watchtower 2>&1 |
+    grep -Ei 'too old|minimum supported API version|Cannot connect to the Docker daemon|Error response from daemon: (Forbidden|Method Not Allowed)' || true)"
+  if [ -n "$errors" ]; then
+    fail "Watchtower cannot use the Docker API: $(tail -n 3 <<<"$errors" | tr '\n' ' ')"
+  fi
+  log "Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls"
+}
+
+# Prints "<ref>|<digest or unknown>|<created or unknown>" for a running container.
+container_image() {
+  local name="$1" info ref image_id inspect created digest repo
+  info="$(docker container inspect --format '{{.Config.Image}}|{{.Image}}' "$name" 2>/dev/null)" || return 1
+  IFS='|' read -r ref image_id <<<"$info"
+  repo="$(image_repository "$ref")"
+  inspect="$(docker image inspect --format '{{.Created}}{{range .RepoDigests}} {{.}}{{end}}' "$image_id" 2>/dev/null || true)"
+  created="${inspect%% *}"
+  digest="$(tr ' ' '\n' <<<"${inspect#* }" | sed -n "s|^$repo@\\(sha256:[0-9a-f]\\{64\\}\\)$|\\1|p" | head -n 1)"
+  printf '%s|%s|%s\n' "$ref" "${digest:-unknown}" "${created:-unknown}"
+}
+
+record_running_images() {
+  local id="$1" spec key file repo_key container line ref digest created
+  : >"$releases_dir/$id/running-images.env"
+  for spec in "${image_specs[@]}"; do
+    read -r key file repo_key container <<<"$spec"
+    if line="$(container_image "$container")"; then
+      IFS='|' read -r ref digest created <<<"$line"
+      if [ "$digest" != unknown ]; then
+        printf '%s=%s@%s\n' "$container" "$(image_repository "$ref")" "$digest" >>"$releases_dir/$id/running-images.env"
+        continue
+      fi
+    fi
+    log "no registry digest is known for $container; a rollback to this release's image needs an explicit sha256 digest"
+  done
+  chmod 0644 "$releases_dir/$id/running-images.env"
+}
+
+verify_release() {
+  local id="$1"
+  wait_for_stacks
+  check_routes "$stack_dir/current"
+  check_socket_clients
+  record_running_images "$id"
+  touch "$releases_dir/$id/.verified"
+}
+
+install() {
+  local bundle="$1" prepared="$2" id current previous last_verified release stack
+  id="$(date -u +%Y%m%dT%H%M%SZ)-$(sha256sum "$bundle" | cut -c1-12)"
+  [ ! -e "$releases_dir/$id" ] || untouched "release $id already exists"
+  current="$(linked_release current)"
+  previous="$(linked_release previous)"
+  last_verified=""
+  if [ -n "$current" ] && [ -e "$releases_dir/$current/.verified" ]; then
+    last_verified="$current"
+  elif [ -n "$previous" ]; then
+    last_verified="$previous"
+  fi
+  mv -T "$prepared" "$releases_dir/$id"
+  release="$releases_dir/$id"
+  log "pulling images"
+  for stack in "${stacks[@]}"; do
+    if ! compose_in "$release/$stack" pull --quiet; then
+      rm -rf "$release"
+      untouched "pulling the $stack images failed"
+    fi
+  done
+
+  failure_hint="release $id is installed but did not come up cleanly; run the Deploy workflow with action rollback to go back to a version that worked${last_verified:+ (the last verified release was $last_verified: $(release_summary "$releases_dir/$last_verified"))}"
+  log "starting the database"
+  compose_in "$release/database" up -d --wait --remove-orphans || fail "before the app stacks changed, the database did not come up healthy"
+  provision_database "$release"
+
+  if [ -n "$current" ] && [ -e "$releases_dir/$current/.verified" ]; then
+    previous="$current"
+    link_release previous "$previous"
+  fi
+  link_release current "$id"
+  prune_releases "$id" "$previous"
+  for stack in portfolio hypernova; do
+    log "starting $stack"
+    compose_in "$stack_dir/current/$stack" up -d --remove-orphans || fail "$stack did not start"
+  done
+  verify_release "$id"
+  log "RELEASE OK: $id is current, $(release_summary "$release")${previous:+; $previous is kept as the previous release}"
+}
+
+do_release() {
+  require_root
+  load_host
+  take_lock
+  [ -f "$edge_dir/dynamic/dynamic.yml" ] || fail "$edge_dir/dynamic/dynamic.yml does not exist, so no route has the cloudflare-only allowlist; run provisioning first"
+  mkdir -p "$releases_dir"
+  work_dir="$(mktemp -d "$stack_dir/.incoming.XXXXXX")"
+  trap cleanup EXIT
+  read_bundle "$work_dir/incoming.tgz"
+  prepare "$work_dir/incoming.tgz" "$work_dir/release"
+  registry_login "$work_dir/release"
+  install "$work_dir/incoming.tgz" "$work_dir/release"
+}
+
+release_line() {
+  local name="$1" id="$2"
+  if [ -e "$releases_dir/$id/.verified" ]; then
+    log "$name release: $id (verified), $(release_summary "$releases_dir/$id")"
+  else
+    log "$name release: $id (not verified), $(release_summary "$releases_dir/$id")"
+  fi
+}
+
+do_status() {
+  local current previous spec key file repo_key container line ref digest created id entry stack
+  local -A seen=()
+  require_root
+  load_host
+  take_lock
+  current="$(linked_release current)"
+  previous="$(linked_release previous)"
+  if [ -n "$current" ]; then
+    release_line current "$current"
+  else
+    log "no release is installed"
+  fi
+  if [ -n "$previous" ]; then
+    release_line previous "$previous"
+  else
+    log "previous release: none"
+  fi
+  for spec in "${image_specs[@]}"; do
+    read -r key file repo_key container <<<"$spec"
+    if line="$(container_image "$container")"; then
+      IFS='|' read -r ref digest created <<<"$line"
+      log "image $container ref=$ref digest=$digest created=$created"
+    else
+      log "image $container not running"
+    fi
+  done
+  for spec in "${image_specs[@]}"; do
+    read -r key file repo_key container <<<"$spec"
+    seen=()
+    while read -r digest created; do
+      [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || continue
+      [ -z "${seen[$digest]+set}" ] || continue
+      seen[$digest]=1
+      log "known ${repo_of[$key]} digest=$digest created=$created"
+    done < <(docker image ls --digests --no-trunc --format '{{.Digest}} {{.CreatedAt}}' "${repo_of[$key]}" 2>/dev/null || true)
+  done
+  for id in "$current" "$previous"; do
+    [ -n "$id" ] && [ -f "$releases_dir/$id/running-images.env" ] || continue
+    while IFS= read -r entry; do
+      [ -n "$entry" ] && log "recorded $id $entry"
+    done <"$releases_dir/$id/running-images.env"
+  done
+  if [ -n "$current" ]; then
+    for stack in "${stacks[@]}"; do
+      compose_in "$stack_dir/current/$stack" ps --all --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}' || true
+    done
+  fi
+}
+
+[ "$#" -eq 1 ] || usage
+case "$1" in
+  release) do_release ;;
+  status) do_status ;;
+  *) usage ;;
+esac

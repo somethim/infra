@@ -1,7 +1,7 @@
 ---
-# The release gate (/usr/local/sbin/infra-deploy-gate) and infra-apply are
-# installed by the release path (plans/004). Until then the forced command has
-# nothing to run, so the deploy key can log in but do nothing.
+# The deploy user is the release path's only way in: its one key is forced to
+# /usr/local/sbin/infra-deploy-gate, which runs `sudo -n infra-apply release`
+# or `... status` and nothing else.
 - name: Create the deploy user with a locked password and no supplementary groups
   ansible.builtin.user:
     name: "{{ deploy_user }}"
@@ -23,6 +23,29 @@
   loop:
     - /opt/infra
     - /opt/infra/releases
+
+# copy does not create parent directories, and /usr/local/libexec may not exist.
+- name: Create the directory for the compose guard
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the release gate, the release script and the compose guard
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: infra-deploy-gate, dest: /usr/local/sbin/infra-deploy-gate }
+    - { src: infra-apply, dest: /usr/local/sbin/infra-apply }
+    - { src: infra-compose-guard, dest: /usr/local/libexec/infra-compose-guard }
+  loop_control:
+    label: "{{ item.dest }}"
 
 - name: Allow the deploy user to run only the release script as root
   ansible.builtin.copy:

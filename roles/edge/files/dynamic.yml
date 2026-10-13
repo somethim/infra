@@ -3,7 +3,7 @@
 # is addressed elsewhere as name@file, e.g. cloudflare-only@file.
 #
 # cloudflare-only restricts a router to Cloudflare's edge. It exists because
-# stacks/portfolio trusts the Cf-Connecting-Ip header for rate-limit keying
+# the portfolio stack trusts the Cf-Connecting-Ip header for rate-limit keying
 # (CLIENT_IP_SOURCE=Cloudflare, see crates/portfolio/src/server/mod.rs's
 # ClientIpSource::CloudflareConnectingIp). Without this, that header is just
 # a request header like any other: anyone who finds the origin's real IP can

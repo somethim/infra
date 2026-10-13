@@ -1,85 +1,286 @@
 name: Deploy
 
-# The one deployer. See docs/deploying.md for the secrets and the tag system.
+# The release path. The runner renders the bundle from the production
+# Environment's secrets (release.yml via build-bundle.sh), joins the tailnet as
+# an ephemeral tag:infra-ci node and streams the bundle to the forced-command
+# deploy user, which can only run `release` or `status` (infra-deploy-gate).
+# Provisioning is separate: provision.yml from the owner's machine.
+# See RUNBOOK.md.
 
 on:
   workflow_dispatch:
     inputs:
-      tags:
-        description: "Ansible tags to limit the run. Blank runs everything. `host` applies
-          host-level changes only and touches no stack — which is how you prove a change to
-          this workflow works without redeploying the sites."
+      action:
+        description: "release renders the bundle and brings the stacks up on :latest; resume is a release that
+          follows :latest again after a rollback; rollback pins app images to digests (auto-updates pause for
+          the pinned ones); status prints the releases and the images that run."
+        type: choice
+        options:
+          - release
+          - resume
+          - rollback
+          - status
+        required: true
+        default: release
+      portfolio:
+        description: "rollback only: previous, current, latest, a 40-character commit sha or sha256:<digest>."
+        type: string
         required: false
-        default: ""
+        default: previous
+      hypernova_provider:
+        description: "rollback only: previous, current, latest or sha256:<digest>."
+        type: string
+        required: false
+        default: previous
+      hypernova_web:
+        description: "rollback only: previous, current, latest or sha256:<digest>."
+        type: string
+        required: false
+        default: previous
+      dry_run:
+        description: "rollback only: print the resolved pins and stop before releasing."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: deploy
-  cancel-in-progress: false
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - name: Refuse any branch but master and any malformed input
+        env:
+          ACTION: ${{ inputs.action }}
+          PORTFOLIO: ${{ inputs.portfolio }}
+          HYPERNOVA_PROVIDER: ${{ inputs.hypernova_provider }}
+          HYPERNOVA_WEB: ${{ inputs.hypernova_web }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error::Run Deploy from master (Use workflow from: master), not ${GITHUB_REF}."
+            exit 1
+          fi
+          case "$ACTION" in release | resume | rollback | status) ;; *) echo "::error::action must be release, resume, rollback or status."; exit 1 ;; esac
+          if [ "$ACTION" != rollback ]; then
+            if [ "$PORTFOLIO" != previous ] || [ "$HYPERNOVA_PROVIDER" != previous ] || [ "$HYPERNOVA_WEB" != previous ] || [ "$DRY_RUN" = true ]; then
+              echo "::error::portfolio, hypernova_provider, hypernova_web and dry_run only apply to rollback; leave them at their defaults for ${ACTION}."
+              exit 1
+            fi
+          fi
+          if ! [[ "$PORTFOLIO" =~ ^(latest|current|previous|[0-9a-f]{40}|sha256:[0-9a-f]{64})$ ]]; then
+            echo "::error::portfolio must be previous, current, latest, a 40-character commit sha or sha256:<64 hex>."
+            exit 1
+          fi
+          for value in "$HYPERNOVA_PROVIDER" "$HYPERNOVA_WEB"; do
+            if ! [[ "$value" =~ ^(latest|current|previous|sha256:[0-9a-f]{64})$ ]]; then
+              echo "::error::hypernova_provider and hypernova_web must be previous, current, latest or sha256:<64 hex>."
+              exit 1
+            fi
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Refuse any deploy account but the forced-command one
+        env:
+          SERVER_USER: ${{ vars.SERVER_USER }}
+        run: |
+          set -euo pipefail
+          deploy_user="${SERVER_USER:-deploy}"
+          admin_user="$(sed -n 's/^admin_user: *//p' roles/common/defaults/main.yml)"
+          if [ -z "$admin_user" ]; then
+            echo "::error::admin_user not found in roles/common/defaults/main.yml"; exit 1
+          fi
+          case "$deploy_user" in
+            root | admin | "$admin_user")
+              echo "::error::SERVER_USER is ${deploy_user}. It must be the forced-command deploy account (deploy by default), never root or ${admin_user}; unset it (RUNBOOK.md, \"What you need\")."
+              exit 1
+              ;;
+          esac
+          if ! [[ "$deploy_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            echo "::error::SERVER_USER is not a valid account name."; exit 1
+          fi
+          echo "DEPLOY_USER=${deploy_user}" >>"$GITHUB_ENV"
 
       - name: Install Ansible + jq
+        if: inputs.action != 'status'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ansible jq
 
-      - name: Build extra-vars file from secrets
+      - name: Write the deploy key
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "::error::SSH_PRIVATE_KEY is not set (RUNBOOK.md, \"New CI deploy key\")."; exit 1
+          fi
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/deploy_key"
+          chmod 600 "${RUNNER_TEMP}/deploy_key"
+
+      - name: Join the tailnet, the only way SSH reaches the server
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        with:
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:infra-ci
+
+      - name: Pin the server's host key
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          SERVER_SSH_HOST: ${{ vars.SERVER_SSH_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SERVER_SSH_HOST" ]; then
+            echo "::error::The SERVER_SSH_HOST variable is not set. Set it to the server's tailnet name, infra-host (RUNBOOK.md, \"What you need\")."
+            exit 1
+          fi
+          if [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::The SSH_KNOWN_HOSTS secret is not set. Set it to the server's verified host key line (RUNBOOK.md, \"Record the host key\")."
+            exit 1
+          fi
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "${RUNNER_TEMP}/known_hosts"
+          chmod 600 "${RUNNER_TEMP}/known_hosts"
+          if ! ssh-keygen -F "$SERVER_SSH_HOST" -f "${RUNNER_TEMP}/known_hosts" >/dev/null; then
+            echo "::error::SSH_KNOWN_HOSTS has no key for ${SERVER_SSH_HOST}. Its line must name the tailnet name SERVER_SSH_HOST holds (RUNBOOK.md, \"Record the host key\")."
+            exit 1
+          fi
+          {
+            echo "SERVER_SSH_HOST=${SERVER_SSH_HOST}"
+            echo "SSH_OPTIONS=-T -i ${RUNNER_TEMP}/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${RUNNER_TEMP}/known_hosts -o ServerAliveInterval=30"
+          } >>"$GITHUB_ENV"
+
+      - name: Read the server's status
+        if: inputs.action == 'status' || inputs.action == 'rollback'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # SSH_OPTIONS is a word list
+          ssh $SSH_OPTIONS "${DEPLOY_USER}@${SERVER_SSH_HOST}" status </dev/null >"${RUNNER_TEMP}/status.txt"
+          cat "${RUNNER_TEMP}/status.txt"
+
+      - name: Log in to GHCR to read image digests
+        if: inputs.action == 'rollback'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          # The workflow token cannot read another owner's packages.
+          username: ${{ vars.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Resolve the rollback targets to digest-pinned images
+        if: inputs.action == 'rollback'
+        env:
+          PORTFOLIO: ${{ inputs.portfolio }}
+          HYPERNOVA_PROVIDER: ${{ inputs.hypernova_provider }}
+          HYPERNOVA_WEB: ${{ inputs.hypernova_web }}
+        run: |
+          set -euo pipefail
+          ./release-images.sh resolve "$PORTFOLIO" "$HYPERNOVA_PROVIDER" "$HYPERNOVA_WEB" <"${RUNNER_TEMP}/status.txt" >"${RUNNER_TEMP}/pins.env"
+          cat "${RUNNER_TEMP}/pins.env"
+
+      - name: Build extra-vars file from secrets
+        if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
+        env:
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           POSTGRES_SUPERUSER_PASSWORD: ${{ secrets.POSTGRES_SUPERUSER_PASSWORD }}
           PRIZM_DB_PASSWORD: ${{ secrets.PRIZM_DB_PASSWORD }}
-          HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
-          HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
           PORTFOLIO_DB_PASSWORD: ${{ secrets.PORTFOLIO_DB_PASSWORD }}
           PORTFOLIO_ADMIN_PASSWORD: ${{ secrets.PORTFOLIO_ADMIN_PASSWORD }}
           PORTFOLIO_RESEND_API_KEY: ${{ secrets.PORTFOLIO_RESEND_API_KEY }}
           PORTFOLIO_TOTP_ENCRYPTION_KEY: ${{ secrets.PORTFOLIO_TOTP_ENCRYPTION_KEY }}
-          PORTFOLIO_GOOGLE_CLIENT_ID: ${{ secrets.PORTFOLIO_GOOGLE_CLIENT_ID }}
+          PORTFOLIO_GOOGLE_CLIENT_ID: ${{ vars.PORTFOLIO_GOOGLE_CLIENT_ID }}
           PORTFOLIO_GOOGLE_CLIENT_SECRET: ${{ secrets.PORTFOLIO_GOOGLE_CLIENT_SECRET }}
+          HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
+          HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
             ghcr_token: env.GHCR_TOKEN,
             postgres_superuser_password: env.POSTGRES_SUPERUSER_PASSWORD,
             prizm_db_password: env.PRIZM_DB_PASSWORD,
-            hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
-            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
             portfolio_db_password: env.PORTFOLIO_DB_PASSWORD,
             portfolio_admin_password: env.PORTFOLIO_ADMIN_PASSWORD,
             portfolio_resend_api_key: env.PORTFOLIO_RESEND_API_KEY,
             portfolio_totp_encryption_key: env.PORTFOLIO_TOTP_ENCRYPTION_KEY,
             portfolio_google_client_id: env.PORTFOLIO_GOOGLE_CLIENT_ID,
-            portfolio_google_client_secret: env.PORTFOLIO_GOOGLE_CLIENT_SECRET
+            portfolio_google_client_secret: env.PORTFOLIO_GOOGLE_CLIENT_SECRET,
+            hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
+            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD
           }' > "${RUNNER_TEMP}/extra-vars.json"
+          chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 
-      - name: Write the deploy key
+      - name: Render the release bundle on the runner
+        if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ACTION: ${{ inputs.action }}
         run: |
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/deploy_key"
-          chmod 600 "${RUNNER_TEMP}/deploy_key"
+          set -euo pipefail
+          if [ "$ACTION" = rollback ]; then
+            ./build-bundle.sh --pin "${RUNNER_TEMP}/pins.env" "${RUNNER_TEMP}/extra-vars.json" "${RUNNER_TEMP}/bundle.tgz"
+          else
+            ./build-bundle.sh "${RUNNER_TEMP}/extra-vars.json" "${RUNNER_TEMP}/bundle.tgz"
+          fi
+          rm -f "${RUNNER_TEMP}/extra-vars.json"
 
-      - name: Run the deploy playbook
+      - name: Release on the server
+        if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # SSH_OPTIONS is a word list
+          ssh $SSH_OPTIONS "${DEPLOY_USER}@${SERVER_SSH_HOST}" release <"${RUNNER_TEMP}/bundle.tgz"
+
+      - name: Smoke-test the public hosts through Cloudflare
+        if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
         env:
-          ANSIBLE_HOST_KEY_CHECKING: "False"
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-          TAGS: ${{ inputs.tags }}
         run: |
-          ansible-playbook -i "${SERVER_HOST}," playbook.yml \
-            --private-key "${RUNNER_TEMP}/deploy_key" \
-            ${TAGS:+--tags "$TAGS"} \
-            -e "ansible_user=${SERVER_USER:-root}" \
-            -e "@${RUNNER_TEMP}/extra-vars.json"
+          set -euo pipefail
+          apex="$(sed -n 's/^apex_domain: *//p' production.yml)"
+          www="$(sed -n 's/^www_domain: *//p' production.yml)"
+          hypernova="$(sed -n 's/^hypernova_domain: *//p' production.yml)"
+          if [ -z "$apex" ] || [ -z "$www" ] || [ -z "$hypernova" ]; then
+            echo "::error::apex_domain, www_domain or hypernova_domain not found in production.yml"; exit 1
+          fi
+
+          # expect <url> <pattern for "code redirect_url">, retried for 5 minutes.
+          expect() {
+            local url="$1" want="$2" got=""
+            for _ in $(seq 1 30); do
+              got="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 20 "$url" || true)"
+              if [[ "$got" =~ $want ]]; then echo "OK ${got} ${url}"; return 0; fi
+              sleep 10
+            done
+            echo "::error::${url} answered '${got}' through Cloudflare after 5 minutes, expected ${want} (403: DNS-only record or allowlist mismatch; 526: no origin certificate; 52x: origin unreachable)."
+            return 1
+          }
+          expect "https://${apex}/api/health" '^2[0-9][0-9] '
+          expect "https://${www}/" "^301 https://${apex//./\\.}/"
+          expect "https://${hypernova}/" '^2[0-9][0-9] '
+          expect "https://${hypernova}/api/health" '^2[0-9][0-9] '
+
+          if [ -z "$SERVER_HOST" ]; then
+            echo "SERVER_HOST is not set; skipping the direct-origin check"
+            exit 0
+          fi
+          origin="$SERVER_HOST"
+          case "$origin" in *:*) origin="[$origin]" ;; esac
+          code="$(curl -sS -k -o /dev/null -w '%{http_code}' --max-time 20 \
+            --resolve "${apex}:443:${origin}" "https://${apex}/" 2>/dev/null || true)"
+          case "$code" in
+            403) echo "OK the origin refuses direct requests (403)" ;;
+            000) echo "OK the origin does not answer direct requests (refused, dropped or no client certificate)" ;;
+            *) echo "::error::A direct request to the origin for ${apex} answered ${code}, expected 403 from the cloudflare-only allowlist or no answer."; exit 1 ;;
+          esac
 
       - name: Remove the secrets from the runner
         if: always()
-        run: rm -f "${RUNNER_TEMP}/extra-vars.json" "${RUNNER_TEMP}/deploy_key"
+        run: |
+          rm -f "${RUNNER_TEMP}/extra-vars.json" "${RUNNER_TEMP}/bundle.tgz" "${RUNNER_TEMP}/deploy_key" "${RUNNER_TEMP}/known_hosts" \
+            "${RUNNER_TEMP}/pins.env" "${RUNNER_TEMP}/status.txt"

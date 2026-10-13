@@ -1,0 +1,15 @@
+#!/bin/bash
+# Forced command of the deploy user's only key (restrict,command=...). The CI
+# key may run exactly two verbs; anything else, including an interactive
+# login, scp or sftp, is refused before sudo is reached.
+set -euo pipefail
+
+case "${SSH_ORIGINAL_COMMAND-}" in
+  release|status)
+    exec sudo -n /usr/local/sbin/infra-apply "$SSH_ORIGINAL_COMMAND"
+    ;;
+  *)
+    printf 'infra-deploy-gate: refused; this key may only run one of: release, status\n' >&2
+    exit 64
+    ;;
+esac

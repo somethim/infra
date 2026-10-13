@@ -1,4 +1,6 @@
 # Portfolio stack. See docs/stacks.md.
+# .env (image and domains) only feeds interpolation; the container reads its
+# secrets from portfolio.env alone.
 name: portfolio
 
 services:
@@ -7,7 +9,9 @@ services:
     container_name: portfolio
     mem_limit: 768m
     restart: always
-    env_file: .env
+    security_opt:
+      - no-new-privileges:true
+    env_file: portfolio.env
     networks:
       - data
       - edge

@@ -1,0 +1,122 @@
+---
+# Renders the release bundle on the GitHub runner (never on the host).
+# build-bundle.sh runs it with the production Environment's secrets as extra
+# vars, then checksums and packs the directory it writes; the host checks the
+# bundle again before anything changes (roles/common/files/infra-apply).
+#
+#   ansible-playbook -i localhost, -c local release.yml -e @extra-vars.json -e bundle_dir=/abs/new/dir
+#
+# Each secret lands only in the env file of the container that reads it:
+#   database/postgres.env   superuser password      (postgresql)
+#   database/provision.sql  role passwords          (psql, run by infra-apply)
+#   portfolio/portfolio.env DSN, TOTP, admin, mail  (portfolio)
+#   hypernova/provider.env  DSN, session, admin     (prizm-provider)
+#   ghcr.env                registry login          (infra-apply's docker login)
+# The <stack>/.env files hold only image references and domains.
+- name: Render the infra release bundle on the runner
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - production.yml
+
+  vars:
+    env_file_unsafe: '[$"''`\\#\r\n]'
+    env_file_values:
+      - ghcr_username
+      - ghcr_token
+      - postgres_superuser_password
+      - prizm_db_password
+      - portfolio_db_password
+      - portfolio_totp_encryption_key
+      - portfolio_admin_password
+      - portfolio_resend_api_key
+      - portfolio_google_client_id
+      - portfolio_google_client_secret
+      - hypernova_session_secret
+      - hypernova_admin_password
+
+  pre_tasks:
+    - name: Require deploy secrets
+      ansible.builtin.assert:
+        that:
+          - ghcr_username | default('') is match('^[A-Za-z0-9-]+$')
+          - ghcr_token | default('') is match('^[A-Za-z0-9_]+$')
+          - postgres_superuser_password | default('') is match('^[A-Za-z0-9]{32,}$')
+          - prizm_db_password | default('') is match('^[A-Za-z0-9]{32,}$')
+          - portfolio_db_password | default('') is match('^[A-Za-z0-9]{32,}$')
+          - "[postgres_superuser_password, prizm_db_password, portfolio_db_password] | unique | length == 3"
+          - portfolio_totp_encryption_key | default('') is match('^[A-Za-z0-9+/]{43}=$')
+          - portfolio_admin_password | default('') | length > 0
+          - hypernova_session_secret | default('') | length > 0
+          - hypernova_admin_password | default('') | length > 0
+        fail_msg: >-
+          Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
+          32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, and the portfolio and
+          hypernova admin passwords and session secret (RUNBOOK.md, "Rotating a secret").
+        quiet: true
+
+    - name: Refuse deploy values the Compose env files would rewrite
+      ansible.builtin.assert:
+        that:
+          - env_file_value is not search(env_file_unsafe)
+          - env_file_value == env_file_value | trim
+        fail_msg: >-
+          {{ item }} holds a $, quote, backtick, backslash, #, line break or leading or trailing space,
+          which the Compose env file would rewrite (RUNBOOK.md, "Rotating a secret").
+        quiet: true
+      vars:
+        env_file_value: "{{ lookup('vars', item, default='') | default('', true) | string }}"
+      loop: "{{ env_file_values }}"
+
+    - name: Refuse to deploy with a placeholder credential still in place
+      ansible.builtin.import_tasks: tasks/placeholder-guards.yml
+      vars:
+        deploy_key_file: "{{ playbook_dir }}/roles/common/files/deploy_key.pub"
+
+    - name: Require a bundle directory that does not exist yet
+      ansible.builtin.assert:
+        that:
+          - bundle_dir | default('') is match('^/')
+          - not (bundle_dir is exists)
+        fail_msg: "Pass -e bundle_dir=<absolute path that does not exist yet> (build-bundle.sh does)."
+        quiet: true
+
+  tasks:
+    - name: Create the bundle directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ bundle_dir }}"
+        - "{{ bundle_dir }}/database"
+        - "{{ bundle_dir }}/portfolio"
+        - "{{ bundle_dir }}/hypernova"
+
+    - name: Copy the stack files into the bundle
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/stack/{{ item }}/docker-compose.yml"
+        dest: "{{ bundle_dir }}/{{ item }}/docker-compose.yml"
+        mode: "0600"
+      loop:
+        - database
+        - portfolio
+        - hypernova
+
+    - name: Render the env files into the bundle
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/stack/{{ item.src }}"
+        dest: "{{ bundle_dir }}/{{ item.dest }}"
+        mode: "0600"
+      loop:
+        - { src: database/postgres.env.j2, dest: database/postgres.env }
+        - { src: database/provision.sql.j2, dest: database/provision.sql }
+        - { src: portfolio/env.j2, dest: portfolio/.env }
+        - { src: portfolio/portfolio.env.j2, dest: portfolio/portfolio.env }
+        - { src: hypernova/env.j2, dest: hypernova/.env }
+        - { src: hypernova/provider.env.j2, dest: hypernova/provider.env }
+        - { src: ghcr.env.j2, dest: ghcr.env }
+      loop_control:
+        label: "{{ item.dest }}"
