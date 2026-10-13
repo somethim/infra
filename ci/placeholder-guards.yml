@@ -1,0 +1,15 @@
+---
+# Runs tasks/placeholder-guards.yml alone, for ci/placeholder-guards.sh.
+- name: Placeholder credential guards
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    deploy_key_file: "{{ playbook_dir }}/../roles/common/files/deploy_key.pub"
+  tasks:
+    - name: Placeholder guards
+      ansible.builtin.import_tasks: ../tasks/placeholder-guards.yml
+
+    - name: Reached only when the guards passed
+      ansible.builtin.debug:
+        msg: guards passed

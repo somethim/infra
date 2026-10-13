@@ -1,0 +1,25 @@
+---
+# Runs one role's verify tasks on localhost against the fakes in
+# ci/verify-tasks.sh: ansible-playbook ... -e verify_role=<role>.
+- name: Role verify tasks against fakes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../production.yml
+  tasks:
+    - name: Edge verify
+      ansible.builtin.import_tasks: ../roles/edge/tasks/verify.yml
+      when: verify_role == 'edge'
+    - name: Watchtower verify
+      ansible.builtin.import_tasks: ../roles/watchtower/tasks/verify.yml
+      when: verify_role == 'watchtower'
+    - name: Autoheal verify
+      ansible.builtin.import_tasks: ../roles/autoheal/tasks/verify.yml
+      when: verify_role == 'autoheal'
+    - name: Docker verify
+      ansible.builtin.import_tasks: ../roles/docker/tasks/verify.yml
+      when: verify_role == 'docker'
+    - name: Host verify
+      ansible.builtin.import_tasks: ../roles/host/tasks/verify.yml
+      when: verify_role == 'host'

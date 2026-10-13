@@ -143,10 +143,12 @@ resolve() {
   provider_repo="$(repo_for hypernova_provider_image_repo)"
   web_repo="$(repo_for hypernova_web_image_repo)"
   out="$status.pins"
-  printf 'RELEASE_MODE=pinned\n' >"$out"
-  resolve_one PORTFOLIO_IMAGE portfolio "$portfolio_repo" "$portfolio" yes >>"$out"
-  resolve_one PROVIDER_IMAGE prizm-provider "$provider_repo" "$provider" no >>"$out"
-  resolve_one WEB_IMAGE prizm-web "$web_repo" "$web" no >>"$out"
+  {
+    printf 'RELEASE_MODE=pinned\n'
+    resolve_one PORTFOLIO_IMAGE portfolio "$portfolio_repo" "$portfolio" yes
+    resolve_one PROVIDER_IMAGE prizm-provider "$provider_repo" "$provider" no
+    resolve_one WEB_IMAGE prizm-web "$web_repo" "$web" no
+  } >"$out"
   cat "$out"
 }
 

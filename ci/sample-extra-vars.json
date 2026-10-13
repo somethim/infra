@@ -1,0 +1,14 @@
+{
+  "ghcr_username": "fake-ci-user",
+  "ghcr_token": "fake_ghcr_token_0000000000000000",
+  "postgres_superuser_password": "FakePgSuperuser00000000000000000",
+  "prizm_db_password": "FakePrizmDb000000000000000000000",
+  "portfolio_db_password": "FakePortfolioDb00000000000000000",
+  "portfolio_totp_encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "portfolio_admin_password": "fake-portfolio-admin-0000",
+  "portfolio_resend_api_key": "fake-resend-key-0000",
+  "portfolio_google_client_id": "fake-client-id-0000.apps.googleusercontent.com",
+  "portfolio_google_client_secret": "fake-google-secret-0000",
+  "hypernova_session_secret": "fake-hypernova-session-00000000",
+  "hypernova_admin_password": "fake-hypernova-admin-0000"
+}
