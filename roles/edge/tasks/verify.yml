@@ -1,0 +1,50 @@
+---
+- name: Read the socket proxy's container state
+  ansible.builtin.command: docker container inspect edge-socket-proxy
+  register: ep_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Fail if the socket proxy is not running
+  ansible.builtin.command: >-
+    docker container inspect
+    --format '{% raw %}{{.State.Running}} {{.State.Restarting}}{% endraw %}'
+    edge-socket-proxy
+  register: ep_state
+  changed_when: false
+  when: ep_inspect.rc == 0
+
+- name: Assert the socket proxy is up
+  ansible.builtin.assert:
+    that:
+      - "'true false' in ep_state.stdout"
+    fail_msg: >-
+      edge-socket-proxy is not running, so Traefik cannot read container labels
+      and no Docker-provider route (portfolio, hypernova) is served.
+      `docker logs edge-socket-proxy` on the host shows why (a bad -allow rule
+      refuses to start).
+    quiet: true
+  when: ep_inspect.rc == 0
+
+- name: Read the requests the socket proxy refused since Traefik started, once it has run for 15 s
+  ansible.builtin.shell: |
+    set -eu
+    started="$(docker container inspect --format '{% raw %}{{.State.StartedAt}}{% endraw %}' edge-traefik)"
+    age=$(( $(date -u +%s) - $(date -u -d "$started" +%s) ))
+    if [ "$age" -ge 0 ] && [ "$age" -lt 15 ]; then sleep $(( 15 - age )); fi
+    docker logs --since "$started" edge-socket-proxy 2>&1 | grep 'blocked request' || true
+  register: ep_blocked
+  changed_when: false
+  failed_when: ep_blocked.rc != 0
+  when: ep_inspect.rc == 0
+
+- name: Fail if the socket proxy refused any of Traefik's calls
+  ansible.builtin.assert:
+    that:
+      - ep_blocked.stdout | length == 0
+    fail_msg: >-
+      edge-socket-proxy refused Docker API calls Traefik made, so its Docker
+      provider cannot see the stack's routes. Allow exactly these in
+      roles/edge/files/docker-compose.yml: {{ ep_blocked.stdout_lines[-5:] | join(' || ') }}
+    quiet: true
+  when: ep_inspect.rc == 0

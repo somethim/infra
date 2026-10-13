@@ -14,6 +14,9 @@
       - git
       - htop
       - ufw
+      - python3
+      - sudo
+      - jq
     state: present
 
 - name: Remove packages no longer required

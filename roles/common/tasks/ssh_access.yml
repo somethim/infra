@@ -1,0 +1,156 @@
+---
+# Runs last (provision.yml post_tasks): proves the admin and deploy accounts are
+# as intended before sshd's login policy is tightened. See docs/host.md — SSH.
+- name: Read the sudo rules of the admin and deploy users
+  ansible.builtin.command: sudo -l -U {{ item }}
+  loop:
+    - "{{ admin_user }}"
+    - "{{ deploy_user }}"
+  register: sudo_listing
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require a password for the admin user's sudo and only the release script for the deploy user
+  vars:
+    admin_listing: "{{ sudo_listing.results[0].stdout }}"
+    deploy_listing: "{{ sudo_listing.results[1].stdout }}"
+    admin_rules: >-
+      {{ (admin_listing.split('may run the following commands on', 1)[1].split(':', 1)[1] if 'may run the following commands on' in admin_listing else '')
+         | regex_replace('[ \t\r\n]+', ' ') | trim }}
+    deploy_rules: >-
+      {{ (deploy_listing.split('may run the following commands on', 1)[1].split(':', 1)[1] if 'may run the following commands on' in deploy_listing else '')
+         | regex_replace('[ \t\r\n]+', ' ') | trim }}
+  ansible.builtin.assert:
+    that:
+      - "'(ALL : ALL) ALL' in admin_rules"
+      - "'NOPASSWD' not in admin_rules"
+      - "'!authenticate' not in admin_listing"
+      - deploy_rules == deploy_sudo_rule
+    fail_msg: >-
+      sudo -l -U {{ admin_user }} must show only password-protected rules, and sudo -l -U {{ deploy_user }}
+      exactly "{{ deploy_sudo_rule }}". Remove other sudoers entries or group memberships for them
+      (a cloud image's /etc/sudoers.d/90-cloud-init-users, or the sudo group).
+    quiet: true
+
+- name: Read the deploy user's groups
+  ansible.builtin.command: id -nG {{ deploy_user }}
+  register: deploy_groups
+  changed_when: false
+  check_mode: false
+
+- name: Require the deploy user to stay out of the docker group
+  ansible.builtin.assert:
+    that:
+      - deploy_groups.stdout.split() == [deploy_user]
+    fail_msg: "{{ deploy_user }} must belong to no group but its own (it has: {{ deploy_groups.stdout }})."
+    quiet: true
+
+- name: Read whether the admin user has a sudo password
+  ansible.builtin.command: passwd --status {{ admin_user }}
+  register: admin_password_status
+  changed_when: false
+  check_mode: false
+
+- name: Check that the admin user can log in over SSH with the owner's keys
+  ansible.builtin.command: id -un
+  become: false
+  vars:
+    ansible_user: "{{ admin_user }}"
+  register: admin_login
+  changed_when: false
+  check_mode: false
+  when: ssh_login_user.stdout == 'root'
+
+- name: Require a working admin login before root login can close
+  ansible.builtin.assert:
+    that:
+      - ssh_login_user.stdout != 'root' or admin_login.stdout == admin_user
+      - ssh_login_user.stdout == 'root' or admin_password_status.stdout.split()[1] == 'P'
+    fail_msg: >-
+      {{ admin_user }} could not log in with the keys copied from root's authorized_keys, or has no usable
+      password; root login stays as it is.
+    quiet: true
+
+- name: Keep root login open while the run itself logs in as root
+  ansible.builtin.set_fact:
+    ssh_permit_root_login: prohibit-password
+  when: ssh_login_user.stdout == 'root'
+
+- name: Set the SSH login policy
+  ansible.builtin.template:
+    src: 10-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload sshd
+
+- name: Remove cloud-init's SSH drop-in, which turns password login on for a server made without a key
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/50-cloud-init.conf
+    state: absent
+  notify: Reload sshd
+
+- name: Validate the complete sshd configuration before reloading it
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+  check_mode: false
+
+- name: Reload sshd, which keeps this session open
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the SSH login policy sshd applies
+  ansible.builtin.command: /usr/sbin/sshd -T
+  register: sshd_effective
+  changed_when: false
+  check_mode: false
+
+- name: Require key-only logins and root login only while the run itself is root
+  ansible.builtin.assert:
+    that:
+      - "'passwordauthentication no' in sshd_effective.stdout_lines"
+      - "'kbdinteractiveauthentication no' in sshd_effective.stdout_lines"
+      - >-
+        ('permitrootlogin ' ~ ssh_permit_root_login) in sshd_effective.stdout_lines
+        or ('permitrootlogin ' ~ (ssh_permit_root_login | replace('prohibit-password', 'without-password'))) in sshd_effective.stdout_lines
+    fail_msg: >-
+      sshd on {{ inventory_hostname }} does not apply PasswordAuthentication no, KbdInteractiveAuthentication no and
+      PermitRootLogin {{ ssh_permit_root_login }}; another file in /etc/ssh/sshd_config.d or /etc/ssh/sshd_config overrides
+      10-hardening.conf (RUNBOOK.md, "Locked out").
+    quiet: true
+  when: not ansible_check_mode
+
+- name: Show the next step after a run as root
+  vars:
+    password_step: >-
+      {{ (admin_password_status.stdout.split()[1] == 'P')
+         | ternary('The ' ~ admin_user ~ ' password is set.',
+                   'Set the ' ~ admin_user ~ ' sudo password over the tailnet first: ssh -t root@' ~ server_name ~ ' passwd ' ~ admin_user) }}
+  ansible.builtin.debug:
+    msg:
+      - "Root can still log in with a key until provisioning runs as {{ admin_user }}."
+      - "{{ password_step }}"
+      - "Then set ansible_host={{ server_name }} in inventory/hosts and run: ansible-playbook -u {{ admin_user }} --ask-become-pass provision.yml (RUNBOOK.md, \"Cut-over\")."
+  when: ssh_login_user.stdout == 'root'
+
+- name: Say that SSH on the public address stays open until a run comes in over the tailnet
+  ansible.builtin.debug:
+    msg: >-
+      This run reached {{ inventory_hostname }} on its public address, so ufw keeps 22/tcp open there. Run provisioning
+      again over the tailnet (ansible_host={{ server_name }}, RUNBOOK.md, "Cut-over") to close it.
+  when: ssh_over_public
+
+- name: Remove a cloud image's default account, if it has one, once the admin user logs in
+  ansible.builtin.user:
+    name: ubuntu
+    state: absent
+    remove: true
+  when: ssh_login_user.stdout == admin_user
+
+- name: Remove the cloud image's passwordless sudo rule with it
+  ansible.builtin.file:
+    path: /etc/sudoers.d/90-cloud-init-users
+    state: absent
+  when: ssh_login_user.stdout == admin_user

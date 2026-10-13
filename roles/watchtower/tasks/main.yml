@@ -1,20 +1,6 @@
 ---
-# See docs/agents.md — Watchtower.
-- name: Require GHCR credentials
-  ansible.builtin.assert:
-    that:
-      - ghcr_username | default('') | length > 0
-      - ghcr_token | default('') | length > 0
-    fail_msg: "ghcr_username and ghcr_token are required (set the GHCR_USERNAME / GHCR_TOKEN secrets)."
-
-- name: Log in to GHCR (writes /root/.docker/config.json)
-  ansible.builtin.command: "docker login ghcr.io -u {{ ghcr_username }} --password-stdin"
-  args:
-    stdin: "{{ ghcr_token }}"
-  register: ghcr_login
-  changed_when: "'Login Succeeded' in ghcr_login.stdout"
-  no_log: true
-
+# See docs/agents.md — Watchtower. Provisioning holds no app secrets: the GHCR
+# login that writes /root/.docker/config.json happens on every release (plans/004).
 - name: Create the watchtower deploy directory
   ansible.builtin.file:
     path: /opt/watchtower
@@ -33,3 +19,6 @@
     chdir: /opt/watchtower
   register: wt_up
   changed_when: "'Started' in wt_up.stderr or 'Created' in wt_up.stderr or 'Recreated' in wt_up.stderr"
+
+- name: Verify Watchtower can use the Docker API
+  ansible.builtin.import_tasks: verify.yml

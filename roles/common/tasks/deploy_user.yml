@@ -1,0 +1,77 @@
+---
+# The release gate (/usr/local/sbin/infra-deploy-gate) and infra-apply are
+# installed by the release path (plans/004). Until then the forced command has
+# nothing to run, so the deploy key can log in but do nothing.
+- name: Create the deploy user with a locked password and no supplementary groups
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    create_home: true
+    password: "!"
+    update_password: always
+    groups: ""
+    append: false
+  register: deploy_account
+
+- name: Create the stack and release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/infra
+    - /opt/infra/releases
+
+- name: Allow the deploy user to run only the release script as root
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ deploy_user }}"
+    content: "{{ deploy_user }} ALL={{ deploy_sudo_rule }}\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Keep the deploy user's .ssh directory owned by root
+  ansible.builtin.file:
+    path: "{{ deploy_account.home }}/.ssh"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Trust only the CI deploy key for the deploy user, forced to the release gate
+  ansible.builtin.copy:
+    dest: "{{ deploy_account.home }}/.ssh/authorized_keys"
+    content: "restrict,command=\"/usr/local/sbin/infra-deploy-gate\" {{ ci_key_line }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read the deploy user's authorized_keys file
+  ansible.builtin.stat:
+    path: "{{ deploy_account.home }}/.ssh/authorized_keys"
+  register: ci_authorized_keys_file
+
+- name: Read what the deploy user trusts
+  ansible.builtin.slurp:
+    src: "{{ deploy_account.home }}/.ssh/authorized_keys"
+  register: ci_authorized_keys
+
+- name: Require exactly the CI deploy key, forced to the release gate, in a file only root can change
+  vars:
+    ci_lines: "{{ (ci_authorized_keys.content | b64decode).splitlines() | map('trim') | reject('match', '^(#|$)') | list }}"
+    ci_prefix: 'restrict,command="/usr/local/sbin/infra-deploy-gate" '
+  ansible.builtin.assert:
+    that:
+      - ci_lines | length == 1
+      - ci_lines[0].startswith(ci_prefix)
+      - ci_lines[0][ci_prefix | length:] is match(ssh_public_key_pattern)
+      - ci_lines[0][ci_prefix | length:] | regex_search('^[^ ]+ [^ ]+') == ci_key_line | regex_search('^[^ ]+ [^ ]+')
+      - ci_authorized_keys_file.stat.pw_name == 'root'
+      - not ci_authorized_keys_file.stat.woth and not ci_authorized_keys_file.stat.wgrp
+    fail_msg: >-
+      {{ deploy_account.home }}/.ssh/authorized_keys must be owned by root, writable only by root, and hold exactly one line:
+      {{ ci_prefix }}{{ ci_key_line }}.
+    quiet: true

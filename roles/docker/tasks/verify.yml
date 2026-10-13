@@ -1,0 +1,20 @@
+---
+- name: Read the Docker Engine version
+  ansible.builtin.command: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}'
+  register: docker_server_version
+  changed_when: false
+  check_mode: false
+
+- name: Require the Engine major production.yml pins
+  ansible.builtin.assert:
+    that:
+      - (docker_server_version.stdout | trim).split('.')[0] == docker_engine_major | string
+    fail_msg: >-
+      Docker Engine {{ docker_server_version.stdout | trim }} runs, but production.yml pins
+      docker_engine_major: {{ docker_engine_major }} (/etc/apt/preferences.d/docker).
+    quiet: true
+
+- name: Require the compose plugin
+  ansible.builtin.command: docker compose version
+  changed_when: false
+  check_mode: false

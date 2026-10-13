@@ -5,5 +5,11 @@
 - name: Configure strict firewall
   ansible.builtin.import_tasks: firewall.yml
 
-- name: Harden SSH exposure and patching
+- name: Create the admin user
+  ansible.builtin.import_tasks: admin_user.yml
+
+- name: Create the deploy user
+  ansible.builtin.import_tasks: deploy_user.yml
+
+- name: Harden patching and SSH brute-force exposure
   ansible.builtin.import_tasks: hardening.yml

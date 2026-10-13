@@ -1,0 +1,99 @@
+---
+- name: Read the CI deploy key
+  vars:
+    line_break: "\n"
+  ansible.builtin.set_fact:
+    ci_key_line: >-
+      {{ lookup('ansible.builtin.file', deploy_ssh_public_key_file | expanduser).split(line_break)
+         | map('trim') | reject('match', '^(#|$)') | first }}
+
+- name: Require a plain public key for the CI deploy key
+  ansible.builtin.assert:
+    that:
+      - ci_key_line is match(ssh_public_key_pattern)
+    fail_msg: "{{ deploy_ssh_public_key_file }} must hold one plain public key line (RUNBOOK.md, \"New CI deploy key\")."
+    quiet: true
+
+- name: Remove the retired CI deploy key from root
+  ansible.builtin.lineinfile:
+    path: /root/.ssh/authorized_keys
+    regexp: "{{ legacy_ci_deploy_key.split()[1] | regex_escape }}"
+    state: absent
+  when: ssh_login_user.stdout == 'root'
+
+- name: Create the admin user with a locked password
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    shell: /bin/bash
+    create_home: true
+    password: "!"
+    update_password: on_create
+  register: admin_account
+
+- name: Ensure the admin user's .ssh directory exists
+  ansible.builtin.file:
+    path: "{{ admin_account.home }}/.ssh"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+
+- name: Read the keys the owner installed for root with ssh-copy-id
+  ansible.builtin.slurp:
+    src: /root/.ssh/authorized_keys
+  register: root_authorized_keys
+  when: ssh_login_user.stdout == 'root'
+
+- name: Require only the owner's plain public keys there, never the CI deploy key
+  vars:
+    root_key_lines: >-
+      {{ (root_authorized_keys.content | b64decode).splitlines() | map('trim') | reject('match', '^(#|$)') | list }}
+  ansible.builtin.assert:
+    that:
+      - root_key_lines | length > 0
+      - root_key_lines | reject('match', ssh_public_key_pattern) | list | length == 0
+      - ci_key_line | regex_search('^[^ ]+ [^ ]+') not in (root_key_lines | map('regex_search', '^[^ ]+ [^ ]+') | list)
+    fail_msg: >-
+      Root's authorized_keys on {{ inventory_hostname }} must hold only your own public keys, installed with
+      ssh-copy-id, as plain lines with no options, and never the CI deploy key (RUNBOOK.md, "What you need").
+    quiet: true
+  when: ssh_login_user.stdout == 'root'
+
+- name: Give the admin user the owner's keys from root, once
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    dest: "{{ admin_account.home }}/.ssh/authorized_keys"
+    remote_src: true
+    force: false
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0600"
+  when: ssh_login_user.stdout == 'root'
+
+- name: Read the admin user's keys
+  ansible.builtin.slurp:
+    src: "{{ admin_account.home }}/.ssh/authorized_keys"
+  register: admin_authorized_keys
+
+- name: Require plain public keys for the admin user, none of them the CI deploy key
+  vars:
+    admin_key_lines: >-
+      {{ (admin_authorized_keys.content | b64decode).splitlines() | map('trim') | reject('match', '^(#|$)') | list }}
+  ansible.builtin.assert:
+    that:
+      - admin_key_lines | length > 0
+      - admin_key_lines | reject('match', ssh_public_key_pattern) | list | length == 0
+      - ci_key_line | regex_search('^[^ ]+ [^ ]+') not in (admin_key_lines | map('regex_search', '^[^ ]+ [^ ]+') | list)
+    fail_msg: >-
+      {{ admin_account.home }}/.ssh/authorized_keys must hold one or more of your plain public keys and never the
+      CI deploy key.
+    quiet: true
+
+- name: Give the admin user sudo that asks for its password
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ admin_user }}"
+    content: "{{ admin_user }} ALL=(ALL:ALL) ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s

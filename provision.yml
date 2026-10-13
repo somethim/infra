@@ -1,0 +1,41 @@
+# Provisions the one server from the owner's machine. Holds no app secrets.
+# First run: -u root over the public IPv4; every run after: -u admin
+# --ask-become-pass over the tailnet (RUNBOOK.md, "Cut-over").
+- name: Provision the server from the owner's machine
+  hosts: server
+  become: true
+
+  vars_files:
+    - production.yml
+
+  vars:
+    # Also a role default, but pre_tasks run outside the role, where role_path is unset.
+    deploy_ssh_public_key_file: "{{ playbook_dir }}/roles/common/files/deploy_key.pub"
+
+  pre_tasks:
+    - name: Check the run, the login and the inventory
+      tags: [always]
+      ansible.builtin.import_tasks: tasks/provision-checks.yml
+
+  roles:
+    - role: common
+      tags: [common]
+    - role: tailscale
+      tags: [tailscale]
+    - role: docker
+      tags: [docker]
+    - role: host
+      tags: [host]
+    - role: edge
+      tags: [edge]
+    - role: watchtower
+      tags: [watchtower]
+    - role: autoheal
+      tags: [autoheal]
+
+  post_tasks:
+    - name: Check account access and set the SSH login policy
+      tags: [always]
+      ansible.builtin.import_role:
+        name: common
+        tasks_from: ssh_access

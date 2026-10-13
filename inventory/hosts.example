@@ -1,3 +1,6 @@
-# Copy to inventory/hosts (gitignored) and edit. See docs/architecture.md.
-[edge]
-203.0.113.10 ansible_user=root
+# Copy to inventory/hosts (gitignored) and edit. One host in [server].
+# Runs reach it over the tailnet by its tailnet name. The first run, before the
+# host has joined the tailnet, sets ansible_host to its public IPv4 instead
+# (RUNBOOK.md, "Cut-over").
+[server]
+infra-host ansible_host=infra-host

@@ -1,0 +1,15 @@
+---
+- name: Refuse to deploy with the placeholder deploy key still in place
+  tags: [always]
+  vars:
+    deploy_key_entries: >-
+      {{ lookup('ansible.builtin.file', deploy_key_file).splitlines()
+         | map('trim') | reject('match', '^(#|$)') | list }}
+  ansible.builtin.assert:
+    that:
+      - deploy_key_entries | length > 0
+      - deploy_key_entries | select('search', 'REPLACE_ME_BEFORE_DEPLOYING') | list | length == 0
+    fail_msg: >-
+      roles/common/files/deploy_key.pub is empty or still the placeholder. Generate
+      a dedicated key for this host and commit its public half (RUNBOOK.md, "New CI deploy key").
+    quiet: true

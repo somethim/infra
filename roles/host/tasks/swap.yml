@@ -1,0 +1,69 @@
+---
+- name: Read the swap the host already has
+  ansible.builtin.command: swapon --noheadings --bytes --show=NAME,SIZE
+  register: swap_before
+  changed_when: false
+  check_mode: false
+
+- name: Create a swap file of swap_size so a memory spike does not kill a container, only when the host has no swap yet
+  ansible.builtin.command:
+    argv: [fallocate, -l, "{{ swap_size }}", /swapfile]
+    creates: /swapfile
+  register: swap_file
+  when: swap_before.stdout | trim | length == 0
+
+- name: Format the new swap file
+  ansible.builtin.command: mkswap /swapfile
+  when: swap_file is changed
+  changed_when: true
+
+- name: Read whether the swap file exists
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swap_path
+
+- name: Keep the swap file private
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: "0600"
+  when: swap_path.stat.exists
+
+- name: Mount the swap file at every boot
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: /swapfile none swap sw 0 0
+    regexp: ^/swapfile\s
+  when: swap_path.stat.exists
+
+- name: Turn the swap file on
+  ansible.builtin.command: swapon /swapfile
+  when: swap_path.stat.exists and '/swapfile' not in swap_before.stdout
+  changed_when: true
+
+- name: Prefer RAM over swap
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/61-infra-swap.conf
+    content: "vm.swappiness = 10\n"
+    owner: root
+    group: root
+    mode: "0644"
+  register: swap_tuning
+
+- name: Apply the swap setting now
+  ansible.builtin.command: sysctl --load /etc/sysctl.d/61-infra-swap.conf
+  when: swap_tuning is changed
+  changed_when: true
+
+- name: Read the swap after setup
+  ansible.builtin.command: swapon --noheadings --bytes --show=SIZE
+  register: swap_after
+  changed_when: false
+  check_mode: false
+
+- name: Stop when the host has less than 1 GB of swap
+  ansible.builtin.assert:
+    that: swap_after.stdout_lines | map('trim') | map('int') | sum >= 1073741824
+    fail_msg: "This host has {{ swap_after.stdout_lines | map('trim') | map('int') | sum }} bytes of swap; it needs at least 1 GB so a memory spike does not kill a container."
+    quiet: true

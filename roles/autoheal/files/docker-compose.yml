@@ -1,14 +1,51 @@
-# Autoheal. See docs/agents.md.
+# Autoheal. See docs/agents.md. It reaches Docker only through
+# autoheal-socket-proxy (list containers, restart one).
 name: autoheal
 
 services:
-  autoheal:
-    image: willfarrell/autoheal:latest
-    container_name: autoheal
+  autoheal-socket-proxy:
+    image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
+    container_name: autoheal-socket-proxy
+    mem_limit: 32m
     restart: always
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=autoheal
+      - -allowGET=(/v1\.\d+)?/containers/json(\?\S*)?
+      - -allowPOST=(/v1\.\d+)?/containers/[^/]+/restart(\?\S*)?
+      - -shutdowngracetime=5
+      - -watchdoginterval=10
+      - -stoponwatchdog
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - autoheal-socket
+
+  autoheal:
+    image: willfarrell/autoheal:latest@sha256:ef21f7da2ffee62dec2e2e2e9e75173f031dfe66f5195ac69d1e223542bb8853
+    container_name: autoheal
+    mem_limit: 32m
+    restart: always
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       AUTOHEAL_CONTAINER_LABEL: autoheal
       AUTOHEAL_START_PERIOD: "300"
       AUTOHEAL_INTERVAL: "30"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      DOCKER_SOCK: tcp://autoheal-socket-proxy:2375
+    networks:
+      - autoheal-socket
+    depends_on:
+      - autoheal-socket-proxy
+
+networks:
+  autoheal-socket:
+    name: autoheal-socket
+    internal: true

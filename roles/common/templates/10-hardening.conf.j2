@@ -1,2 +1,5 @@
-# Managed by Ansible (roles/common). See docs/host.md — Password authentication.
-PasswordAuthentication {{ ssh_password_authentication }}
+# Managed by Ansible (roles/common/tasks/ssh_access.yml). Sorts before 50-cloud-init.conf. See docs/host.md.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin {{ ssh_permit_root_login }}
+ExposeAuthInfo yes

@@ -1,0 +1,9 @@
+# Managed by Ansible (roles/edge), present only while edge_origin_pull_enabled.
+# Every TLS router then requires Cloudflare's origin-pull client certificate.
+tls:
+  options:
+    default:
+      clientAuth:
+        clientAuthType: RequireAndVerifyClientCert
+        caFiles:
+          - /origin-pull/ca.pem

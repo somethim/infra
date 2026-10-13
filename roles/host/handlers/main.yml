@@ -1,0 +1,6 @@
+---
+- name: Apply the Docker firewall
+  ansible.builtin.systemd:
+    name: infra-firewall.service
+    state: restarted
+    daemon_reload: true

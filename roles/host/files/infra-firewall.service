@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep Docker's published ports behind the host firewall
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/infra-firewall
+
+[Install]
+WantedBy=multi-user.target docker.service

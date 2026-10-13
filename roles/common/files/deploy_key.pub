@@ -1,1 +1,7 @@
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKCs++XLCd+tOTAQZWlkyX4Hnr7fetplNefi2w/9jGNU github-actions@infra-deploy
+# The public half of the dedicated CI deploy key. Provisioning installs it for
+# the deploy user only, forced to /usr/local/sbin/infra-deploy-gate.
+# Generate it with:
+#   ssh-keygen -t ed25519 -N '' -C infra-deploy -f ~/.ssh/infra-deploy
+# then replace the line below with the contents of ~/.ssh/infra-deploy.pub
+# (RUNBOOK.md, "New CI deploy key"). Provisioning refuses to run until then.
+REPLACE_ME_BEFORE_DEPLOYING

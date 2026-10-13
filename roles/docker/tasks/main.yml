@@ -1,12 +1,45 @@
 ---
 # See docs/host.md — The Docker daemon; docs/agents.md — The prune timer.
-- name: Install Docker Engine + compose plugin
-  ansible.builtin.shell:
-    cmd: set -o pipefail && curl -fsSL https://get.docker.com | sh
-    executable: /bin/bash
-    creates: /usr/bin/docker
+# Docker comes from Docker's own apt repository, its key pinned by checksum and
+# the Engine pinned to docker_engine_major (production.yml).
+- name: Pin the Docker Engine major version
+  ansible.builtin.template:
+    src: docker-apt-pin.j2
+    dest: /etc/apt/preferences.d/docker
+    mode: "0644"
 
-- name: Configure the Docker daemon (log rotation)
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Trust Docker's apt signing key, pinned by checksum
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    checksum: sha256:1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
+    mode: "0644"
+
+# Overwrites the equivalent docker.list the get.docker.com script once wrote.
+- name: Add Docker's apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: "deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ubuntu_release }} stable\n"
+    mode: "0644"
+
+- name: Install Docker Engine + compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Configure the Docker daemon (log rotation, live restore)
   ansible.builtin.copy:
     src: daemon.json
     dest: /etc/docker/daemon.json
@@ -34,3 +67,6 @@
     enabled: true
     state: started
     daemon_reload: true
+
+- name: Verify the Engine and the compose plugin
+  ansible.builtin.import_tasks: verify.yml

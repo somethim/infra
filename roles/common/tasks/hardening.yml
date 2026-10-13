@@ -1,5 +1,5 @@
 ---
-# See docs/host.md — SSH, fail2ban, Patching.
+# See docs/host.md — fail2ban, Patching. sshd's policy is owned by ssh_access.yml.
 - name: Install fail2ban
   ansible.builtin.apt:
     name: fail2ban
@@ -18,34 +18,31 @@
     state: started
     enabled: true
 
+- name: Keep the clock on UTC, the clock the reboot time uses
+  ansible.builtin.shell: |
+    set -eu
+    if [ "$(timedatectl show --property=Timezone --value)" != Etc/UTC ]; then
+      timedatectl set-timezone Etc/UTC
+      echo changed
+    fi
+  register: utc_clock
+  changed_when: "'changed' in utc_clock.stdout"
+
 - name: Reboot for kernel updates in the quiet hours
-  ansible.builtin.copy:
-    src: 20auto-upgrades-reboot
+  ansible.builtin.template:
+    src: 20auto-upgrades-reboot.j2
     dest: /etc/apt/apt.conf.d/20auto-upgrades-reboot
     mode: "0644"
 
-- name: Ensure root's .ssh directory exists
+- name: Create the journald drop-in directory
   ansible.builtin.file:
-    path: /root/.ssh
+    path: /etc/systemd/journald.conf.d
     state: directory
-    owner: root
-    group: root
-    mode: "0700"
+    mode: "0755"
 
-- name: Trust the CI deploy key
-  ansible.builtin.lineinfile:
-    path: /root/.ssh/authorized_keys
-    line: "{{ lookup('ansible.builtin.file', role_path + '/files/deploy_key.pub') | trim }}"
-    state: present
-    create: true
-    owner: root
-    group: root
-    mode: "0600"
-
-- name: Set the SSH password-authentication policy
-  ansible.builtin.template:
-    src: 10-hardening.conf.j2
-    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+- name: Cap the system journal so it cannot fill the disk or hold much memory
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-infra.conf
+    content: "[Journal]\nSystemMaxUse=500M\nSystemMaxFileSize=32M\nRuntimeMaxUse=32M\nMaxRetentionSec=1month\n"
     mode: "0644"
-    validate: /usr/sbin/sshd -t -f %s
-  notify: Reload sshd
+  notify: Restart journald

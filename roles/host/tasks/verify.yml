@@ -1,0 +1,29 @@
+---
+- name: Read the DOCKER-USER chain
+  ansible.builtin.command: iptables -S DOCKER-USER
+  register: docker_user_rules
+  changed_when: false
+  check_mode: false
+
+- name: Require INFRA-PUBLIC hooked first in DOCKER-USER for new connections on the public interface
+  vars:
+    hook: "-A DOCKER-USER -i {{ ansible_facts['default_ipv4']['interface'] }} -m conntrack --ctstate NEW -j INFRA-PUBLIC"
+    appended: "{{ docker_user_rules.stdout_lines | select('match', '^-A DOCKER-USER ') | list }}"
+  ansible.builtin.assert:
+    that:
+      - appended | length > 0
+      - appended[0] == hook
+    fail_msg: "DOCKER-USER does not start with the INFRA-PUBLIC hook ({{ hook }}): {{ docker_user_rules.stdout_lines }}"
+    quiet: true
+
+- name: Read the swap in use
+  ansible.builtin.command: swapon --noheadings --bytes --show=SIZE
+  register: swap_now
+  changed_when: false
+  check_mode: false
+
+- name: Require at least 1 GiB of swap
+  ansible.builtin.assert:
+    that: swap_now.stdout_lines | map('trim') | map('int') | sum >= 1073741824
+    fail_msg: "This host has {{ swap_now.stdout_lines | map('trim') | map('int') | sum }} bytes of swap; it needs at least 1 GiB."
+    quiet: true

@@ -1,13 +1,50 @@
-# The shared edge proxy. See docs/edge.md.
+# The shared edge proxy. See docs/edge.md. Traefik reaches Docker only through
+# edge-socket-proxy (read-only, GET-only allowlist). The project name `edge` and
+# the volume key `edge-acme` are load-bearing: they keep the existing
+# edge_edge-acme volume, which holds every certificate.
 name: edge
 
 services:
-  traefik:
-    image: traefik:v3
-    container_name: edge-traefik
+  edge-socket-proxy:
+    image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
+    container_name: edge-socket-proxy
+    mem_limit: 32m
     restart: always
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=traefik
+      - -allowHEAD=(/v1\.\d+)?/_ping
+      - -allowGET=(/v1\.\d+)?/(_ping|version|containers/(json|[^/]+/json)|events)
+      - -shutdowngracetime=5
+      - -watchdoginterval=10
+      - -stoponwatchdog
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge-socket
+
+  traefik:
+    image: traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+    container_name: edge-traefik
+    mem_limit: 128m
+    environment:
+      GOMEMLIMIT: 96MiB
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     command:
       - --providers.docker=true
+      - --providers.docker.endpoint=tcp://edge-socket-proxy:2375
       - --providers.docker.network=edge
       - --providers.docker.exposedbydefault=false
       - --providers.file.directory=/dynamic
@@ -26,19 +63,25 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - edge-acme:/acme
-      # Directory mount, not a single-file mount: Ansible's copy module
+      # Directory mounts, not single-file mounts: Ansible's copy module
       # writes atomically (temp file + rename), so a file bind-mount would
       # pin the old inode and --providers.file.watch would never see updates.
       - ./dynamic:/dynamic:ro
+      - ./origin-pull:/origin-pull:ro
     networks:
       - edge
+      - edge-socket
+    depends_on:
+      - edge-socket-proxy
 
 networks:
   edge:
     name: edge
     external: true
+  edge-socket:
+    name: edge-socket
+    internal: true
 
 volumes:
   edge-acme:

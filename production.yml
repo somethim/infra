@@ -1,0 +1,33 @@
+---
+# Facts about the one production host, shared by provision.yml (and release.yml
+# from plans/004). No secrets here: app secrets live in the GitHub production
+# Environment and never reach provisioning.
+
+# Tailnet hostname of the server; provisioning names the node after it.
+server_name: infra-host
+tailscale_server_tag: "tag:infra-server"
+tailscale_ci_tag: "tag:infra-ci"
+
+# Confirm both on the host before provisioning (RUNBOOK.md, "Confirm the host's
+# facts"): lsb_release -cs, and the major of docker version's Server.Version.
+# provision-checks refuses to run when either differs.
+ubuntu_release: noble
+docker_engine_major: 29
+
+reboot_time: "04:00"
+swap_size: 2G
+public_ports: [80, 443]
+
+apex_domain: arbikullakshi.com
+www_domain: www.arbikullakshi.com
+hypernova_domain: hypernova.arbikullakshi.com
+
+portfolio_image_repo: ghcr.io/somethim/portfolio
+hypernova_provider_image_repo: ghcr.io/hypernova3643725/hypernova-provider
+hypernova_web_image_repo: ghcr.io/hypernova3643725/hypernova-web
+
+acme_email: contact@arbikullakshi.com
+
+# The CI deploy key root trusted before this layout (public, not a secret).
+# Used only to remove it from /root/.ssh/authorized_keys on the first provision.
+legacy_ci_deploy_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKCs++XLCd+tOTAQZWlkyX4Hnr7fetplNefi2w/9jGNU github-actions@infra-deploy"

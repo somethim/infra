@@ -1,0 +1,86 @@
+---
+- name: Refuse to provision with a placeholder credential still in place
+  ansible.builtin.import_tasks: placeholder-guards.yml
+  vars:
+    deploy_key_file: "{{ deploy_ssh_public_key_file | expanduser }}"
+
+- name: Find the account this run logged in as
+  tags: [always]
+  ansible.builtin.command: id -un
+  become: false
+  register: ssh_login_user
+  changed_when: false
+  check_mode: false
+
+- name: Find the address this run's SSH connection reached
+  tags: [always]
+  ansible.builtin.command: printenv SSH_CONNECTION
+  become: false
+  register: ssh_connection
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Note whether this run came in over the public address
+  tags: [always]
+  ansible.builtin.set_fact:
+    ssh_over_public: >-
+      {{ (ssh_connection.stdout.split() | length) != 4
+         or ssh_connection.stdout.split()[2] == ansible_facts['default_ipv4']['address'] | default('') }}
+
+- name: Log in as root on a fresh server and as the admin user afterwards
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - ssh_login_user.stdout in ['root', admin_user]
+    fail_msg: >-
+      This run logged in as {{ ssh_login_user.stdout }}. Provisioning logs in as root (-u root) only on the
+      first run, and as {{ admin_user }} (-u {{ admin_user }} --ask-become-pass) on every run after that
+      (RUNBOOK.md, "Cut-over").
+    quiet: true
+
+- name: Require exactly one server in the inventory
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - groups['server'] | default([]) | length == 1
+    fail_msg: "The inventory must name exactly one host in [server] (inventory/hosts.example)."
+    quiet: true
+
+- name: Require the Ubuntu release production.yml names
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_release'] == ubuntu_release
+    fail_msg: >-
+      {{ inventory_hostname }} runs {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_release'] }},
+      but production.yml says ubuntu_release: {{ ubuntu_release }}. Confirm the release on the host and fix
+      production.yml (RUNBOOK.md, "Confirm the host's facts").
+    quiet: true
+
+- name: Look for an installed Docker Engine
+  tags: [always]
+  ansible.builtin.stat:
+    path: /usr/bin/docker
+  register: docker_binary
+
+- name: Read the installed Docker Engine version
+  tags: [always]
+  ansible.builtin.command: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}'
+  register: docker_installed_version
+  changed_when: false
+  check_mode: false
+  when: docker_binary.stat.exists
+
+- name: Refuse to silently upgrade or downgrade the Docker Engine major
+  tags: [always]
+  ansible.builtin.assert:
+    that:
+      - (docker_installed_version.stdout | trim).split('.')[0] == docker_engine_major | string
+    fail_msg: >-
+      {{ inventory_hostname }} runs Docker Engine {{ docker_installed_version.stdout | trim }}, but production.yml
+      pins docker_engine_major: {{ docker_engine_major }}. Confirm the version on the host and fix production.yml
+      (RUNBOOK.md, "Confirm the host's facts").
+    quiet: true
+  when: docker_binary.stat.exists

@@ -1,0 +1,110 @@
+---
+- name: Read the socket proxy's container state
+  ansible.builtin.command: docker container inspect watchtower-socket-proxy
+  register: wtp_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Fail if the socket proxy is not running
+  ansible.builtin.command: >-
+    docker container inspect
+    --format '{% raw %}{{.State.Running}} {{.State.Restarting}}{% endraw %}'
+    watchtower-socket-proxy
+  register: wtp_state
+  changed_when: false
+  when: wtp_inspect.rc == 0
+
+- name: Assert the socket proxy is up
+  ansible.builtin.assert:
+    that:
+      - "'true false' in wtp_state.stdout"
+    fail_msg: >-
+      watchtower-socket-proxy is not running, so Watchtower has no path to the
+      Docker API. `docker logs watchtower-socket-proxy` on the host
+      shows why (a bad -allow rule refuses to start).
+    quiet: true
+  when: wtp_inspect.rc == 0
+
+- name: Read Watchtower's container state
+  ansible.builtin.command: docker container inspect watchtower
+  register: wt_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Note when Watchtower started and when this check began
+  ansible.builtin.shell: |
+    set -eu
+    docker container inspect --format '{% raw %}{{.State.StartedAt}}{% endraw %}' watchtower
+    date -u +%Y-%m-%dT%H:%M:%SZ
+  register: wt_times
+  changed_when: false
+  when: wt_inspect.rc == 0
+
+- name: Wait for a Watchtower update session to complete
+  ansible.builtin.shell: >-
+    docker logs --since {{ wt_times.stdout_lines[1] }} watchtower 2>&1
+    | grep 'Update session completed' || true
+  register: wt_sessions
+  until: wt_sessions.stdout | length > 0
+  retries: "{{ ((watchtower_verify_wait | default(120) | int) / 5) | int }}"
+  delay: 5
+  changed_when: false
+  failed_when: false
+  when: wt_inspect.rc == 0
+
+- name: Read Watchtower's state, its log and the proxy's refusals since it started
+  ansible.builtin.shell: |
+    set -eu
+    docker container inspect --format '{% raw %}running={{.State.Running}} restarting={{.State.Restarting}}{% endraw %}' watchtower
+    docker logs --since {{ wt_times.stdout_lines[0] }} watchtower 2>&1
+  register: wt_health
+  changed_when: false
+  when: wt_inspect.rc == 0
+
+- name: Read the requests the socket proxy refused since Watchtower started
+  ansible.builtin.shell: >-
+    docker logs --since {{ wt_times.stdout_lines[0] }} watchtower-socket-proxy 2>&1
+    | grep 'blocked request' || true
+  register: wtp_blocked
+  changed_when: false
+  when: wt_inspect.rc == 0 and wtp_inspect.rc == 0
+
+- name: Fail if Watchtower is not running or cannot use the Docker API
+  ansible.builtin.assert:
+    that:
+      - "'running=true restarting=false' in wt_health.stdout"
+      - >-
+        not (wt_health.stdout is search('too old|minimum supported API version|Cannot connect to the Docker daemon|Error response from daemon: (Forbidden|Method Not Allowed)', ignorecase=True))
+    fail_msg: >-
+      Watchtower is not able to use the Docker API, so no image update would
+      ever be deployed. `docker logs watchtower` on the host shows why; an
+      "API version too old" error means the pinned image is older than the
+      Engine allows: re-pin it (RUNBOOK.md, "Re-pinning third-party images"); a
+      Forbidden / Method Not Allowed error is the socket proxy refusing a call
+      (next check).
+    quiet: true
+  when: wt_inspect.rc == 0
+
+- name: Fail if the socket proxy refused any of Watchtower's calls
+  ansible.builtin.assert:
+    that:
+      - wtp_blocked.stdout | length == 0
+    fail_msg: >-
+      watchtower-socket-proxy refused Docker API calls Watchtower made, so
+      updates cannot complete. Allow exactly these in
+      roles/watchtower/files/docker-compose.yml: {{ wtp_blocked.stdout_lines[-5:] | join(' || ') }}
+    quiet: true
+  when: wt_inspect.rc == 0 and wtp_inspect.rc == 0
+
+- name: Fail if no update session completed, or one reported failed containers
+  ansible.builtin.assert:
+    that:
+      - wt_sessions.stdout | length > 0
+      - not (wt_sessions.stdout_lines[-1] is search('failed\W{0,3}[1-9]'))
+    fail_msg: >-
+      Watchtower did not complete a clean update session within
+      {{ watchtower_verify_wait | default(120) }} s (last session:
+      "{{ wt_sessions.stdout_lines[-1] | default('none') }}"). `docker logs
+      watchtower` on the host shows why.
+    quiet: true
+  when: wt_inspect.rc == 0

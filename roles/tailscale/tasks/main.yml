@@ -1,0 +1,102 @@
+---
+# Joins the host to the tailnet as {{ server_name }}, tagged {{ tailscale_server_tag }}.
+# server_name, not inventory_hostname: the first run may name the host by its public IP.
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Trust Tailscale's apt signing key, pinned by checksum
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ubuntu_release }}.noarmor.gpg"
+    dest: /etc/apt/keyrings/tailscale.gpg
+    checksum: "sha256:{{ tailscale_apt_key_sha256 }}"
+    mode: "0644"
+
+- name: Add Tailscale's apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.list
+    content: "deb [signed-by=/etc/apt/keyrings/tailscale.gpg] https://pkgs.tailscale.com/stable/ubuntu {{ ubuntu_release }} main\n"
+    mode: "0644"
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+    update_cache: true
+
+- name: Keep tailscaled running after every boot
+  ansible.builtin.systemd:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Read whether this server is on the tailnet
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_before
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Note whether it still has to join
+  ansible.builtin.set_fact:
+    tailscale_joined: "{{ (tailscale_before.stdout | default('{}', true) | from_json).BackendState | default('') == 'Running' }}"
+
+- name: Ask for an auth key, only while this server is not on the tailnet
+  ansible.builtin.pause:
+    prompt: >-
+      Tailscale auth key for {{ server_name }} (pre-approved, tag {{ tailscale_server_tag }};
+      RUNBOOK.md, "Tailscale"). It is not shown and not stored
+    echo: false
+  register: tailscale_key_prompt
+  when:
+    - not tailscale_joined
+    - tailscale_authkey is not defined
+
+- name: Join the tailnet as a tagged server, keeping OpenSSH for SSH
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - up
+      - "--auth-key={{ tailscale_authkey | default(tailscale_key_prompt.user_input | default('')) }}"
+      - "--hostname={{ server_name }}"
+      - "--advertise-tags={{ tailscale_server_tag }}"
+      - --ssh=false
+      - --accept-dns=false
+      - --accept-routes=false
+  no_log: true
+  changed_when: true
+  when: not tailscale_joined
+
+- name: Keep the name and the SSH, DNS and route settings on every run
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - set
+      - "--hostname={{ server_name }}"
+      - --ssh=false
+      - --accept-dns=false
+      - --accept-routes=false
+  changed_when: false
+
+- name: Read this server's place on the tailnet
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_after
+  changed_when: false
+  check_mode: false
+
+- name: Require this server on the tailnet under its name with only the server tag
+  vars:
+    tailscale_state: "{{ tailscale_after.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - tailscale_state.BackendState == 'Running'
+      - tailscale_state.Self.Tags | default([]) == [tailscale_server_tag]
+      - tailscale_state.Self.DNSName.split('.')[0] == server_name
+    fail_msg: >-
+      {{ inventory_hostname }} is not on the tailnet as {{ server_name }} with only {{ tailscale_server_tag }}
+      (state {{ tailscale_state.BackendState }}, name {{ tailscale_state.Self.DNSName | default('') }}, tags
+      {{ tailscale_state.Self.Tags | default([]) }}). Check the auth key's tag and the policy's tagOwners
+      (RUNBOOK.md, "Tailscale").
+    quiet: true

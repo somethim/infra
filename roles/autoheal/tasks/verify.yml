@@ -1,0 +1,47 @@
+---
+- name: Read the socket proxy's container state
+  ansible.builtin.command: docker container inspect autoheal-socket-proxy
+  register: ap_inspect
+  changed_when: false
+  failed_when: false
+
+- name: Fail if the socket proxy is not running
+  ansible.builtin.command: >-
+    docker container inspect
+    --format '{% raw %}{{.State.Running}} {{.State.Restarting}}{% endraw %}'
+    autoheal-socket-proxy
+  register: ap_state
+  changed_when: false
+  when: ap_inspect.rc == 0
+
+- name: Assert the socket proxy is up
+  ansible.builtin.assert:
+    that:
+      - "'true false' in ap_state.stdout"
+    fail_msg: >-
+      autoheal-socket-proxy is not running, so autoheal has no path to the
+      Docker API. `docker logs autoheal-socket-proxy` on the host
+      shows why (a bad -allow rule refuses to start).
+    quiet: true
+  when: ap_inspect.rc == 0
+
+- name: Read the requests the socket proxy refused since autoheal started
+  ansible.builtin.shell: |
+    set -eu
+    started="$(docker container inspect --format '{% raw %}{{.State.StartedAt}}{% endraw %}' autoheal)"
+    docker logs --since "$started" autoheal-socket-proxy 2>&1 | grep 'blocked request' || true
+  register: ap_blocked
+  changed_when: false
+  failed_when: ap_blocked.rc != 0
+  when: ap_inspect.rc == 0
+
+- name: Fail if the socket proxy refused any of autoheal's calls
+  ansible.builtin.assert:
+    that:
+      - ap_blocked.stdout | length == 0
+    fail_msg: >-
+      autoheal-socket-proxy refused Docker API calls autoheal made, so an
+      unhealthy container would never be restarted. Allow exactly these in
+      roles/autoheal/files/docker-compose.yml: {{ ap_blocked.stdout_lines[-5:] | join(' || ') }}
+    quiet: true
+  when: ap_inspect.rc == 0

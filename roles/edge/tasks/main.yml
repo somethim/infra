@@ -1,24 +1,16 @@
 ---
-# See docs/edge.md.
+# See docs/edge.md. The shared networks are created by roles/host.
 - name: Fail early if no ACME email is set
   ansible.builtin.assert:
     that:
-      - acme_email | length > 0
-    fail_msg: "acme_email is empty (it is baked in defaults/main.yml — restore it)."
+      - acme_email | default('') | length > 0
+    fail_msg: "acme_email is empty (it is set in production.yml — restore it)."
 
 - name: Create the edge deploy directory
   ansible.builtin.file:
     path: "{{ edge_deploy_path }}"
     state: directory
     mode: "0755"
-
-- name: Create shared Docker networks
-  ansible.builtin.shell: "docker network inspect {{ item }} >/dev/null 2>&1 || docker network create {{ item }}"
-  loop:
-    - edge
-    - data
-  register: network_create
-  changed_when: "'Created' not in network_create.stdout and network_create.rc == 0 and network_create.stdout | length > 0"
 
 - name: Render the edge .env (ACME email)
   ansible.builtin.template:
@@ -38,11 +30,50 @@
     state: directory
     mode: "0755"
 
+# Provisioning owns dynamic.yml; releases never ship it.
 - name: Ship the Traefik dynamic config (Cloudflare IP allowlist)
   ansible.builtin.copy:
     src: dynamic.yml
     dest: "{{ edge_deploy_path }}/dynamic/dynamic.yml"
     mode: "0644"
+    force: true
+
+- name: Create the origin-pull directory
+  ansible.builtin.file:
+    path: "{{ edge_deploy_path }}/origin-pull"
+    state: directory
+    mode: "0755"
+
+- name: Refuse to require client certificates without the origin-pull CA
+  ansible.builtin.assert:
+    that:
+      - edge_origin_pull_ca | trim is match('(?s)^-----BEGIN CERTIFICATE-----.*-----END CERTIFICATE-----$')
+    fail_msg: "edge_origin_pull_enabled needs edge_origin_pull_ca, the PEM of the CA that signs Cloudflare's origin-pull client certificate."
+    quiet: true
+  when: edge_origin_pull_enabled | bool
+
+- name: Install the origin-pull CA
+  ansible.builtin.copy:
+    content: "{{ edge_origin_pull_ca | trim }}\n"
+    dest: "{{ edge_deploy_path }}/origin-pull/ca.pem"
+    mode: "0644"
+  when: edge_origin_pull_enabled | bool
+
+- name: Require Cloudflare's client certificate on every TLS router
+  ansible.builtin.template:
+    src: origin-pull.yml.j2
+    dest: "{{ edge_deploy_path }}/dynamic/origin-pull.yml"
+    mode: "0644"
+  when: edge_origin_pull_enabled | bool
+
+- name: Stop requiring a client certificate while the option is off
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ edge_deploy_path }}/dynamic/origin-pull.yml"
+    - "{{ edge_deploy_path }}/origin-pull/ca.pem"
+  when: not (edge_origin_pull_enabled | bool)
 
 - name: Bring up the edge proxy
   ansible.builtin.command: docker compose up -d --remove-orphans
@@ -50,3 +81,6 @@
     chdir: "{{ edge_deploy_path }}"
   register: edge_up
   changed_when: "'Started' in edge_up.stderr or 'Created' in edge_up.stderr or 'Recreated' in edge_up.stderr"
+
+- name: Verify Traefik can use the Docker API through its socket proxy
+  ansible.builtin.import_tasks: verify.yml

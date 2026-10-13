@@ -1,0 +1,91 @@
+---
+# Host facts for the release script, the Docker firewall, swap, and the shared
+# Docker networks and database volume every stack uses as external.
+- name: Create the host configuration directory
+  ansible.builtin.file:
+    path: /etc/infra
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Tell the release script and the firewall about this host
+  ansible.builtin.copy:
+    dest: /etc/infra/host.env
+    content: |
+      PUBLIC_INTERFACE={{ ansible_facts['default_ipv4']['interface'] }}
+      PUBLIC_PORTS={{ public_ports | join(',') }}
+      ORIGIN_PULL={{ 1 if (edge_origin_pull_enabled | default(false) | bool) else 0 }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply the Docker firewall
+
+- name: Install the Docker firewall
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: infra-firewall, dest: /usr/local/sbin/infra-firewall, mode: "0755" }
+    - { src: infra-firewall.service, dest: /etc/systemd/system/infra-firewall.service, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Apply the Docker firewall
+
+- name: Keep the Docker firewall on after every boot and Docker restart
+  ansible.builtin.systemd:
+    name: infra-firewall.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply the firewall before anything checks it
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the Docker firewall
+  ansible.builtin.command: iptables -S INFRA-PUBLIC
+  register: public_rules
+  changed_when: false
+  check_mode: false
+
+- name: Require the public interface to reach only this host's public ports
+  ansible.builtin.assert:
+    that:
+      - public_rules.stdout_lines | select('search', '-j RETURN$') | map('regex_replace', '^.*--ctorigdstport ([0-9]+) -j RETURN$', '\\1') | list == public_ports | map('string') | list
+      - "'-A INFRA-PUBLIC -j DROP' in public_rules.stdout_lines"
+    fail_msg: "INFRA-PUBLIC does not admit exactly {{ public_ports }}: {{ public_rules.stdout_lines }}"
+    quiet: true
+
+- name: Make sure the host has swap for memory spikes
+  ansible.builtin.import_tasks: swap.yml
+
+# Moved here from roles/edge so they exist before any stack or the edge starts.
+- name: Create shared Docker networks
+  ansible.builtin.shell: "docker network inspect {{ item }} >/dev/null 2>&1 || docker network create {{ item }}"
+  loop:
+    - edge
+    - data
+  register: network_create
+  changed_when: "network_create.stdout | length > 0"
+
+# The database volume is external to its stack, so a release can never create
+# an empty one in its place. Created only when missing; never deleted.
+- name: Look for the database volume
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, pgdata-v18]
+  register: pgdata_volume
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Create the database volume
+  ansible.builtin.command:
+    argv: [docker, volume, create, pgdata-v18]
+  when: pgdata_volume.rc != 0
+  changed_when: true
+
+- name: Verify the Docker firewall and swap
+  ansible.builtin.import_tasks: verify.yml

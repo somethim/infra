@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly reclaim of dangling Docker images
+Description=Weekly reclaim of Docker images no container uses
 
 [Timer]
 # Ahead of the 04:00 unattended-upgrades reboot window, and the jitter keeps it there.

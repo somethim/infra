@@ -1,17 +1,64 @@
-# Watchtower. See docs/agents.md.
+# Watchtower. See docs/agents.md. It reaches Docker only through
+# watchtower-socket-proxy, and reads GHCR credentials from /root/.docker
+# (written by `docker login` in infra-apply, plans/004).
 name: watchtower
 
 services:
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
+  watchtower-socket-proxy:
+    image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
+    container_name: watchtower-socket-proxy
+    mem_limit: 32m
     restart: always
-    environment:
-      WATCHTOWER_LABEL_ENABLE: "true"
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_ROLLING_RESTART: "true"
-      WATCHTOWER_POLL_INTERVAL: "60"
-      DOCKER_API_VERSION: "1.40"
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=watchtower
+      - -allowHEAD=(/v1\.\d+)?/_ping
+      - -allowGET=(/v1\.\d+)?/(_ping|info|containers/(json|[^/]+/json)|images/.+/json)
+      - -allowPOST=(/v1\.\d+)?/(containers/(create|[^/]+/(stop|start|rename))|images/create|networks/[^/]+/connect)
+      - -allowDELETE=(/v1\.\d+)?/(containers|images)/[^/]+
+      - -shutdowngracetime=5
+      - -watchdoginterval=10
+      - -stoponwatchdog
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - watchtower-socket
+
+  watchtower:
+    image: nickfedor/watchtower:1.22.1@sha256:1d3de9ce24fc88ab627149d501879197c542cfc7876c1cc0410b9eec2b724aea
+    container_name: watchtower
+    mem_limit: 48m
+    restart: always
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GOMEMLIMIT: 36MiB
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # Keep replaced images: a best-effort extra rollback hint until the
+      # weekly prune reclaims them (roles/docker, docker-prune.service).
+      WATCHTOWER_CLEANUP: "false"
+      WATCHTOWER_ROLLING_RESTART: "true"
+      WATCHTOWER_USE_COMPOSE_DEPENDS_ON: "false"
+      WATCHTOWER_INCLUDE_STOPPED: "true"
+      WATCHTOWER_REVIVE_STOPPED: "true"
+      WATCHTOWER_POLL_INTERVAL: "60"
+      DOCKER_CONFIG: /config
+      DOCKER_HOST: tcp://watchtower-socket-proxy:2375
+    volumes:
+      - /root/.docker:/config:ro
+    networks:
+      - watchtower-socket
+    depends_on:
+      - watchtower-socket-proxy
+
+networks:
+  watchtower-socket:
+    name: watchtower-socket
+    internal: true
