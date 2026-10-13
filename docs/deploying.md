@@ -16,12 +16,9 @@ missing secret fails in seconds rather than halfway through.
 | --- | --- |
 | `SERVER_HOST` | Public IP of the host — the one place it lives |
 | `SSH_PRIVATE_KEY` | Private half of the deploy key. The public half is committed and installed by `roles/common` |
-| `GHCR_USERNAME` / `GHCR_TOKEN` | GHCR login. The token needs `read:packages` for the crm (`somethim`) and hypernova (`hypernova3643725`) images |
+| `GHCR_USERNAME` / `GHCR_TOKEN` | GHCR login. The token needs `read:packages` for the portfolio (`somethim`) and hypernova (`hypernova3643725`) images |
 | `POSTGRES_SUPERUSER_PASSWORD` | The cluster's own administrator, owned by no application |
-| `CRM_APP_KEY` | Laravel `APP_KEY` (`php artisan key:generate --show`) |
-| `CRM_DB_PASSWORD` | crm's role in the shared cluster |
 | `PRIZM_DB_PASSWORD` | hypernova's role in the shared cluster |
-| `CRM_REDIS_PASSWORD` / `CRM_TYPESENSE_API_KEY` / `CRM_ADMIN_PASSWORD` | crm service secrets |
 | `HYPERNOVA_SESSION_SECRET` / `HYPERNOVA_ADMIN_PASSWORD` | hypernova provider secrets |
 | `PORTFOLIO_DB_PASSWORD` | the portfolio's role in the shared cluster |
 | `PORTFOLIO_ADMIN_PASSWORD` | Seeds the portfolio's only operator account on first boot against an empty database. Changing it later does **not** change an existing account — do that in `/admin` |
@@ -69,13 +66,14 @@ ansible-playbook playbook.yml -e @vars.json  # vars.json = the secrets above
 1. Update `SERVER_HOST`, and any other secrets that changed.
 2. Point DNS **directly** at the host — plain A records, since HTTP-01 needs the origin
    reachable on :80: `arbikullakshi.com`, `www.arbikullakshi.com`,
-   `crm.arbikullakshi.com`, `hypernova.arbikullakshi.com`.
+   `hypernova.arbikullakshi.com`.
 3. Run **Deploy**.
 
 The `database` stack comes up first and creates every application's role and database
 before the application that needs it is deployed, so there is no manual step and nothing
-races. The portfolio applies its own migrations and seeds an empty database on start;
-both are idempotent and re-run on every boot.
+races. The portfolio applies its own migrations and ensures its operator account on every
+start (both idempotent); it never seeds content. Seeding is a manual
+`docker exec portfolio /app/portfolio-seed` (see [stacks.md](stacks.md#portfolio)).
 
 After that, push image tags from the app repos and Watchtower deploys them.
 

@@ -9,9 +9,9 @@ Default-deny inbound, allowing only **22, 80 and 443**. Outbound is unrestricted
 pulls, Let's Encrypt, Resend).
 
 This is the whole network story — no Tailscale, no Cloudflare, nothing else exposed. The
-data services are never *published* to the host: PostgreSQL, Redis and Typesense exist
-only on Docker networks, so they are unreachable from outside regardless of what ufw
-says. The only Docker-published ports on the box are Traefik's.
+database is never *published* to the host: PostgreSQL exists only on Docker networks, so
+it is unreachable from outside regardless of what ufw says. The only
+Docker-published ports on the box are Traefik's.
 
 Two implementation notes:
 
@@ -37,21 +37,20 @@ explicitly first — on a rebuilt host it does not exist yet.
 
 ### Password authentication
 
-Port 22 is open to the internet and takes roughly 5,500 failed password attempts a day.
-The real fix is to stop answering them:
+Port 22 is open to the internet and takes roughly 5,500 failed password attempts a day,
+so `ssh_password_authentication` defaults to `"no"` in `roles/common/defaults/main.yml`
+and every run renders `PasswordAuthentication no`. CI authenticates with the deploy key
+(proven by the Deploy runs at ed163b7 and 4e78a08), and the Hetzner console is the
+backstop if key login ever breaks.
+
+The explicit escape hatch, for a host that must accept passwords for one run, is:
 
 ```bash
-ansible-playbook playbook.yml --tags hardening -e ssh_password_authentication=no
+ansible-playbook playbook.yml --tags hardening -e ssh_password_authentication=yes
 ```
 
-**This is not durable.** `ssh_password_authentication` defaults to `"yes"` in
-`roles/common/defaults/main.yml`, and the template is re-rendered on every run — so a
-full deploy puts `PasswordAuthentication yes` back. To make it stick, change that
-default.
-
-It is left on by default because CI is the one client that cannot be repaired from a
-terminal afterwards. Confirm a Deploy run has authenticated with the key before turning
-it off.
+It is not durable: the next run without `-e` re-renders the template and turns passwords
+off again.
 
 The switch writes `/etc/ssh/sshd_config.d/10-hardening.conf`. **The number matters:**
 Hetzner's cloud-init ships `50-cloud-init.conf` containing `PasswordAuthentication yes`,
@@ -114,8 +113,8 @@ Two things about how it applies:
 
 ## Memory limits
 
-Every application container has a `mem_limit`. The stateful ones — PostgreSQL, Redis,
-Typesense — deliberately do not.
+Every application container has a `mem_limit`. The stateful one — PostgreSQL —
+deliberately does not.
 
 That asymmetry is the point: bounding the applications is what stops a runaway from
 making the kernel's OOM killer pick PostgreSQL, which every stack depends on. The

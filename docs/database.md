@@ -1,24 +1,21 @@
 # The shared PostgreSQL
 
-One `postgres:18-alpine` container, named `postgresql`, serving three applications. It
+One `postgres:18-alpine` container, named `postgresql`, serving two applications. It
 is deployed as the **`database` stack** and owned by no application.
 
 ## Why it is its own stack
 
-It used to be a service inside the crm stack. That made crm's compose project the owner
-of both the container and the data volume, with two consequences:
+If it were a service inside one application's stack, that application's compose project
+would own both the container and the data volume, with two consequences:
 
-- `docker compose down -v` in `/opt/crm` would have destroyed hypernova's and the
-  portfolio's databases along with crm's.
-- Retiring the CRM meant either keeping a dead application's stack alive forever, or
-  performing surgery on the thing every other application depends on.
+- `docker compose down -v` in that application's directory would destroy every other
+  application's database along with its own.
+- Retiring that application would mean either keeping a dead application's stack alive
+  forever, or performing surgery on the thing every other application depends on.
 
-Splitting it out is isolation **by function** rather than by whichever project happened
+Keeping it separate is isolation **by function** rather than by whichever project happened
 to need a database first. `stacks/database/` contains PostgreSQL and nothing else; the
-three application stacks contain applications and nothing stateful they share.
-
-Redis and Typesense stayed in the crm stack deliberately. They are not shared — only crm
-uses them — so moving them would create the same coupling in the opposite direction.
+application stacks contain applications and nothing stateful they share.
 
 ## The data volume
 
@@ -32,40 +29,15 @@ answer in one place.
 The name carries the major version because a major upgrade cannot be done in place; see
 [Upgrades](#upgrades).
 
-### The one-time migration
-
-The cluster previously lived on `crm-pgdata-v18`, created by and labelled for the crm
-project. `roles/postgres-data` moves it:
-
-1. Stop and remove the container the crm project owns, freeing the `postgresql` name.
-   `docker stop` is used rather than `rm -f` because the postgres image sets
-   `STOPSIGNAL SIGINT`, which is a *fast shutdown* — it checkpoints and closes cleanly.
-   `rm -f` sends SIGKILL, and the next start would begin with crash recovery.
-2. Create `pgdata-v18` if it does not exist.
-3. If the old volume exists and the new one is **empty**, copy the data directory across
-   with `cp -a` from a throwaway container, with the server stopped.
-
-Emptiness, not existence, is the condition. A run that created the volume and then died
-mid-copy must copy again on the next pass rather than start an empty cluster on top of a
-half-written one.
-
-`cp -a` preserves ownership and permissions, which PostgreSQL refuses to start without.
 The mount point is `/var/lib/postgresql` rather than the data directory itself, because
 the postgres 18 image puts `PGDATA` at `/var/lib/postgresql/18/docker`.
-
-**The source volume is never deleted.** It is the rollback. Delete it by hand once a
-deploy has proved the cluster healthy on the new one — see [operations.md](operations.md).
-
-On a host that never had the old volume, none of this fires.
 
 ## The superuser
 
 The cluster's administrator is **`postgres`**, and it belongs to no application.
 
-Before the split, the only role that could log in *and* administer the cluster was
-`crm` — the CRM's own application account. So "retire the CRM" and "drop the account
-that administers everyone else's databases" were the same action. That is the kind of
-coupling the split exists to remove.
+Keeping the administrator out of every application means retiring an application never
+means dropping the account that administers everyone else's databases.
 
 On a rebuilt host, `stacks/database/env.j2` sets `POSTGRES_USER=postgres`, so initdb
 creates it as the bootstrap superuser and nothing else is needed. On the existing
@@ -76,7 +48,7 @@ One code path covers both.
 ### Finding a way in
 
 The provisioning role cannot assume `postgres` exists yet, so it probes a candidate list
-(`postgres`, then `crm`) and uses the first that opens a **superuser** session. It checks
+(today only `postgres`) and uses the first that opens a **superuser** session. It checks
 `rolsuper`, not merely that the connection succeeded: a role that can log in but has been
 demoted cannot create anything, and failing there with a clear message beats a permission
 error thirty lines later.
@@ -85,9 +57,6 @@ This works without a password because the postgres image's `pg_hba.conf` trusts
 connections over the local Unix socket. That is what makes a lost or rotated superuser
 password recoverable rather than fatal, and it is not an exposure — reaching that socket
 means already being root on the host.
-
-Once `crm` has served as the bootstrap once, it can be dropped from
-`postgres_superuser_candidates` in `roles/postgres-provision/defaults/main.yml`.
 
 ### `migration_admin`
 
@@ -107,19 +76,19 @@ before any application stack is deployed. It reads `postgres_consumers` from
 
 | Database | Role | Privileges |
 | --- | --- | --- |
-| `crm` | `crm` | owner; `NOSUPERUSER NOCREATEDB NOCREATEROLE` |
-| `prizm` | `prizm` | owner; same |
+| `prizm` | `prizm` | owner; `NOSUPERUSER NOCREATEDB NOCREATEROLE` |
 | `portfolio` | `portfolio` | owner; same |
 
 Each gets a role, a database it owns, and nothing else.
 
 ### Why it is SQL and not an initdb script
 
-Two of these used to be created by `stacks/crm/initdb/10-prizm.sh`, which PostgreSQL
-runs from `/docker-entrypoint-initdb.d`. Those scripts execute **only when initdb
-initialises a fresh data directory** — so on a cluster that has been serving traffic for
-months, that bootstrap had silently stopped applying long ago. Editing it would have had
-no effect on the running host, and nobody would have noticed until a rebuild.
+The `prizm` role and database used to be created by an initdb script (`10-prizm.sh`),
+which PostgreSQL runs from `/docker-entrypoint-initdb.d`. Those scripts execute **only
+when initdb initialises a fresh data directory** — so on a cluster that has been serving
+traffic for months, that bootstrap had silently stopped applying long ago. Editing it
+would have had no effect on the running host, and nobody would have noticed until a
+rebuild.
 
 The provisioning role runs guarded SQL over the local socket on every deploy instead. It
 is idempotent, it applies to a settled host and a brand-new one identically, and its
@@ -157,29 +126,14 @@ DETAIL:  The bootstrap superuser must have the SUPERUSER attribute.
 ```
 
 Unguarded, that error aborts the deploy on any cluster whose volume an application
-initialised. Here the bootstrap role is `migration_admin`, so all three applications are
-demotable and `crm` loses the superuser bit it carried from when it owned the container.
-
-Laravel does not need superuser. If a CRM migration ever turns out to, hand it back
-**and** remove `crm` from `postgres_consumers` — otherwise the next deploy strips it
-again:
-
-```bash
-docker exec -it postgresql psql -U postgres -c 'ALTER ROLE crm SUPERUSER'
-```
-
-Removing it from that list also stops `CRM_DB_PASSWORD` rotating the role, so it is a
-trade rather than a free out.
+initialised. Here the bootstrap role is `migration_admin`, so both application roles are
+demotable.
 
 ## Connecting to it
 
 Applications reach the container as `postgresql` on the `data` network. Passwords are
 URL-encoded in the DSNs — including `/`, which the default encoder leaves alone — so no
 generated character can corrupt the connection string.
-
-crm uses discrete `DB_HOST` / `DB_USERNAME` / `DB_PASSWORD` variables because Laravel
-wants them that way; its `DB_CONNECTION=pgsql` is a Laravel *connection name*, not a
-hostname, and is unrelated to the old service name.
 
 ## Upgrades
 

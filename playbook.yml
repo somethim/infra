@@ -7,7 +7,6 @@
     # Order is load-bearing. See docs/architecture.md — Deploy order.
     stacks:
       - { name: database, pre_role: postgres-data, post_role: postgres-provision }
-      - { name: crm }
       - { name: hypernova }
       - { name: portfolio }
 
@@ -15,12 +14,10 @@
     postgres_image: postgres:18-alpine
     postgres_container: postgresql
     postgres_volume: pgdata-v18
-    postgres_legacy_volume: crm-pgdata-v18
     postgres_superuser: postgres
     postgres_bootstrap_database: postgres
 
     postgres_consumers:
-      - { name: crm, password: "{{ crm_db_password }}" }
       - { name: prizm, password: "{{ prizm_db_password }}" }
       - { name: portfolio, password: "{{ portfolio_db_password }}" }
 
@@ -32,12 +29,7 @@
           - ghcr_username | default('') | length > 0
           - ghcr_token | default('') | length > 0
           - postgres_superuser_password | default('') | length > 0
-          - crm_app_key | default('') | length > 0
-          - crm_db_password | default('') | length > 0
           - prizm_db_password | default('') | length > 0
-          - crm_redis_password | default('') | length > 0
-          - crm_typesense_api_key | default('') | length > 0
-          - crm_admin_password | default('') | length > 0
           - hypernova_session_secret | default('') | length > 0
           - hypernova_admin_password | default('') | length > 0
           - portfolio_db_password | default('') | length > 0

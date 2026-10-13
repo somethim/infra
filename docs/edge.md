@@ -11,8 +11,8 @@ routing in its own compose file, and **adding a project requires no change to th
 role**.
 
 `--providers.docker.exposedbydefault=false` means a container is invisible to Traefik
-until it opts in with `traefik.enable=true`. That is why `crm-provider` and
-`prizm-provider` can sit on the `edge` network without being publicly reachable.
+until it opts in with `traefik.enable=true`. That is why a container can sit
+on the `edge` network without being publicly reachable.
 
 `traefik.docker.network=edge` is set on every routed container because several of them
 are attached to more than one network. Without it Traefik may pick the wrong address.

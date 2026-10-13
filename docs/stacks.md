@@ -3,30 +3,6 @@
 What is peculiar about each one. The mechanics they share are in
 [architecture.md](architecture.md).
 
-## crm
-
-Laravel provider plus a Next.js BFF, with Redis and Typesense of its own.
-
-Only `web` is exposed to Traefik. `app` (Laravel) is internal-only and reached at
-`http://app:8080` from the BFF — there is no public route to it, which is why it can sit
-on the `edge` network without `traefik.enable`.
-
-Redis and Typesense are **not** shared with anything and stay in this stack. Moving them
-alongside PostgreSQL would create the same coupling the database split removed, in the
-opposite direction.
-
-Two non-obvious settings:
-
-- `web` sets `HOSTNAME: "0.0.0.0"`. Next.js standalone binds to `$HOSTNAME`, and Docker
-  sets that to the container id, which resolves to only **one** of the container's two
-  network addresses. Without the override Traefik may be unable to reach it.
-- `worker` disables its healthcheck. The image bakes a probe against the web port's
-  `/up`, which the queue worker does not serve, so the container would sit permanently
-  `unhealthy` — and, if it were ever labelled, be restarted forever by autoheal.
-
-`app` and `worker` are on the `data` network for PostgreSQL. They cannot declare
-`depends_on` for it; see [architecture.md](architecture.md#deploy-order).
-
 ## hypernova
 
 One hostname serves both halves: the web app at `/` and the provider's API at `/api`,
@@ -46,10 +22,22 @@ is the only application state outside PostgreSQL, and the `media` table is a led
 what is on it — the two must be backed up and restored together. See
 [operations.md](operations.md#backups).
 
-**A 180-second healthcheck grace.** The image carries the same probe, but on a first boot
-the container applies migrations and seeds roughly 70 MB of media, generating a preview
-for each. The image's 15-second grace is not enough, and without the override the
-container would be killed mid-seed and start again from the beginning.
+**A 180-second healthcheck grace.** The image carries the same probe, but before the
+server starts, the entrypoint runs `/app/portfolio-seed migrate` (schema plus the
+operator account) on every start. PostgreSQL lives in another stack, so the bootstrap
+retries up to 20 times, 3 seconds apart, while the database comes up, and then applies
+the migrations. The image's 15-second grace does not cover that, and without the override
+autoheal could restart the container mid-bootstrap.
+
+The entrypoint never seeds content: a seed run re-creates entries the admin has deleted,
+so seeding is a manual step, run on purpose:
+
+```bash
+docker exec portfolio /app/portfolio-seed
+```
+
+(The comment in the portfolio repo's `docker/entrypoint.sh` says
+`docker compose exec web`; the service and container here are both named `portfolio`.)
 
 **`WEBAUTHN_ORIGIN` is load-bearing.** Passkeys are bound to that exact origin. Change it
 and every enrolled credential stops working — there is no migration path, only
@@ -71,8 +59,8 @@ can never be rotated casually: losing it makes every already-enrolled TOTP secre
 permanently unreadable, with no fallback to plaintext — re-enrollment is the only
 recovery.
 
-The operator account is seeded on first boot against an empty database, because the site
-has no signup path — without it nobody can sign in.
+The operator account is created by that bootstrap when it does not exist yet, because
+the site has no signup path — without it nobody can sign in.
 
 ### The legacy site
 

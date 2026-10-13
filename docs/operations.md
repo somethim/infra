@@ -16,23 +16,9 @@ not a lockout:
 
 ```bash
 docker exec -it postgresql psql -U postgres
-# on a host that has not been migrated yet:
-docker exec -it postgresql psql -U crm
 ```
 
 Re-running the deploy re-sets every password from the repository secrets.
-
-## After the database split deploy
-
-Once the sites are confirmed healthy on the new volume:
-
-```bash
-docker volume rm crm-pgdata-v18   # the rollback copy of the cluster
-rm -rf /opt/crm/initdb            # no longer mounted by anything
-```
-
-Do **not** remove the volume before that. Until the deploy has run, it is the live
-cluster; afterwards it is the only copy of the pre-migration state.
 
 ## Reclaiming disk
 
@@ -101,9 +87,9 @@ comes back from a deploy, not from Watchtower.
 ## A site is up but hung
 
 Autoheal restarts containers that report `unhealthy`, but only those labelled
-`autoheal=true` and only those that define a healthcheck. `crm-web` and `prizm-web` have
-neither, so a hang there needs:
+`autoheal=true` and only those that define a healthcheck. `prizm-web` has neither, so a
+hang there needs:
 
 ```bash
-docker restart crm-web
+docker restart prizm-web
 ```

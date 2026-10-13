@@ -35,12 +35,7 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           POSTGRES_SUPERUSER_PASSWORD: ${{ secrets.POSTGRES_SUPERUSER_PASSWORD }}
-          CRM_APP_KEY: ${{ secrets.CRM_APP_KEY }}
-          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}
           PRIZM_DB_PASSWORD: ${{ secrets.PRIZM_DB_PASSWORD }}
-          CRM_REDIS_PASSWORD: ${{ secrets.CRM_REDIS_PASSWORD }}
-          CRM_TYPESENSE_API_KEY: ${{ secrets.CRM_TYPESENSE_API_KEY }}
-          CRM_ADMIN_PASSWORD: ${{ secrets.CRM_ADMIN_PASSWORD }}
           HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
           HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
           PORTFOLIO_DB_PASSWORD: ${{ secrets.PORTFOLIO_DB_PASSWORD }}
@@ -54,12 +49,7 @@ jobs:
             ghcr_username: env.GHCR_USERNAME,
             ghcr_token: env.GHCR_TOKEN,
             postgres_superuser_password: env.POSTGRES_SUPERUSER_PASSWORD,
-            crm_app_key: env.CRM_APP_KEY,
-            crm_db_password: env.CRM_DB_PASSWORD,
             prizm_db_password: env.PRIZM_DB_PASSWORD,
-            crm_redis_password: env.CRM_REDIS_PASSWORD,
-            crm_typesense_api_key: env.CRM_TYPESENSE_API_KEY,
-            crm_admin_password: env.CRM_ADMIN_PASSWORD,
             hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
             hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
             portfolio_db_password: env.PORTFOLIO_DB_PASSWORD,

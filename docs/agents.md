@@ -10,8 +10,8 @@ recreates the container. This is what makes the application repositories build-o
 push is a deploy.
 
 - `WATCHTOWER_LABEL_ENABLE=true` — only containers labelled
-  `com.centurylinklabs.watchtower.enable=true` are considered. PostgreSQL, Redis,
-  Typesense and Traefik carry no such label and are never touched. **Never label a
+  `com.centurylinklabs.watchtower.enable=true` are considered. PostgreSQL and
+  Traefik carry no such label and are never touched. **Never label a
   database**: an unattended image swap on a stateful container is a restore, not an
   update.
 - `WATCHTOWER_CLEANUP=true` — removes the image it replaced. Without this every update
@@ -45,9 +45,9 @@ answer.
 - **Never label a database.** Restarting a slow PostgreSQL under load is how a slow
   database becomes a broken one.
 
-`crm-web` and `prizm-web` are deliberately not labelled: neither defines a healthcheck
-nor bakes one into its image, so there is nothing for autoheal to act on. Give them one
-and the label becomes worth adding.
+`prizm-web` is deliberately not labelled: it neither defines a healthcheck nor bakes one
+into its image, so there is nothing for autoheal to act on. Give it one and the label
+becomes worth adding.
 
 ## The prune timer
 

@@ -3,15 +3,13 @@
 ## One deployer
 
 This repository is the only thing that SSHes to the server. The application
-repositories — `crm`, `hypernova`, `portfolio` — are **build-only**: their CI builds an
+repositories — `hypernova`, `portfolio` — are **build-only**: their CI builds an
 image, pushes it to GHCR, and stops there. None of them can deploy, and none of them
 knows the server's address.
 
 ```
-crm repo ─┐  build :latest → GHCR ┐
-          │                        │   Watchtower (on the server) sees the new
-hypernova ─┤  build :latest → GHCR ┤   digest → docker pull + recreate container
-portfolio ┘                         ┘
+hypernova ─┐  build :latest → GHCR ┐   Watchtower (on the server) sees the new
+portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate container
           ▲
           │ stack defs (compose + env) + provisioning + edge + agents
         infra (this repo, Ansible)
@@ -51,8 +49,7 @@ Only the `database` stack uses them, and it uses both. See [database.md](databas
 
 This has a sharp edge: a value compose interpolates is subject to compose's own syntax,
 so a `$` in it is eaten. Generate secrets with `openssl rand -hex 24` and the problem
-never arises. The interpolated ones today are `POSTGRES_PASSWORD`, `REDIS_PASSWORD` and
-`TYPESENSE_API_KEY`.
+never arises. The interpolated one today is `POSTGRES_PASSWORD`.
 
 Compose files keep interpolation to a minimum for this reason — images, domains, and
 little else. Everything an application reads arrives through `env_file` instead, where
@@ -60,20 +57,19 @@ the value passes through untouched.
 
 ## Networks
 
-Three, all bridges, none published to the host except through Traefik.
+Two, both bridges, none published to the host except through Traefik.
 
 | Network | Created by | Members |
 | --- | --- | --- |
 | `edge` | `roles/edge` | Traefik, plus every container that serves a public domain |
 | `data` | `roles/edge` | PostgreSQL, plus every container that talks to it |
-| `crm` | the crm stack | crm's internal services (`redis`, `typesense`, `app`, `worker`, `web`) |
 
 `edge` and `data` are declared `external: true` by the stacks that use them, which is
 why they are created once by `roles/edge` rather than by whichever stack happens to
 come up first.
 
-Nothing binds a host port except Traefik's 80 and 443. PostgreSQL, Redis and Typesense
-are reachable only from a container on the same network — the firewall is a second line
+Nothing binds a host port except Traefik's 80 and 443. PostgreSQL is reachable only
+from a container on the same network — the firewall is a second line
 of defence, not the first.
 
 ## Deploy order
@@ -81,14 +77,14 @@ of defence, not the first.
 `playbook.yml` runs the host roles, then the stacks **in list order**:
 
 ```
-database → crm → hypernova → portfolio
+database → hypernova → portfolio
 ```
 
 The order is load-bearing, and the reason is a limitation of Compose: `depends_on` is
 scoped to a single project, so nothing outside the `database` stack can declare a
 dependency on PostgreSQL. Ordering the list is the only mechanism available.
 
-By the time `crm` is deployed, the `database` stack is up and `roles/postgres-provision`
+By the time `hypernova` is deployed, the `database` stack is up and `roles/postgres-provision`
 has created every role and database — so each application's credentials work the first
 time it tries them, on a brand-new host, with no manual step.
 

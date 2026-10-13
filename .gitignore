@@ -2,3 +2,5 @@ inventory/hosts
 *.retry
 ansible_password.txt
 .env
+vars.json
+*.vars.json

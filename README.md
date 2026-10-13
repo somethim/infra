@@ -2,17 +2,15 @@
 
 The **one** repo that touches the server. It provisions the shared Hetzner host, runs
 the edge Traefik proxy and the autonomous agents, and deploys every stack: the shared
-`database` plus three applications.
+`database` plus two applications.
 
-The app repos (`crm`, `hypernova`, `portfolio`) are **build-only** — their CI builds
+The app repos (`hypernova`, `portfolio`) are **build-only** — their CI builds
 images and pushes them to GHCR. They never deploy. Watchtower on the server pulls a new
 image and recreates the container.
 
 ```
-crm repo ─┐  build :latest → GHCR ┐
-          │                        │   Watchtower (on the server) sees the new
-hypernova ─┤  build :latest → GHCR ┤   digest → docker pull + recreate container
-portfolio ┘                         ┘
+hypernova ─┐  build :latest → GHCR ┐   Watchtower (on the server) sees the new
+portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate container
           ▲
           │ stack defs (compose + env) + provisioning + edge + agents
         infra (this repo, Ansible) — the only thing that SSHes to the box
@@ -37,7 +35,7 @@ ansible.cfg            auto-loaded; points at inventory/hosts
 inventory/             hosts.example only — the real IP is never committed
 roles/                 common · docker · edge · watchtower · autoheal
                        stack · postgres-data · postgres-provision
-stacks/                database · crm · hypernova · portfolio
+stacks/                database · hypernova · portfolio
 docs/                  why any of it is the way it is
 ```
 
