@@ -627,6 +627,34 @@ sleep 1
 echo 'not-a-time' >"$state/started/prizm-web"
 expect_refused "a container with an unreadable StartedAt" "not ready after 1s: prizm-web:started at an unreadable time" "$work/second.tgz" release
 
+# F-008: a container that compose ps lists but docker inspect no longer finds
+# (Watchtower recreated it in between) is pending, never silently skipped.
+installed_state
+sleep 1
+touch "$state/vanished/c4"
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 4 listed containers could not be inspected" "$work/second.tgz" release
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
+grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
+
+installed_state
+sleep 1
+touch "$state/vanished/c1" "$state/vanished/c2" "$state/vanished/c3" "$state/vanished/c4"
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 4 of 4 listed containers could not be inspected" "$work/second.tgz" release
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
+
+installed_state
+sleep 1
+touch "$state/vanished-once/c3"
+expect_ok "a container gone for one poll is checked on the next" "every container is running and healthy" "$work/second.tgz" release
+[ "$(grep -c '^inspect ' "$state/calls")" -ge 2 ] || { echo "FAIL verify did not poll again after an uninspected container"; exit 1; }
+
+installed_state
+sleep 1
+echo 1 >"$state/ps.database.rc"
+expect_refused "docker compose ps fails for one stack" "not ready after 1s: docker compose ps failed for database" "$work/second.tgz" release
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose database containers were not listed was marked verified"; exit 1; }
+echo "ok   a container that compose ps lists but verify cannot inspect is never taken as ready"
+
 installed_state
 sleep 1
 printf '404' >"$state/curl.www.arbikullakshi.com"

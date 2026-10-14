@@ -373,19 +373,34 @@ provision_database() {
 }
 
 wait_for_stacks() {
-  local deadline=$((SECONDS + wait_seconds)) stack name status policy health restarts started started_at now uptime
+  local deadline=$((SECONDS + wait_seconds)) stack name status policy health restarts started started_at now uptime listed inspected seen
   local -a ids pending
   while :; do
     pending=()
     ids=()
+    # A stack whose containers cannot be listed, or a listed container that
+    # docker inspect no longer finds (Watchtower or autoheal recreated or
+    # removed it since compose ps), is pending: verify only passes on a poll
+    # that inspected every listed container.
     for stack in "${stacks[@]}"; do
-      mapfile -t -O "${#ids[@]}" ids < <(compose_in "$stack_dir/current/$stack" ps --all --quiet)
+      if listed="$(compose_in "$stack_dir/current/$stack" ps --all --quiet)"; then
+        [ -z "$listed" ] || mapfile -t -O "${#ids[@]}" ids <<<"$listed"
+      else
+        pending+=("docker compose ps failed for $stack")
+      fi
     done
-    [ "${#ids[@]}" -gt 0 ] || fail "the stacks have no containers"
+    [ "${#ids[@]}" -gt 0 ] || [ "${#pending[@]}" -gt 0 ] || fail "the stacks have no containers"
     now="$(date -u +%s)"
+    inspected=""
+    seen=0
+    if [ "${#ids[@]}" -gt 0 ]; then
+      inspected="$(docker inspect --format '{{.Name}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}}' "${ids[@]}")" || true
+    fi
     # A restart resets StartedAt, so uptime >= settle_seconds means no restart
     # in that window; RestartCount only explains a pending container.
     while read -r name status policy health restarts started; do
+      [ -n "$name" ] || continue
+      seen=$((seen + 1))
       name="${name#/}"
       if [ "$policy" = no ] || [ -z "$policy" ]; then
         continue
@@ -404,7 +419,10 @@ wait_for_stacks() {
           pending+=("$name:running for ${uptime}s of ${settle_seconds}s (restarted $restarts times)")
         fi
       fi
-    done < <(docker inspect --format '{{.Name}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}}' "${ids[@]}")
+    done <<<"$inspected"
+    if [ "$seen" -lt "${#ids[@]}" ]; then
+      pending+=("$((${#ids[@]} - seen)) of ${#ids[@]} listed containers could not be inspected (removed or recreated since docker compose ps)")
+    fi
     if [ "${#pending[@]}" -eq 0 ]; then
       log "every container is running and healthy, and has run for at least ${settle_seconds}s without a restart"
       return 0

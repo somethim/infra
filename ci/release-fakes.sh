@@ -35,6 +35,7 @@ if [ "$1" = compose ]; then
     up) exit "$(cat "$state/up.$stack.rc" 2>/dev/null || echo 0)" ;;
     ps)
       if [ "${2:-}" = --all ] && [ "${3:-}" = --quiet ]; then
+        [ ! -f "$state/ps.$stack.rc" ] || exit "$(cat "$state/ps.$stack.rc")"
         awk -v stack="$stack" '$NF == stack { print $1 }' "$state/containers"
       else
         printf 'NAME IMAGE STATUS (%s)\n' "$stack"
@@ -61,11 +62,21 @@ case "$1" in
   inspect)
     # Name, status, restart policy, health, then RestartCount and StartedAt:
     # state/started/<name> (default: long ago) and state/restarts/<name>. A
-    # state/crashloop/<name> container restarts before every inspect.
+    # state/crashloop/<name> container restarts before every inspect. Like
+    # the real CLI, an id that is gone (unknown, or state/vanished/<id>: removed
+    # since `compose ps` listed it; state/vanished-once/<id> for one inspect
+    # only) is reported on stderr, the other ids are
+    # still printed, and the exit status is 1.
     shift 3
+    rc=0
     for id in "$@"; do
       line="$(awk -v id="$id" '$1 == id { print $2, $3, $4, $5 }' "$state/containers")"
-      [ -n "$line" ] || { echo "Error: No such object: $id" >&2; exit 1; }
+      if [ -z "$line" ] || [ -e "$state/vanished/$id" ] || [ -e "$state/vanished-once/$id" ]; then
+        rm -f "$state/vanished-once/$id"
+        echo "Error: No such object: $id" >&2
+        rc=1
+        continue
+      fi
       name="${line%% *}"
       name="${name#/}"
       if [ -e "$state/crashloop/$name" ]; then
@@ -74,6 +85,7 @@ case "$1" in
       fi
       printf '%s %s %s\n' "$line" "$(cat "$state/restarts/$name" 2>/dev/null || echo 0)" "$(cat "$state/started/$name" 2>/dev/null || echo 2026-01-01T00:00:00.000000000Z)"
     done
+    exit "$rc"
     ;;
   container)
     format="$4"
@@ -157,7 +169,7 @@ new_state() {
   count=$((count + 1))
   state="$work/state$count"
   mkdir -p "$state/stack" "$state/edge/dynamic" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
-    "$state/started" "$state/restarts" "$state/crashloop"
+    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once"
   printf 'http: {}\n' >"$state/edge/dynamic/dynamic.yml"
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS=80,443 ORIGIN_PULL=0 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
