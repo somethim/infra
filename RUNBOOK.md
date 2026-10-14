@@ -261,11 +261,13 @@ infra-apply: compose model accepted: 1 service(s) in the database stack, ...
 infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: bundle accepted: 12 files, manifest checksums match
+infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
 infra-apply: database roles, passwords and grants are in place
 infra-apply: starting portfolio
 infra-apply: starting hypernova
+infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/ www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/ and keeps them behind the cloudflare-only allowlist
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls

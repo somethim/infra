@@ -47,6 +47,9 @@ expect_untouched() {
   if grep -qE '^compose .* (pull|up)( |$)' "$state/calls" || grep -q '^login' "$state/calls"; then
     echo "FAIL the stacks were touched after a refusal: $name"; exit 1
   fi
+  if grep -qE '^(stop|start) ' "$state/calls"; then
+    echo "FAIL Watchtower was stopped or started after a refusal: $name"; exit 1
+  fi
   [ "$(current_release)" = "$base_id" ] || { echo "FAIL current moved after a refusal: $name"; exit 1; }
   [ "$(find "$state/stack/releases" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || { echo "FAIL a release was left on disk after a refusal: $name"; exit 1; }
   [ -z "$(find "$state/stack" -maxdepth 1 -name '.incoming.*')" ] || { echo "FAIL the incoming bundle was left behind: $name"; exit 1; }
@@ -241,6 +244,18 @@ grep -qE '^compose --file [^ ]*/stack/current/portfolio/docker-compose.yml' "$st
 printf '%s\n' "portfolio=$portfolio_repo@$(d 11)" "prizm-provider=$provider_repo@$(d 21)" "prizm-web=$web_repo@$(d 31)" |
   cmp -s - "$state/stack/current/running-images.env" || { cat "$state/stack/current/running-images.env"; echo "FAIL running-images.env does not record the running digests"; exit 1; }
 echo "ok   a first release pulls, starts database, provision.sql, portfolio, hypernova in order and records the running digests"
+
+# watchtower_order <name> [steps]: Watchtower was stopped before the first pull,
+# started after the last app `up` and before verify read its logs, and runs again.
+watchtower_order() {
+  local name="$1" want="${2:-stop pull up start logs}" got
+  got="$(grep -nE '^stop --time [0-9]+ watchtower$|^start watchtower$|^compose .* pull --quiet$|^compose .*/hypernova up |^logs --since .* watchtower$' "$state/calls" |
+    sed -E 's,^[0-9]+:,,; s,^stop .*,stop,; s,^start .*,start,; s,^compose .* pull .*,pull,; s,^compose .* up .*,up,; s,^logs .*,logs,' | uniq)"
+  [ "$got" = "$(tr ' ' '\n' <<<"$want")" ] || { printf '%s\n' "$got"; echo "FAIL Watchtower was not stopped from the pull to the app up: $name"; exit 1; }
+  [ "$(cat "$state/running/watchtower")" = "true false" ] || { echo "FAIL Watchtower does not run after: $name"; exit 1; }
+}
+watchtower_order "a first release"
+echo "ok   Watchtower is stopped from the first pull until the app stacks are up, then started before verify"
 
 running_image portfolio "$portfolio_repo:latest" 12
 sleep 1
@@ -443,6 +458,24 @@ expect_refused "an image pull that fails" "pulling the database images failed; t
 grep -qE '^compose .* up( |$)' "$state/calls" && { echo "FAIL a stack started after a failed pull"; exit 1; }
 [ "$(current_release)" = "$base_id" ] || { echo "FAIL a failed pull moved current"; exit 1; }
 [ "$(find "$state/stack/releases" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || { echo "FAIL a failed pull left its release on disk"; exit 1; }
+grep -q '^stop --time [0-9]* watchtower$' "$state/calls" || { echo "FAIL Watchtower was not stopped before the pull"; exit 1; }
+grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower was not started again after a failed pull"; exit 1; }
+[ "$(cat "$state/running/watchtower")" = "true false" ] || { echo "FAIL Watchtower does not run after a failed pull"; exit 1; }
+echo "ok   a failed pull starts Watchtower again"
+
+installed_state
+echo 1 >"$state/stop.rc"
+expect_refused "Watchtower cannot be stopped" "Watchtower could not be stopped, so it could race the release; the running release is untouched" "$work/good.tgz" release
+grep -qE '^compose .* (pull|up)( |$)' "$state/calls" && { echo "FAIL the stacks were touched when Watchtower could not be stopped"; exit 1; }
+grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower was not started after a failed stop"; exit 1; }
+[ "$(current_release)" = "$base_id" ] || { echo "FAIL a failed Watchtower stop moved current"; exit 1; }
+[ "$(find "$state/stack/releases" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || { echo "FAIL a failed Watchtower stop left its release on disk"; exit 1; }
+
+installed_state
+rm "$state/running/watchtower"
+expect_refused "a release on a host without Watchtower" "watchtower is not running; run provisioning" "$work/second.tgz" release
+grep -qE '^(stop|start) ' "$state/calls" && { echo "FAIL infra-apply stopped or started a Watchtower that was not running"; exit 1; }
+echo "ok   a Watchtower that is not running is neither stopped nor started"
 
 new_state
 rm "$state/edge/dynamic/dynamic.yml"
@@ -524,6 +557,7 @@ grep -qE '^compose .*/(portfolio|hypernova) up' "$state/calls" && { echo "FAIL a
 grep -qF "rollback cannot fix this" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure advertises a rollback"; exit 1; }
 grep -qF "revert the stack/database or secret change on master and run release" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure does not name the revert recovery"; exit 1; }
 grep -q 'action rollback' "$work/out" && { cat "$work/out"; echo "FAIL the provision failure recommends a rollback"; exit 1; }
+[ "$(cat "$state/running/watchtower")" = "true false" ] && grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower does not run after a provision failure"; exit 1; }
 rm "$state/psql.rc"
 echo "ok   a provision.sql failure leaves the app stacks and current untouched and names a recovery that can fix it"
 
@@ -552,6 +586,7 @@ for want in "the last verified release was $base_id" "rollback only if an app im
   grep -qF -- "$want" "$work/out" || { cat "$work/out"; echo "FAIL the app start failure does not print: $want"; exit 1; }
 done
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose app stack did not start was marked verified"; exit 1; }
+[ "$(cat "$state/running/watchtower")" = "true false" ] && grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower does not run after an app start failure"; exit 1; }
 echo "ok   an app start failure says when a rollback helps and when to revert on master"
 
 installed_state
@@ -575,6 +610,7 @@ expect_refused "a prizm-web that crash-loops between polls" "not ready after 1s:
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a crash-looping release was marked verified"; exit 1; }
 [ "$(readlink "$state/stack/previous")" = "releases/$base_id" ] || { echo "FAIL the verified release is not kept as previous after a crash loop"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before the containers settled"; exit 1; }
+watchtower_order "a crash-looping release" "stop pull up start"
 rm "$state/crashloop/prizm-web"
 echo "ok   a container that restarts between polls never counts as ready"
 

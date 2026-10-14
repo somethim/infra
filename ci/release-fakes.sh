@@ -106,6 +106,17 @@ case "$1" in
   logs)
     cat "$state/logs/$4" 2>/dev/null || true
     ;;
+  stop)
+    name="${!#}"
+    [ -f "$state/running/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
+    [ ! -f "$state/stop.rc" ] || exit "$(cat "$state/stop.rc")"
+    echo "false false" >"$state/running/$name"
+    ;;
+  start)
+    [ -f "$state/running/$2" ] || { echo "Error: No such container: $2" >&2; exit 1; }
+    [ ! -f "$state/start.rc" ] || exit "$(cat "$state/start.rc")"
+    echo "true false" >"$state/running/$2"
+    ;;
   *)
     echo "fake docker: unsupported: $*" >&2
     exit 2

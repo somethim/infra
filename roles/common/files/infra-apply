@@ -58,6 +58,9 @@ declare -A repo_of=()
 origin_pull=0
 failure_hint=""
 work_dir=""
+watchtower_stopped=0
+# Watchtower may take this long to finish an update it is in the middle of.
+readonly watchtower_stop_seconds=120
 
 log() {
   printf 'infra-apply: %s\n' "$*"
@@ -72,6 +75,9 @@ fail() {
 }
 
 cleanup() {
+  if [ "$watchtower_stopped" = 1 ] && ! docker start watchtower >/dev/null 2>&1; then
+    printf 'infra-apply: FAILED: Watchtower could not be started again; run provisioning with --tags watchtower\n' >&2
+  fi
   if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
     rm -rf "$work_dir"
   fi
@@ -449,6 +455,25 @@ container_state() {
   docker container inspect --format '{{.State.Running}} {{.State.Restarting}}' "$1" 2>/dev/null || true
 }
 
+# Watchtower recreates the same labelled app containers a release recreates.
+# It is stopped from the first pull until the app stacks are up, so infra-apply
+# is then their only writer; cleanup starts it again on every exit. A Watchtower
+# that is not running is left alone (verify reports it).
+stop_watchtower() {
+  [ "$(container_state watchtower)" = "true false" ] || return 0
+  watchtower_stopped=1
+  docker stop --time "$watchtower_stop_seconds" watchtower >/dev/null 2>&1 ||
+    untouched "Watchtower could not be stopped, so it could race the release"
+  log "Watchtower is stopped until the app stacks are up"
+}
+
+start_watchtower() {
+  [ "$watchtower_stopped" = 1 ] || return 0
+  docker start watchtower >/dev/null 2>&1 || fail "Watchtower could not be started again; run provisioning with --tags watchtower"
+  watchtower_stopped=0
+  log "Watchtower is running again"
+}
+
 check_proxy() {
   local proxy="$1" client="$2" started blocked
   [ "$(container_state "$proxy")" = "true false" ] || fail "$proxy is not running, so $client has no Docker API; run provisioning"
@@ -516,6 +541,7 @@ install() {
   local bundle="$1" prepared="$2" id current previous last_verified last_verified_note current_note release stack
   id="$(date -u +%Y%m%dT%H%M%SZ)-$(sha256sum "$bundle" | cut -c1-12)"
   [ ! -e "$releases_dir/$id" ] || untouched "release $id already exists"
+  stop_watchtower
   current="$(linked_release current)"
   previous="$(linked_release previous)"
   last_verified=""
@@ -556,6 +582,7 @@ install() {
     log "starting $stack"
     compose_in "$stack_dir/current/$stack" up -d --remove-orphans || fail "$stack did not start"
   done
+  start_watchtower
   verify_release "$id"
   log "RELEASE OK: $id is current, $(release_summary "$release")${previous:+; $previous is kept as the previous release}"
 }

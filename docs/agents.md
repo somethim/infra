@@ -56,6 +56,12 @@ credentials serve the release's image pulls and Watchtower's digest checks; rota
 **Watchtower updates containers; it does not create them.** A missing app container comes
 back from a `release`, not from Watchtower.
 
+**A release stops Watchtower while it recreates the app containers.** `infra-apply` stops it
+(`docker stop`, up to 120 s so an update in progress can finish) just before the first image
+pull and starts it again once `portfolio` and `hypernova` are up, before verify checks it, so
+the two never recreate the same container at once. Every failure path starts it again too;
+a Watchtower that was not running when the release began is left as it was.
+
 Provisioning waits for one completed Watchtower update session and stops if it reported
 failed containers or a Docker API error.
 
