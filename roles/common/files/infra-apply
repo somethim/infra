@@ -373,7 +373,7 @@ provision_database() {
 }
 
 wait_for_stacks() {
-  local deadline=$((SECONDS + wait_seconds)) stack name status policy health restarts started started_at now
+  local deadline=$((SECONDS + wait_seconds)) stack name status policy health restarts started started_at now uptime
   local -a ids pending
   while :; do
     pending=()
@@ -396,8 +396,13 @@ wait_for_stacks() {
         pending+=("$name:$health")
       elif ! started_at="$(date -u -d "$started" +%s 2>/dev/null)"; then
         pending+=("$name:started at an unreadable time")
-      elif [ "$((now - started_at))" -lt "$settle_seconds" ]; then
-        pending+=("$name:running for $((now - started_at))s of ${settle_seconds}s (restarted $restarts times)")
+      else
+        # now is sampled before the inspect, so a container that just started
+        # can look up to a second younger than zero.
+        uptime=$((now > started_at ? now - started_at : 0))
+        if [ "$uptime" -lt "$settle_seconds" ]; then
+          pending+=("$name:running for ${uptime}s of ${settle_seconds}s (restarted $restarts times)")
+        fi
       fi
     done < <(docker inspect --format '{{.Name}} {{.State.Status}} {{.HostConfig.RestartPolicy.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.StartedAt}}' "${ids[@]}")
     if [ "${#pending[@]}" -eq 0 ]; then
