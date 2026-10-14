@@ -203,7 +203,8 @@ render_refused "two equal database passwords" '.portfolio_db_password = .prizm_d
 # shellcheck disable=SC2016 # a jq filter; the $$ is literal
 render_refused "a value holding \$" '.portfolio_admin_password = "pa$$word"'
 render_refused "a TOTP key that is not base64 of 32 bytes" '.portfolio_totp_encryption_key = "short"'
-render_refused "the placeholder deploy key" 'del(.deploy_key_file)'
+printf 'REPLACE_ME_BEFORE_DEPLOYING\n' >"$work/placeholder.pub"
+render_refused "the placeholder deploy key" ".deploy_key_file = \"$work/placeholder.pub\""
 
 scratch="$work/scratch-repo"
 mkdir "$scratch"
