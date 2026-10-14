@@ -419,14 +419,21 @@ the fix is published.
 
 - "…; the running release is untouched": refused before any change (a bad bundle or
   compose model, a refused GHCR login, a failed pull).
-- "FAILED: before the app stacks changed, …": the database did not come up healthy or
+- "FAILED: before the app stacks changed, …" then "release `<id>` is installed but not
+  current; … a rollback cannot fix this …": the database did not come up healthy or
   `provision.sql` failed. The database runs the new definition, portfolio and hypernova the
-  previous one, and `current` still names the previous release.
-- "release `<id>` is installed but did not come up cleanly; run the Deploy workflow with action
-  rollback … (the last verified release was `<id>`: `<summary>`)": the new release is `current`
-  but not verified, and `previous` still names the last verified one. Read the failure line
-  above it (which container was not healthy, which route answered what), fix forward with a
-  new `release`, or `rollback`.
+  previous one, and `current` still names the previous release. A `rollback` does not help
+  here: it only re-pins the app images and renders `stack/database`, `provision.sql` and the
+  secrets from `master` again. Revert the `stack/database` or secret change on `master` (or fix
+  the secret in the `production` Environment) and run `release`.
+- "release `<id>` is current but not verified; … (the last verified release was `<id>`:
+  `<summary>`)": an app stack did not start or the release did not verify; the new release is
+  `current`, and `previous` still names the last verified one. Read the failure line above it
+  (which container was not healthy, which route answered what). Run `rollback` only when an app
+  image is the cause: it changes nothing but the three app image references. A broken `stack/`
+  file, env template or secret comes back with a rollback (it is rendered from `master` again),
+  so revert that change on `master` and run `release`. The release kept in
+  `/opt/infra/releases/` cannot be re-applied.
 
 ## 9. Rotating a secret
 

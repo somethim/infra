@@ -503,7 +503,7 @@ verify_release() {
 }
 
 install() {
-  local bundle="$1" prepared="$2" id current previous last_verified release stack
+  local bundle="$1" prepared="$2" id current previous last_verified last_verified_note current_note release stack
   id="$(date -u +%Y%m%dT%H%M%SZ)-$(sha256sum "$bundle" | cut -c1-12)"
   [ ! -e "$releases_dir/$id" ] || untouched "release $id already exists"
   current="$(linked_release current)"
@@ -524,7 +524,13 @@ install() {
     fi
   done
 
-  failure_hint="release $id is installed but did not come up cleanly; run the Deploy workflow with action rollback to go back to a version that worked${last_verified:+ (the last verified release was $last_verified: $(release_summary "$releases_dir/$last_verified"))}"
+  # Each hint names a recovery that can fix that stage's failures. A rollback
+  # rebuilds the bundle from master and changes only the app image references,
+  # so it cannot undo a database, provision.sql, stack/ or secret change.
+  last_verified_note="${last_verified:+ (the last verified release was $last_verified: $(release_summary "$releases_dir/$last_verified"))}"
+  current_note="no release is current yet"
+  [ -z "$current" ] || current_note="current still names $current"
+  failure_hint="release $id is installed but not current; $current_note. A rollback cannot fix this: it only re-pins the app images and renders the database stack, provision.sql and the secrets from master again, so revert the stack/database or secret change on master and run release${last_verified_note}"
   log "starting the database"
   compose_in "$release/database" up -d --wait --remove-orphans || fail "before the app stacks changed, the database did not come up healthy"
   provision_database "$release"
@@ -535,6 +541,7 @@ install() {
   fi
   link_release current "$id"
   prune_releases "$id" "$previous"
+  failure_hint="release $id is current but not verified. Run the Deploy workflow with action rollback only if an app image causes the failure above: a rollback changes nothing but the app image references and renders every stack/ file, env file and secret from master again; for any other cause revert that change on master and run release${last_verified_note}"
   for stack in portfolio hypernova; do
     log "starting $stack"
     compose_in "$stack_dir/current/$stack" up -d --remove-orphans || fail "$stack did not start"

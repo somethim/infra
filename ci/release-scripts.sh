@@ -521,14 +521,45 @@ grep -qF "the last verified release was $base_id" "$work/out" || { cat "$work/ou
 grep -qF "password '***'" "$work/out" || { cat "$work/out"; echo "FAIL the psql error was not shown with its literal masked"; exit 1; }
 grep -qE '^compose .*/(portfolio|hypernova) up' "$state/calls" && { echo "FAIL an app stack started after provision.sql failed"; exit 1; }
 [ "$(current_release)" = "$base_id" ] || { echo "FAIL a provision failure moved current"; exit 1; }
+grep -qF "rollback cannot fix this" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure advertises a rollback"; exit 1; }
+grep -qF "revert the stack/database or secret change on master and run release" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure does not name the revert recovery"; exit 1; }
+grep -q 'action rollback' "$work/out" && { cat "$work/out"; echo "FAIL the provision failure recommends a rollback"; exit 1; }
 rm "$state/psql.rc"
-echo "ok   a provision.sql failure leaves the app stacks and current untouched"
+echo "ok   a provision.sql failure leaves the app stacks and current untouched and names a recovery that can fix it"
+
+installed_state
+sleep 1
+echo 1 >"$state/up.database.rc"
+expect_refused "the database does not come up healthy" "FAILED: before the app stacks changed, the database did not come up healthy" "$work/second.tgz" release
+for want in "the last verified release was $base_id" "rollback cannot fix this" "revert the stack/database or secret change on master and run release" "current still names $base_id. A rollback cannot fix this"; do
+  grep -qF -- "$want" "$work/out" || { cat "$work/out"; echo "FAIL the database failure does not print: $want"; exit 1; }
+done
+grep -q 'action rollback' "$work/out" && { cat "$work/out"; echo "FAIL the database failure recommends a rollback"; exit 1; }
+grep -qE '^compose .*/(portfolio|hypernova) up' "$state/calls" && { echo "FAIL an app stack started after the database failed"; exit 1; }
+[ "$(current_release)" = "$base_id" ] || { echo "FAIL a database failure moved current"; exit 1; }
+echo "ok   a database failure leaves current untouched and names a recovery that can fix it"
+
+new_state
+echo 1 >"$state/up.database.rc"
+expect_refused "the database of a first release does not come up healthy" "installed but not current; no release is current yet\\. A rollback cannot fix this" "$work/good.tgz" release
+grep -q 'the last verified release was' "$work/out" && { cat "$work/out"; echo "FAIL a first release names a last verified release"; exit 1; }
+
+installed_state
+sleep 1
+echo 1 >"$state/up.hypernova.rc"
+expect_refused "an app stack that does not start" "FAILED: hypernova did not start" "$work/second.tgz" release
+for want in "the last verified release was $base_id" "rollback only if an app image causes" "revert that change on master and run release"; do
+  grep -qF -- "$want" "$work/out" || { cat "$work/out"; echo "FAIL the app start failure does not print: $want"; exit 1; }
+done
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose app stack did not start was marked verified"; exit 1; }
+echo "ok   an app start failure says when a rollback helps and when to revert on master"
 
 installed_state
 sleep 1
 sed -i 's,^c3 /prizm-provider running always healthy hypernova$,c3 /prizm-provider running always starting hypernova,' "$state/containers"
 expect_refused "a container that never turns healthy" "not ready after 1s: prizm-provider:starting" "$work/second.tgz" release
 grep -qF "the last verified release was $base_id" "$work/out" || { cat "$work/out"; echo "FAIL the failure does not name the last verified release"; exit 1; }
+grep -qF "rollback only if an app image causes" "$work/out" || { cat "$work/out"; echo "FAIL the verify failure does not qualify the rollback"; exit 1; }
 [ "$(readlink "$state/stack/previous")" = "releases/$base_id" ] || { echo "FAIL the verified release is not kept as previous"; exit 1; }
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL an unhealthy release was marked verified"; exit 1; }
 failed_id="$(current_release)"

@@ -32,7 +32,7 @@ if [ "$1" = compose ]; then
       exec "$REAL_DOCKER" "${args[@]}"
       ;;
     pull) exit "$(cat "$state/pull.rc" 2>/dev/null || echo 0)" ;;
-    up) exit 0 ;;
+    up) exit "$(cat "$state/up.$stack.rc" 2>/dev/null || echo 0)" ;;
     ps)
       if [ "${2:-}" = --all ] && [ "${3:-}" = --quiet ]; then
         awk -v stack="$stack" '$NF == stack { print $1 }' "$state/containers"
