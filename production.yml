@@ -11,7 +11,7 @@ tailscale_ci_tag: "tag:infra-ci"
 # Confirm both on the host before provisioning (RUNBOOK.md, "Confirm the host's
 # facts"): lsb_release -cs, and the major of docker version's Server.Version.
 # provision-checks refuses to run when either differs.
-ubuntu_release: noble
+ubuntu_release: resolute
 docker_engine_major: 29
 
 reboot_time: "04:00"
