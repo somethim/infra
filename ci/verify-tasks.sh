@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs the verify tasks of edge, watchtower, autoheal, docker and host
 # (roles/*/tasks/verify.yml) on localhost against fake docker, iptables and
-# swapon that answer from per-case state files. Nothing here touches the
-# local Docker daemon, firewall or swap.
+# swapon that answer from per-case state files, and the provision SSH route
+# (tasks/ssh-route.yml) for public and tailnet SSH_CONNECTION values. Nothing
+# here touches the local Docker daemon, firewall or swap.
 #
 #   bash ci/verify-tasks.sh
 #
@@ -190,5 +191,36 @@ expect_fail "host: INFRA-PUBLIC hooked on another interface" "DOCKER-USER does n
 scenario
 echo 536870912 >"$work/state/swap"
 expect_fail "host: less than 1 GiB of swap" "it needs at least 1 GiB" host
+
+### provision SSH route (tasks/ssh-route.yml): only a run whose own connection
+### reached a tailnet address may close public 22.
+
+expect_route() {
+  local name="$1" connection="$2" want="$3"
+  shift 3
+  if ! run ssh_route -e "{\"ssh_connection\": {\"stdout\": \"$connection\"}}" "$@"; then
+    cat "$work/out.log"; echo "FAIL ssh route probe did not run: $name"; exit 1
+  fi
+  if ! grep -qF "\"msg\": \"ssh_over_public=$want\"" "$work/out.log"; then
+    cat "$work/out.log"; echo "FAIL ssh route: $name: wanted ssh_over_public=$want"; exit 1
+  fi
+  echo "ok   ssh route: $name -> ssh_over_public=$want"
+}
+
+expect_route "public IPv4 (the default address)" "203.0.113.5 51000 198.51.100.10 22" True
+expect_route "public IPv6" "2001:db8::5 51000 2a01:4f8:c012:abcd::1 22" True
+expect_route "a Floating or second IPv4" "203.0.113.5 51000 198.51.100.77 22" True
+expect_route "public IPv6 on a host without a default IPv4" "2001:db8::5 51000 2a01:4f8:c012:abcd::1 22" True -e '{"ansible_facts": {}}'
+expect_route "just below 100.64.0.0/10" "203.0.113.5 51000 100.63.255.255 22" True
+expect_route "just above 100.64.0.0/10" "203.0.113.5 51000 100.128.0.1 22" True
+expect_route "an address that only contains 100.64." "203.0.113.5 51000 1100.64.0.1 22" True
+expect_route "IPv4-mapped tailnet address (kept open, fail-safe)" "::ffff:100.101.1.2 51000 ::ffff:100.64.1.2 22" True
+expect_route "next to fd7a:115c:a1e0::/48" "2001:db8::5 51000 fd7a:115c:a1e1::1 22" True
+expect_route "unreadable SSH_CONNECTION" "" True
+expect_route "SSH_CONNECTION with three fields" "203.0.113.5 51000 100.64.0.7" True
+expect_route "tailnet IPv4" "100.101.102.103 51000 100.64.0.7 22" False
+expect_route "tailnet IPv4, top of the range" "100.101.102.103 51000 100.127.255.254 22" False
+expect_route "tailnet IPv6" "fd7a:115c:a1e0::1 51000 fd7a:115c:a1e0:ab12:4843:cd96:6258:b240 22" False
+expect_route "tailnet IPv6 in capitals" "fd7a:115c:a1e0::1 51000 FD7A:115C:A1E0::5 22" False
 
 echo "verify tasks: all cases behaved"

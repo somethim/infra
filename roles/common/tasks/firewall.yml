@@ -1,7 +1,8 @@
 ---
 # See docs/host.md — Firewall. SSH is admitted on tailscale0 before public 22 is
 # ever deleted, and public 22 is deleted only by a run that itself came in over
-# the tailnet, so no run can cut its own session.
+# the tailnet (its server address in 100.64.0.0/10 or fd7a:115c:a1e0::/48,
+# tasks/ssh-route.yml), so no run can cut its own session.
 - name: Set default incoming policy to deny
   ansible.builtin.command: ufw default deny incoming
   changed_when: false
@@ -15,7 +16,7 @@
   loop: "{{ ufw_allowed }}"
   changed_when: false
 
-- name: Keep SSH on the public address only while this run itself comes in over it
+- name: Keep SSH on the public address while this run itself did not come in over the tailnet
   ansible.builtin.command: ufw allow 22/tcp
   changed_when: false
   when: ssh_over_public

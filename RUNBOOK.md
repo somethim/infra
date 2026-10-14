@@ -189,7 +189,7 @@ root login is `prohibit-password` (keys only). The run ends with:
 Root can still log in with a key until provisioning runs as admin.
 Set the admin sudo password over the tailnet first: ssh -t root@infra-host passwd admin
 Then set ansible_host=infra-host in inventory/hosts and run: ansible-playbook -u admin --ask-become-pass provision.yml (RUNBOOK.md, "Cut-over").
-This run reached infra-host on its public address, so ufw keeps 22/tcp open there. ...
+This run did not reach infra-host over the tailnet, so ufw keeps 22/tcp open on its public address. ...
 ```
 
 The app stacks and crm keep running untouched. A stop at "Root's authorized_keys … must hold

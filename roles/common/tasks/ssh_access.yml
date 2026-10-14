@@ -138,7 +138,7 @@
 - name: Say that SSH on the public address stays open until a run comes in over the tailnet
   ansible.builtin.debug:
     msg: >-
-      This run reached {{ inventory_hostname }} on its public address, so ufw keeps 22/tcp open there. Run provisioning
+      This run did not reach {{ inventory_hostname }} over the tailnet, so ufw keeps 22/tcp open on its public address. Run provisioning
       again over the tailnet (ansible_host={{ server_name }}, RUNBOOK.md, "Cut-over") to close it.
   when: ssh_over_public
 

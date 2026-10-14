@@ -67,8 +67,12 @@ The Hetzner Cloud web console is the backstop either way; it does not go through
 ufw denies inbound by default and allows only **22 on `tailscale0`, 80 and 443**. Outbound
 is unrestricted (image pulls, Let's Encrypt, Resend, Tailscale).
 
-Public 22 is lockout-safe: a run that came in over the public address (the first one) adds
+Public 22 is lockout-safe: a run that did not come in over the tailnet (the first one, over the public address) adds
 `ufw allow 22/tcp` and says so at the end; a run that came in over the tailnet deletes it.
+"Over the tailnet" means positive evidence only: the server address in the run's own
+`SSH_CONNECTION` is a Tailscale address (`100.64.0.0/10` or `fd7a:115c:a1e0::/48`,
+`tasks/ssh-route.yml`). A run over the public IPv6, a Floating IP or any other address, or one
+whose `SSH_CONNECTION` cannot be read, counts as public and keeps 22 open.
 No run can cut the session it runs in, and the public port closes only once the tailnet has
 been proven by a run over it.
 

@@ -1,0 +1,16 @@
+---
+# Classifies this run's own SSH connection from ssh_connection (printenv
+# SSH_CONNECTION: "client-ip client-port server-ip server-port"). Only positive
+# evidence of the tailnet, a server address in Tailscale's 100.64.0.0/10 or
+# fd7a:115c:a1e0::/48, counts as "not public"; anything else (public IPv4 or
+# IPv6, a Floating IP, an unreadable SSH_CONNECTION) keeps public 22 open
+# (roles/common/tasks/firewall.yml). Tested by ci/verify-tasks.sh.
+- name: Note whether this run came in other than over the tailnet
+  tags: [always]
+  vars:
+    ssh_fields: "{{ (ssh_connection.stdout | default('')).split() }}"
+  ansible.builtin.set_fact:
+    ssh_over_public: >-
+      {{ (ssh_fields | length) != 4
+         or not (ssh_fields[2] is match('100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+$')
+                 or ssh_fields[2] is match('fd7a:115c:a1e0:', ignorecase=true)) }}

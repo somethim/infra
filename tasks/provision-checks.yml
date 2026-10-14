@@ -21,12 +21,9 @@
   failed_when: false
   check_mode: false
 
-- name: Note whether this run came in over the public address
+- name: Note whether this run came in over the tailnet
   tags: [always]
-  ansible.builtin.set_fact:
-    ssh_over_public: >-
-      {{ (ssh_connection.stdout.split() | length) != 4
-         or ssh_connection.stdout.split()[2] == ansible_facts['default_ipv4']['address'] | default('') }}
+  ansible.builtin.import_tasks: ssh-route.yml
 
 - name: Log in as root on a fresh server and as the admin user afterwards
   tags: [always]

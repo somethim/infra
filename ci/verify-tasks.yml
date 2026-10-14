@@ -23,3 +23,10 @@
     - name: Host verify
       ansible.builtin.import_tasks: ../roles/host/tasks/verify.yml
       when: verify_role == 'host'
+    - name: Provision SSH route
+      ansible.builtin.import_tasks: ../tasks/ssh-route.yml
+      when: verify_role == 'ssh_route'
+    - name: Report the SSH route
+      ansible.builtin.debug:
+        msg: "ssh_over_public={{ ssh_over_public }}"
+      when: verify_role == 'ssh_route'
