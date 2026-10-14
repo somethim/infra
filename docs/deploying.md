@@ -136,7 +136,9 @@ anything changes ("…; the running release is untouched") unless all of this ho
 Then it installs the bundle as `/opt/infra/releases/<UTC time>-<sha12>`, starts `database`
 with `--wait`, runs `provision.sql` over the local socket, points `current` at the new release
 (and `previous` at the last verified one), starts `portfolio` and `hypernova`, and verifies:
-every container running and healthy within 10 minutes, Traefik on the host answering 403 (the
+every container running and healthy within 10 minutes, each up for at least 30 s without
+a restart (so a container without a healthcheck, such as `prizm-web`, that crash-loops is not
+taken for running), Traefik on the host answering 403 (the
 `cloudflare-only` allowlist) for every public host and hypernova's `/api/`, and no refused call
 in any socket proxy's log. Only then does it record the running digests
 (`running-images.env`), mark the release `.verified`, and print `RELEASE OK`. It keeps only

@@ -570,6 +570,27 @@ expect_ok "a release after a failed one keeps the last verified release" "$base_
 
 installed_state
 sleep 1
+touch "$state/crashloop/prizm-web"
+expect_refused "a prizm-web that crash-loops between polls" "not ready after 1s: prizm-web:running for [0-9]+s of 30s \\(restarted [0-9]+ times\\)" "$work/second.tgz" release
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a crash-looping release was marked verified"; exit 1; }
+[ "$(readlink "$state/stack/previous")" = "releases/$base_id" ] || { echo "FAIL the verified release is not kept as previous after a crash loop"; exit 1; }
+grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before the containers settled"; exit 1; }
+rm "$state/crashloop/prizm-web"
+echo "ok   a container that restarts between polls never counts as ready"
+
+installed_state
+sleep 1
+date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%S.%NZ >"$state/started/prizm-web"
+expect_refused "a prizm-web that started 5 s ago" "not ready after 1s: prizm-web:running for [0-9]+s of 30s \\(restarted 0 times\\)" "$work/second.tgz" release
+echo "ok   a container up for less than the settle window is not ready yet"
+
+installed_state
+sleep 1
+echo 'not-a-time' >"$state/started/prizm-web"
+expect_refused "a container with an unreadable StartedAt" "not ready after 1s: prizm-web:started at an unreadable time" "$work/second.tgz" release
+
+installed_state
+sleep 1
 printf '404' >"$state/curl.www.arbikullakshi.com"
 expect_refused "Traefik answers 404 for a host" "Traefik answered 404 for www\\.arbikullakshi\\.com/ on the host itself" "$work/second.tgz" release
 grep -qF "the last verified release was $base_id" "$work/out" || { cat "$work/out"; echo "FAIL the 404 failure does not name the last verified release"; exit 1; }

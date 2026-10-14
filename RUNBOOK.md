@@ -266,7 +266,7 @@ infra-apply: starting the database
 infra-apply: database roles, passwords and grants are in place
 infra-apply: starting portfolio
 infra-apply: starting hypernova
-infra-apply: every container is running and healthy
+infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/ www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/ and keeps them behind the cloudflare-only allowlist
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on

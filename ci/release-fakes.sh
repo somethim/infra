@@ -59,9 +59,20 @@ case "$1" in
     fi
     ;;
   inspect)
-    shift 2
+    # Name, status, restart policy, health, then RestartCount and StartedAt:
+    # state/started/<name> (default: long ago) and state/restarts/<name>. A
+    # state/crashloop/<name> container restarts before every inspect.
+    shift 3
     for id in "$@"; do
-      awk -v id="$id" '$1 == id { print $2, $3, $4, $5 }' "$state/containers"
+      line="$(awk -v id="$id" '$1 == id { print $2, $3, $4, $5 }' "$state/containers")"
+      [ -n "$line" ] || { echo "Error: No such object: $id" >&2; exit 1; }
+      name="${line%% *}"
+      name="${name#/}"
+      if [ -e "$state/crashloop/$name" ]; then
+        echo $(($(cat "$state/restarts/$name" 2>/dev/null || echo 0) + 1)) >"$state/restarts/$name"
+        date -u +%Y-%m-%dT%H:%M:%S.%NZ >"$state/started/$name"
+      fi
+      printf '%s %s %s\n' "$line" "$(cat "$state/restarts/$name" 2>/dev/null || echo 0)" "$(cat "$state/started/$name" 2>/dev/null || echo 2026-01-01T00:00:00.000000000Z)"
     done
     ;;
   container)
@@ -134,7 +145,8 @@ new_state() {
   local name
   count=$((count + 1))
   state="$work/state$count"
-  mkdir -p "$state/stack" "$state/edge/dynamic" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known"
+  mkdir -p "$state/stack" "$state/edge/dynamic" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
+    "$state/started" "$state/restarts" "$state/crashloop"
   printf 'http: {}\n' >"$state/edge/dynamic/dynamic.yml"
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS=80,443 ORIGIN_PULL=0 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
