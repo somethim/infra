@@ -557,7 +557,8 @@ grep -qE '^compose .*/(portfolio|hypernova) up' "$state/calls" && { echo "FAIL a
 grep -qF "rollback cannot fix this" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure advertises a rollback"; exit 1; }
 grep -qF "revert the stack/database or secret change on master and run release" "$work/out" || { cat "$work/out"; echo "FAIL the provision failure does not name the revert recovery"; exit 1; }
 grep -q 'action rollback' "$work/out" && { cat "$work/out"; echo "FAIL the provision failure recommends a rollback"; exit 1; }
-[ "$(cat "$state/running/watchtower")" = "true false" ] && grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower does not run after a provision failure"; exit 1; }
+grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower was not started again after a provision failure"; exit 1; }
+[ "$(cat "$state/running/watchtower")" = "true false" ] || { echo "FAIL Watchtower does not run after a provision failure"; exit 1; }
 rm "$state/psql.rc"
 echo "ok   a provision.sql failure leaves the app stacks and current untouched and names a recovery that can fix it"
 
@@ -586,7 +587,8 @@ for want in "the last verified release was $base_id" "rollback only if an app im
   grep -qF -- "$want" "$work/out" || { cat "$work/out"; echo "FAIL the app start failure does not print: $want"; exit 1; }
 done
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose app stack did not start was marked verified"; exit 1; }
-[ "$(cat "$state/running/watchtower")" = "true false" ] && grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower does not run after an app start failure"; exit 1; }
+grep -q '^start watchtower$' "$state/calls" || { echo "FAIL Watchtower was not started again after an app start failure"; exit 1; }
+[ "$(cat "$state/running/watchtower")" = "true false" ] || { echo "FAIL Watchtower does not run after an app start failure"; exit 1; }
 echo "ok   an app start failure says when a rollback helps and when to revert on master"
 
 installed_state
