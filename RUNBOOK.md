@@ -47,7 +47,8 @@ the one the server really has):
 
 If the release or the major differ, edit `production.yml` (through `master`) before anything
 else: provisioning stops with "Confirm the host's facts" when they do not match, and the
-Docker apt pin would otherwise move the Engine to another major. If a volume is missing, stop
+Docker apt pin (written before the first `apt upgrade`) would otherwise move the Engine to
+another major. If a volume is missing, stop
 here and find out why before any release: the release uses these exact names and would
 otherwise start an app on an empty volume.
 
@@ -177,7 +178,8 @@ Expect, in this order (the order of `provision.yml`): the checks pass; ufw admit
 from root's `authorized_keys`; `admin` is created with your keys (copied once from root) and
 sudo that asks for a password; `deploy` is created with the forced command and the release
 scripts; fail2ban, patching and the journald cap are set; the server joins the tailnet; Docker
-comes from the pinned apt repository (an Engine update here restarts every container once);
+comes from the pinned apt repository (the pin is written before the first `apt upgrade`, so the
+Engine stays on `docker_engine_major`; an update within that major restarts every container once);
 `/etc/infra/host.env`, the `INFRA-PUBLIC` firewall chain and swap are in place; Traefik,
 Watchtower and autoheal are replaced by the pinned, socket-proxied ones (same project names,
 same `edge_edge-acme` certificates); last, password and keyboard-interactive login are off and

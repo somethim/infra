@@ -1,4 +1,4 @@
-# Managed by Ansible (roles/docker). Keeps apt on the Engine major production.yml pins.
+# Managed by Ansible (roles/docker/tasks/pin.yml, written before any apt upgrade). Keeps apt on the Engine major production.yml pins.
 Package: docker-ce docker-ce-cli docker-ce-rootless-extras
 Pin: version 5:{{ docker_engine_major }}.*
 Pin-Priority: 990

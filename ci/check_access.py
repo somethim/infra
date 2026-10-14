@@ -22,6 +22,10 @@ Rules (each problem is printed as a ::error:: line):
      it nor anything it runs references a Deploy secret.
   7. deploy.yml refuses every ref but refs/heads/master, runs in the production Environment,
      joins the tailnet as tag:infra-ci and refuses SERVER_USER root or the admin user.
+  8. Walking provision.yml in run order (pre_tasks, roles, post_tasks, through import_tasks and
+     import_role), /etc/apt/preferences.d/docker is written from docker-apt-pin.j2, pinning
+     docker-ce, docker-ce-cli and docker-ce-rootless-extras to 5:<docker_engine_major>.*, before
+     any apt task that upgrades or installs a Docker package.
 
 --self-test first seeds at least one violation per rule into a temp copy of the tree and requires
 each to be caught, then checks the real tree.
@@ -51,6 +55,8 @@ VISUDO = "/usr/sbin/visudo -cf %s"
 AUTHORIZED_KEY_PREFIX = f'restrict,command="{GATE}" '
 HARDENING_LINES = ("PasswordAuthentication no", "KbdInteractiveAuthentication no", "PermitRootLogin no", "ExposeAuthInfo yes")
 UFW_ALLOWED = ["in on tailscale0 proto tcp to any port 22", "80/tcp", "443/tcp"]
+DOCKER_PIN = "/etc/apt/preferences.d/docker"
+DOCKER_PINNED = {"docker-ce", "docker-ce-cli", "docker-ce-rootless-extras"}
 
 
 def load_yaml(path: pathlib.Path):
@@ -307,6 +313,69 @@ def check_workflow(workflow: dict) -> list[str]:
     return problems
 
 
+def provision_tasks(root: pathlib.Path) -> list[tuple[str, dict]]:
+    """Every task provision.yml runs, in run order, as (file, task), through static imports."""
+    def expand(rel: str, role: str | None, seen: tuple[str, ...]) -> list[tuple[str, dict]]:
+        if rel in seen:
+            raise ValueError(f"import loop at {rel}")
+        out: list[tuple[str, dict]] = []
+        for task in tasks_in(root, rel):
+            inc = module_args(task, "import_tasks") or module_args(task, "include_tasks")
+            ref = module_args(task, "import_role") or module_args(task, "include_role")
+            if inc is not None:
+                target = str(inc.get("_raw") or inc.get("file"))
+                base = f"roles/{role}/tasks" if role else str(pathlib.PurePosixPath(rel).parent)
+                out += expand(str(pathlib.PurePosixPath(base) / target), role, (*seen, rel))
+            elif ref is not None:
+                name = str(ref["name"])
+                out += expand(f"roles/{name}/tasks/{ref.get('tasks_from', 'main')}.yml", name, (*seen, rel))
+            else:
+                out.append((rel, task))
+        return out
+
+    play = (load_yaml(root / "provision.yml") or [{}])[0]
+    ordered: list[tuple[str, dict]] = []
+    for task in play.get("pre_tasks") or []:
+        inc = module_args(task, "import_tasks")
+        ordered += expand(str(inc["_raw"]), None, ()) if inc else [("provision.yml", task)]
+    for entry in play.get("roles") or []:
+        name = entry["role"] if isinstance(entry, dict) else entry
+        ordered += expand(f"roles/{name}/tasks/main.yml", name, ())
+    for task in play.get("post_tasks") or []:
+        ref = module_args(task, "import_role")
+        ordered += expand(f"roles/{ref['name']}/tasks/{ref.get('tasks_from', 'main')}.yml", ref["name"], ()) if ref else [("provision.yml", task)]
+    return ordered
+
+
+# Rule 8
+def check_docker_pin(root: pathlib.Path) -> list[str]:
+    problems = []
+    ordered = provision_tasks(root)
+    pins = [i for i, (_, t) in enumerate(ordered) if str((module_args(t, "template") or {}).get("dest", "")) == DOCKER_PIN]
+    for i in pins:
+        rel, task = ordered[i]
+        args = module_args(task, "template") or {}
+        if args.get("src") != "docker-apt-pin.j2" or not rel.startswith("roles/docker/"):
+            problems.append(f"rule 8: {rel}: {DOCKER_PIN} must be written from roles/docker/templates/docker-apt-pin.j2")
+    text = render((root / "roles/docker/templates/docker-apt-pin.j2").read_text(), {"docker_engine_major": 29})
+    packages = set(re.findall(r"^Package:\s*(.*)$", text, re.M)[0].split()) if re.search(r"^Package:", text, re.M) else set()
+    if not DOCKER_PINNED <= packages or not re.search(r"^Pin: version 5:29\.\*$", text, re.M) or not re.search(r"^Pin-Priority: (\d+)$", text, re.M):
+        problems.append(f"rule 8: roles/docker/templates/docker-apt-pin.j2: must pin {sorted(DOCKER_PINNED)} to version 5:{{{{ docker_engine_major }}}}.* with a Pin-Priority")
+    first_pin = pins[0] if pins else len(ordered)
+    for i, (rel, task) in enumerate(ordered[:first_pin]):
+        args = module_args(task, "apt")
+        if args is None:
+            continue
+        names = args.get("name") or args.get("pkg") or []
+        names = [names] if isinstance(names, str) else list(names)
+        upgrades = str(args.get("upgrade", "no")).lower() not in ("no", "false")
+        if upgrades or any(str(n).startswith(("docker", "containerd")) for n in names):
+            problems.append(f"rule 8: {rel}: apt task {task.get('name')!r} runs before {DOCKER_PIN} is written and could move the Docker Engine major")
+    if not pins:
+        problems.append(f"rule 8: provision.yml: nothing it runs writes {DOCKER_PIN}")
+    return problems
+
+
 def run_checks(root: pathlib.Path) -> list[str]:
     problems: list[str] = []
     try:
@@ -314,11 +383,12 @@ def run_checks(root: pathlib.Path) -> list[str]:
     except (OSError, yaml.YAMLError) as e:
         return [f"{WORKFLOW}: could not be read: {type(e).__name__}: {e}"]
     checks = [lambda: check_verbs(root, workflow), lambda: check_sudo(root), lambda: check_deploy_user(root), lambda: check_sshd(root),
-              lambda: check_firewall(root), lambda: check_provision(root, workflow), lambda: check_workflow(workflow)]
+              lambda: check_firewall(root), lambda: check_provision(root, workflow), lambda: check_workflow(workflow),
+              lambda: check_docker_pin(root)]
     for number, check in enumerate(checks, 1):
         try:
             problems += check()
-        except (KeyError, TypeError, AttributeError, IndexError, OSError, yaml.YAMLError, jinja2.TemplateError) as e:
+        except (KeyError, TypeError, AttributeError, IndexError, ValueError, OSError, yaml.YAMLError, jinja2.TemplateError) as e:
             problems.append(f"rule {number}: could not read its inputs: {type(e).__name__}: {e}")
     return problems
 
@@ -379,6 +449,13 @@ def self_test() -> None:
         ("7", "no production Environment", edit(WORKFLOW, "    environment: production\n", ""), "must run in environment: production"),
         ("7", "the runner joins with another tag", edit(WORKFLOW, "tags: tag:infra-ci", "tags: tag:infra-server"), "join with tags: tag:infra-ci"),
         ("7", "SERVER_USER may be root", edit(WORKFLOW, '            root | admin | "$admin_user")', '            admin | "$admin_user")'), "refuse root, admin and the admin_user"),
+        ("8", "the pin written only by the docker role, after the upgrade", edit("roles/common/tasks/essentials.yml", "    name: docker\n    tasks_from: pin\n", "    name: docker\n    tasks_from: verify\n"),
+         "apt task 'Update apt cache and upgrade base packages' runs before"),
+        ("8", "the upgrade moved above the pin", edit("roles/common/tasks/main.yml", "- name: Install essentials\n", "- name: Upgrade first\n  ansible.builtin.apt:\n    upgrade: safe\n\n- name: Install essentials\n"),
+         "apt task 'Upgrade first' runs before"),
+        ("8", "Docker installed from a pre-task", edit("tasks/provision-checks.yml", "---\n", "---\n- name: Early Docker\n  ansible.builtin.apt:\n    name: [docker-ce]\n"), "apt task 'Early Docker' runs before"),
+        ("8", "the pin drops docker-ce-cli", edit("roles/docker/templates/docker-apt-pin.j2", "docker-ce docker-ce-cli", "docker-ce"), "must pin ['docker-ce', 'docker-ce-cli'"),
+        ("8", "the pin removed", edit("roles/docker/tasks/pin.yml", "    dest: /etc/apt/preferences.d/docker\n", "    dest: /etc/apt/preferences.d/other\n"), "nothing it runs writes"),
     ]
     caught_rules = set()
     for rule, name, mutate, expected in cases:
@@ -391,7 +468,7 @@ def self_test() -> None:
                 raise SystemExit(f"self-test FAILED: rule {rule}: {name}: expected a problem containing {expected!r}, got {problems}")
             caught_rules.add(rule)
             print(f"ok   rule {rule} caught: {name}")
-    missing = {str(n) for n in range(1, 8)} - caught_rules
+    missing = {str(n) for n in range(1, 9)} - caught_rules
     if missing:
         raise SystemExit(f"self-test FAILED: no seeded violation for rules {sorted(missing)}")
     print("self-test: every widened access was caught")
@@ -407,7 +484,7 @@ def main() -> int:
         return 1
     print("deploy access: the gate, infra-apply, the sudo rule and the workflow agree on release and status; sudo validated, admin sudo "
           "asks for a password; the deploy key is root-owned and forced to the gate; key-only sshd; ufw tailnet SSH plus 80/443; "
-          "provision holds no secret; master only, production Environment, tag:infra-ci, never root")
+          "provision holds no secret; master only, production Environment, tag:infra-ci, never root; the Docker pin precedes every apt upgrade")
     return 0
 
 

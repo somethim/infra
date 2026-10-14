@@ -1,4 +1,12 @@
 ---
+# The Docker Engine pin must exist before the upgrade: on a host that already has
+# Docker from Docker's repository, upgrade: safe would otherwise move docker-ce to
+# the repository's newest major (docs/host.md, "The Docker daemon").
+- name: Pin the Docker Engine major before any apt upgrade
+  ansible.builtin.import_role:
+    name: docker
+    tasks_from: pin
+
 - name: Update apt cache and upgrade base packages
   ansible.builtin.apt:
     update_cache: true

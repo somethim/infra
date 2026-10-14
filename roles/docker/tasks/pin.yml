@@ -1,0 +1,10 @@
+---
+# Imported by roles/common/tasks/essentials.yml before the first apt upgrade and
+# again by this role's main.yml, so no apt operation of a provision (including a
+# --tags docker run) can move the Engine to another major. A pin written before
+# Docker's repository exists is harmless.
+- name: Pin the Docker Engine major version
+  ansible.builtin.template:
+    src: docker-apt-pin.j2
+    dest: /etc/apt/preferences.d/docker
+    mode: "0644"

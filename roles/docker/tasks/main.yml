@@ -2,11 +2,8 @@
 # See docs/host.md — The Docker daemon; docs/agents.md — The prune timer.
 # Docker comes from Docker's own apt repository, its key pinned by checksum and
 # the Engine pinned to docker_engine_major (production.yml).
-- name: Pin the Docker Engine major version
-  ansible.builtin.template:
-    src: docker-apt-pin.j2
-    dest: /etc/apt/preferences.d/docker
-    mode: "0644"
+- name: Keep the Docker Engine pin in place
+  ansible.builtin.import_tasks: pin.yml
 
 - name: Create the apt keyring directory
   ansible.builtin.file:

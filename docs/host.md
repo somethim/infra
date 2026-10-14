@@ -115,9 +115,13 @@ time is read in. The reboot takes every site down for about a minute.
 
 Installed from **Docker's own apt repository** for `ubuntu_release`, its signing key pinned by
 checksum, and the Engine held to **`docker_engine_major`** by an apt pin
-(`/etc/apt/preferences.d/docker`, `5:<major>.*`). Provisioning refuses to run when the
+(`/etc/apt/preferences.d/docker`, `5:<major>.*`). The pin is written by
+`roles/docker/tasks/pin.yml`, which `roles/common` runs before its `apt upgrade` (the first
+apt operation of a provision), so even the first run on a host that already has Docker from
+Docker's repository upgrades only within the pinned major. Provisioning refuses to run when the
 installed Engine has another major, so a major upgrade is a deliberate edit of
-`production.yml`, never a side effect of `apt upgrade`.
+`production.yml`, never a side effect of `apt upgrade`. `ci/check_access.py` (rule 8) fails if
+any apt task that upgrades or installs Docker runs before the pin.
 
 `daemon.json`:
 
