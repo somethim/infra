@@ -405,11 +405,15 @@ def main():
 
     raw_ports = {}
     raw_binds = {}
+    # Env files per service as written; some Compose builds resolve env_file into
+    # environment and drop it from the model, so the file as written is checked too.
+    raw_env_files = {}
     entries = sorted(os.listdir(project)) if os.path.isdir(project) else []
     for entry in entries:
         if entry.endswith((".yml", ".yaml")):
             for service_name, raw in raw_checks(os.path.join(project, entry), stack, raw_ports, raw_binds):
                 resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(project, raw))
+                raw_env_files.setdefault(service_name, set()).add(resolved)
                 if resolved not in bundle_env_files:
                     refuse(f"service {service_name or '?'} reads env_file {show(raw)}; the {stack} stack may only read {allowed_env_list} from the bundle")
 
@@ -486,8 +490,8 @@ def main():
                 refuse(f"service {name} joins {', '.join(sorted(extra))}; {container_name} may only join {', '.join(sorted(container_networks.get(container_name, set()))) or 'no network'}")
         if container_env_files is not None:
             mine = {os.path.join(project, f) for f in container_env_files.get(container_name, set())}
-            for entry in spec.get("env_file") or []:
-                path = os.path.normpath(str(entry.get("path") if isinstance(entry, dict) else entry))
+            paths = {os.path.normpath(str(entry.get("path") if isinstance(entry, dict) else entry)) for entry in spec.get("env_file") or []}
+            for path in sorted(paths | raw_env_files.get(name, set())):
                 if path not in mine:
                     readers = ", ".join(sorted(container_env_files)) or "no service"
                     refuse(f"service {name} reads env_file {show(path)}; in the {stack} stack {readers} may read an env file, each its own")
