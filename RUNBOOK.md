@@ -787,7 +787,7 @@ check that Ubuntu offers that branch for the card:
 
 ```bash
 lspci | grep -i nvidia                       # the RTX 2060 (TU106)
-ubuntu-drivers list --gpgpu                  # must include nvidia:580-server
+ubuntu-drivers list --gpgpu                  # must include nvidia-driver-580-server
 ```
 
 If it lists another `-server` branch instead, set `nvidia_driver_major` to it (through

@@ -20,19 +20,24 @@
 - name: Require the pinned server branch among them
   ansible.builtin.assert:
     that:
-      - gpu_drivers.stdout is search('nvidia:' ~ nvidia_driver_major ~ '-server')
+      # 26.04 lists packages (nvidia-driver-580-server); older releases printed nvidia:580-server.
+      - gpu_drivers.stdout is search('(nvidia-driver-|nvidia:)' ~ nvidia_driver_major ~ '-server(?!-open)')
     fail_msg: >-
-      ubuntu-drivers offers no nvidia:{{ nvidia_driver_major }}-server driver for this host ({{ gpu_drivers.stdout_lines | join(', ') }}).
+      ubuntu-drivers offers no nvidia-driver-{{ nvidia_driver_major }}-server driver for this host ({{ gpu_drivers.stdout_lines | join(', ') }}).
       Either no NVIDIA GPU is visible (lspci | grep -i nvidia) or the branch is gone: pick one it lists, set
       nvidia_driver_major in production.yml (through master) and provision again (RUNBOOK.md, "GPU, AI and media").
     quiet: true
 
-# --gpgpu: the headless driver with Canonical's signed kernel modules, no X.
+# The headless server driver with Canonical's signed kernel modules (works with Secure Boot), no X.
+# Installed by package name, the names ubuntu-drivers lists, so its CLI syntax does not matter.
 - name: Install the pinned NVIDIA server driver
-  ansible.builtin.command:
-    argv: [ubuntu-drivers, install, --gpgpu, "nvidia:{{ nvidia_driver_major }}-server"]
+  ansible.builtin.apt:
+    name:
+      - "nvidia-driver-{{ nvidia_driver_major }}-server"
+      - "linux-modules-nvidia-{{ nvidia_driver_major }}-server-generic"
+    state: present
+    install_recommends: false
   register: gpu_driver_install
-  changed_when: "'already installed' not in gpu_driver_install.stdout"
 
 # nvidia-smi, and the encoder and decoder libraries Jellyfin's NVENC/NVDEC use;
 # the Container Toolkit mounts them into a container that reserves the GPU.

@@ -260,7 +260,7 @@ An NVIDIA RTX 2060 with 12 GB. `roles/gpu` runs after `roles/docker` when `produ
 sets `gpu_enabled: true` (with `false` it only says so and touches nothing):
 
 - **The driver** is Ubuntu's, the server branch `nvidia_driver_major` pins (`580`), installed
-  with `ubuntu-drivers install --gpgpu nvidia:<major>-server`: the headless driver and
+  with apt (`nvidia-driver-<major>-server` and `linux-modules-nvidia-<major>-server-generic`): the headless driver and
   Canonical's **signed, precompiled kernel modules**, so it loads with Secure Boot on and needs
   no DKMS build or MOK enrolment. The role first checks that `ubuntu-drivers list --gpgpu`
   offers that branch, and stops naming the ones it does offer otherwise. It also installs
