@@ -1,4 +1,24 @@
 ---
+- name: Read the host ports Traefik publishes
+  ansible.builtin.command: >-
+    docker container inspect
+    --format '{% raw %}{{json .HostConfig.PortBindings}}{% endraw %}'
+    edge-traefik
+  register: traefik_ports
+  changed_when: false
+  failed_when: false
+
+- name: Require Traefik to publish no host port, so only the tunnel reaches it
+  ansible.builtin.assert:
+    that:
+      - (traefik_ports.stdout | trim) in ['{}', 'null']
+    fail_msg: >-
+      edge-traefik publishes host ports ({{ traefik_ports.stdout | trim }}). Nothing may reach Traefik but the
+      cloudflared container on the edge network; remove ports: from roles/edge/files/docker-compose.yml and
+      run provisioning with --tags edge (docs/edge.md).
+    quiet: true
+  when: traefik_ports.rc == 0
+
 - name: Read the socket proxy's container state
   ansible.builtin.command: docker container inspect edge-socket-proxy
   register: ep_inspect

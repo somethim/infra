@@ -1,7 +1,9 @@
 # The shared edge proxy. See docs/edge.md. Traefik reaches Docker only through
-# edge-socket-proxy (read-only, GET-only allowlist). The project name `edge` and
-# the volume key `edge-acme` are load-bearing: they keep the existing
-# edge_edge-acme volume, which holds every certificate.
+# edge-socket-proxy (read-only, GET-only allowlist). It publishes no host port:
+# the only way in is the cloudflared container of the tunnel stack, on the edge
+# network, which reaches it at http://edge-traefik:80. Cloudflare terminates
+# TLS and redirects HTTP to HTTPS, so Traefik has one plain-HTTP entrypoint and
+# no certificates.
 name: edge
 
 services:
@@ -47,28 +49,15 @@ services:
       - --providers.docker.endpoint=tcp://edge-socket-proxy:2375
       - --providers.docker.network=edge
       - --providers.docker.exposedbydefault=false
-      - --providers.file.directory=/dynamic
-      - --providers.file.watch=true
       - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=1800s
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}
-      - --certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json
+      # Only containers on this host reach :80 (no published port), and the
+      # tunnel is the only one that carries outside requests, so the
+      # X-Forwarded-* headers cloudflared sends (the real client in
+      # X-Forwarded-For, https in X-Forwarded-Proto) are kept. Docker's
+      # bridge networks are drawn from these private ranges.
+      - --entrypoints.web.forwardedHeaders.trustedIPs=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - --entrypoints.web.transport.respondingTimeouts.readTimeout=1800s
       - --log.level=ERROR
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - edge-acme:/acme
-      # Directory mounts, not single-file mounts: Ansible's copy module
-      # writes atomically (temp file + rename), so a file bind-mount would
-      # pin the old inode and --providers.file.watch would never see updates.
-      - ./dynamic:/dynamic:ro
-      - ./origin-pull:/origin-pull:ro
     networks:
       - edge
       - edge-socket
@@ -82,6 +71,3 @@ networks:
   edge-socket:
     name: edge-socket
     internal: true
-
-volumes:
-  edge-acme:

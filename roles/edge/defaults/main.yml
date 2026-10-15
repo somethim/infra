@@ -1,7 +1,2 @@
 ---
 edge_deploy_path: /opt/edge
-# acme_email comes from production.yml.
-# Authenticated Origin Pulls: enable in Cloudflare first, then pass the CA PEM
-# (RUNBOOK.md, "Re-pinning third-party images" — optional Authenticated Origin Pulls).
-edge_origin_pull_enabled: false
-edge_origin_pull_ca: ""

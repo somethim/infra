@@ -11,6 +11,7 @@
 #   database/provision.sql  role passwords          (psql, run by infra-apply)
 #   portfolio/portfolio.env DSN, TOTP, admin, mail  (portfolio)
 #   hypernova/provider.env  DSN, session, admin     (prizm-provider)
+#   tunnel/tunnel.env       Cloudflare Tunnel token (cloudflared)
 #   ghcr.env                registry login          (infra-apply's docker login)
 # The <stack>/.env files hold only image references and domains.
 - name: Render the infra release bundle on the runner
@@ -36,6 +37,7 @@
       - portfolio_google_client_secret
       - hypernova_session_secret
       - hypernova_admin_password
+      - cf_tunnel_token
 
   pre_tasks:
     - name: Require deploy secrets
@@ -51,10 +53,12 @@
           - portfolio_admin_password | default('') | length > 0
           - hypernova_session_secret | default('') | length > 0
           - hypernova_admin_password | default('') | length > 0
+          - cf_tunnel_token | default('') is match('^eyJ[A-Za-z0-9+/_-]{40,}={0,2}$')
         fail_msg: >-
           Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
-          32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, and the portfolio and
-          hypernova admin passwords and session secret (RUNBOOK.md, "Rotating a secret").
+          32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, the portfolio and
+          hypernova admin passwords and session secret, and CF_TUNNEL_TOKEN as the token Cloudflare shows for
+          the tunnel (base64, starting eyJ) (RUNBOOK.md, "Rotating a secret").
         quiet: true
 
     - name: Refuse deploy values the Compose env files would rewrite
@@ -94,6 +98,7 @@
         - "{{ bundle_dir }}/database"
         - "{{ bundle_dir }}/portfolio"
         - "{{ bundle_dir }}/hypernova"
+        - "{{ bundle_dir }}/tunnel"
 
     - name: Copy the stack files into the bundle
       ansible.builtin.copy:
@@ -104,6 +109,7 @@
         - database
         - portfolio
         - hypernova
+        - tunnel
 
     - name: Render the env files into the bundle
       ansible.builtin.template:
@@ -117,6 +123,7 @@
         - { src: portfolio/portfolio.env.j2, dest: portfolio/portfolio.env }
         - { src: hypernova/env.j2, dest: hypernova/.env }
         - { src: hypernova/provider.env.j2, dest: hypernova/provider.env }
+        - { src: tunnel/tunnel.env.j2, dest: tunnel/tunnel.env }
         - { src: ghcr.env.j2, dest: ghcr.env }
       loop_control:
         label: "{{ item.dest }}"

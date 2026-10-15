@@ -9,8 +9,8 @@ Rules (each problem is printed as a ::error:: line):
      step writes. Every key that step writes is used by some template (no dead secrets).
   2. Each extra-vars key renders only into the bundle files SECRET_FILES allows; a <stack>/.env
      (interpolation only) and the role templates render none.
-  3. Each compose file's ${VAR} interpolations are all set by its stack's env.j2 (the edge by
-     edge.env.j2), and every env_file a stack names is rendered by release.yml.
+  3. Each compose file's ${VAR} interpolations are all set by its stack's env.j2 (role compose
+     files take none), and every env_file a stack names is rendered by release.yml.
   4. Literal image: lines are <repo>:<tag>@sha256:<digest>; app images are only ${<NAME>_IMAGE},
      only in stack/ files, and their env.j2 points them at the production.yml repositories.
   5. ansible.cfg has host_key_checking = True; no deploy file turns host key checking off; every ssh
@@ -21,6 +21,9 @@ Rules (each problem is printed as a ::error:: line):
      extra-vars keys; the step's env block sets exactly the variables its jq object reads.
   8. ci/sample-extra-vars.json sets exactly the extra-vars keys, with obviously fake values (never a
      real token prefix such as ghp_ or github_pat_).
+  9. No compose file publishes a host port (ports:, expose to the host, network_mode: host): the
+     public arrives only through the Cloudflare Tunnel, and Traefik is reachable only on the edge
+     network. The tunnel token reaches only tunnel/tunnel.env (rule 2) and only cloudflared reads it.
 
 --self-test first seeds at least one violation per rule into a temp copy of the tree and requires
 each to be caught, then checks the real tree.
@@ -55,6 +58,7 @@ SECRET_PREFIX_FILES = {
     "portfolio_": {"portfolio/portfolio.env"},
     "hypernova_": {"hypernova/provider.env"},
     "ghcr_": {"ghcr.env"},
+    "cf_": {"tunnel/tunnel.env"},
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}
@@ -191,7 +195,7 @@ def interpolation_source(rel: str) -> str | None:
     parts = rel.split("/")
     if parts[0] == "stack":
         return f"stack/{parts[1]}/env.j2"
-    return f"roles/{parts[1]}/templates/{parts[1]}.env.j2"
+    return None
 
 
 # Rule 1
@@ -267,7 +271,7 @@ def check_images(root: pathlib.Path, rendered: dict[str, str]) -> list[str]:
     app_repos = {str(v) for k, v in variables.items() if k.endswith("_image_repo")}
     for rel in compose_files(root):
         services = (load_yaml(root / rel) or {}).get("services") or {}
-        defined = env_values(rendered.get(interpolation_source(rel), ""))
+        defined = env_values(rendered.get(interpolation_source(rel) or "", ""))
         for name, service in services.items():
             image = str(service.get("image", ""))
             app = APP_IMAGE.match(image)
@@ -389,6 +393,20 @@ def check_sample(root: pathlib.Path, extra: dict[str, str]) -> list[str]:
     return problems
 
 
+# Rule 9
+def check_no_published_ports(root: pathlib.Path) -> list[str]:
+    problems = []
+    for rel in compose_files(root):
+        services = (load_yaml(root / rel) or {}).get("services") or {}
+        for name, service in services.items():
+            if service.get("ports"):
+                problems.append(f"rule 9: {rel}: service {name} publishes host ports {service['ports']}; nothing may be reachable "
+                                "but through the Cloudflare Tunnel (docs/edge.md)")
+            if str(service.get("network_mode", "")) == "host":
+                problems.append(f"rule 9: {rel}: service {name} uses network_mode: host, which listens on the host's interfaces")
+    return problems
+
+
 def run_checks(root: pathlib.Path) -> list[str]:
     try:
         workflow_text = (root / WORKFLOW).read_text()
@@ -402,6 +420,7 @@ def run_checks(root: pathlib.Path) -> list[str]:
         problems += check_docker_socket(root)
         problems += check_asserts(root, workflow_text, extra)
         problems += check_sample(root, extra)
+        problems += check_no_published_ports(root)
         return problems
     except CheckError as e:
         return [str(e)]
@@ -431,8 +450,8 @@ def self_test() -> None:
                 m(tmp)
         return mutate
 
-    jq_last = "            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD\n"
-    env_last = "          HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}\n"
+    jq_last = "            cf_tunnel_token: env.CF_TUNNEL_TOKEN\n"
+    env_last = "          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}\n"
     dead_secret = both(
         edit(WORKFLOW, jq_last, jq_last.rstrip("\n") + ",\n            crm_db_password: env.CRM_DB_PASSWORD\n"),
         edit(WORKFLOW, env_last, env_last + "          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}\n"),
@@ -451,7 +470,8 @@ def self_test() -> None:
          "'prizm_db_password' must reach database/provision.sql, hypernova/provider.env"),
         ("3", "a compose variable no env.j2 sets", edit("stack/portfolio/docker-compose.yml", "Host(`${WWW_DOMAIN}`)", "Host(`${OLD_DOMAIN}`)"),
          "${OLD_DOMAIN} is not set by stack/portfolio/env.j2"),
-        ("3", "the edge's ACME_EMAIL left out of edge.env.j2", edit("roles/edge/templates/edge.env.j2", "ACME_EMAIL=", "ACME_ADDRESS="), "${ACME_EMAIL} is not set"),
+        ("3", "a role compose file that interpolates a variable", edit("roles/edge/files/docker-compose.yml", "      - --log.level=ERROR\n", "      - --log.level=${EDGE_LOG_LEVEL}\n"),
+         "${EDGE_LOG_LEVEL} is not set by any env template"),
         ("3", "an env_file release.yml does not render", edit("stack/portfolio/docker-compose.yml", "env_file: portfolio.env", "env_file: crm.env"),
          "reads env_file crm.env, which release.yml does not render"),
         ("4", "an unpinned third-party image", edit("roles/edge/files/docker-compose.yml", "image: traefik:v3.7.13@sha256:", "image: traefik:v3.7.13 # @sha256:"),
@@ -466,7 +486,7 @@ def self_test() -> None:
         ("5", "SSH_OPTIONS accepts new host keys", edit(WORKFLOW, "StrictHostKeyChecking=yes", "StrictHostKeyChecking=accept-new"), "SSH_OPTIONS must hold"),
         ("5", "an ssh call without SSH_OPTIONS", edit(WORKFLOW, 'ssh $SSH_OPTIONS "${DEPLOY_USER}@${SERVER_SSH_HOST}" release', 'ssh "${DEPLOY_USER}@${SERVER_SSH_HOST}" release'),
          "runs ssh without $SSH_OPTIONS"),
-        ("6", "Traefik mounts docker.sock", edit("roles/edge/files/docker-compose.yml", "      - edge-acme:/acme\n", "      - edge-acme:/acme\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n"),
+        ("6", "Traefik mounts docker.sock", edit("roles/edge/files/docker-compose.yml", "    container_name: edge-traefik\n", "    container_name: edge-traefik\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n"),
          "service traefik mounts docker.sock"),
         ("6", "a socket proxy mounts docker.sock read-write", edit("roles/watchtower/files/docker-compose.yml", "/var/run/docker.sock:/var/run/docker.sock:ro", "/var/run/docker.sock:/var/run/docker.sock"),
          "must mount docker.sock read-only"),
@@ -480,6 +500,14 @@ def self_test() -> None:
          "sets CRM_TOKEN, which its jq object never reads"),
         ("8", "a sample value with a real token prefix", edit(SAMPLE, '"fake_ghcr_token_', '"ghp_ghcr_token_'), "'ghcr_token' looks like a real token"),
         ("8", "a sample missing a key", edit(SAMPLE, '"portfolio_resend_api_key": "fake-resend-key-0000",', ""), "keys differ from the extra-vars step"),
+        ("2", "the tunnel token rendered into the portfolio's env", append("stack/portfolio/portfolio.env.j2", "TUNNEL={{ cf_tunnel_token }}\n"),
+         "renders 'cf_tunnel_token' into portfolio/portfolio.env"),
+        ("9", "Traefik publishes 80 and 443 again", edit("roles/edge/files/docker-compose.yml", "    container_name: edge-traefik\n", "    container_name: edge-traefik\n    ports:\n      - \"80:80\"\n      - \"443:443\"\n"),
+         "service traefik publishes host ports"),
+        ("9", "cloudflared on the host network", edit("stack/tunnel/docker-compose.yml", "    container_name: cloudflared\n", "    container_name: cloudflared\n    network_mode: host\n"),
+         "service cloudflared uses network_mode: host"),
+        ("9", "a stack publishes a port", edit("stack/hypernova/docker-compose.yml", "    container_name: prizm-web\n", "    container_name: prizm-web\n    ports: [\"3000:3000\"]\n"),
+         "service web publishes host ports"),
     ]
     caught_rules = set()
     for rule, name, mutate, expected in cases:
@@ -492,7 +520,7 @@ def self_test() -> None:
                 raise SystemExit(f"self-test FAILED: rule {rule}: {name}: expected a problem containing {expected!r}, got {problems}")
             caught_rules.add(rule)
             print(f"ok   rule {rule} caught: {name}")
-    missing = {str(n) for n in range(1, 9)} - caught_rules
+    missing = {str(n) for n in range(1, 10)} - caught_rules
     if missing:
         raise SystemExit(f"self-test FAILED: no seeded violation for rules {sorted(missing)}")
     print("self-test: every seeded violation was caught")
@@ -508,7 +536,7 @@ def main() -> int:
         return 1
     print("deploy templates: every variable has a source and every extra var a use, secrets reach only their own env files, "
           "compose interpolations and env files are rendered, images pinned, host keys checked, docker.sock only in the "
-          "socket proxies (read-only), release.yml's asserts match the workflow, the sample vars are fake")
+          "socket proxies (read-only), release.yml's asserts match the workflow, the sample vars are fake, no host port is published")
     return 0
 
 

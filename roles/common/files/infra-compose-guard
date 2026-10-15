@@ -4,8 +4,9 @@
     python3 -I infra-compose-guard <model.json> <stack_dir> <stack> [<app image repository>...]
 
 <model.json> is `docker compose config --no-env-resolution --format json` for
-<stack_dir>/docker-compose.yml; <stack> is database, portfolio or hypernova; the
-repositories are the app images /etc/infra/host.env allows for that stack.
+<stack_dir>/docker-compose.yml; <stack> is database, portfolio, hypernova or
+tunnel; the repositories are the app images /etc/infra/host.env allows for that
+stack (none for database and tunnel, whose images must be digest-pinned).
 infra-apply runs this on every stack of a bundle before anything changes.
 Prints one summary line on success; prints `docker-compose.yml: <reason>` and
 exits 1 on a refusal. Installed as /usr/local/libexec/infra-compose-guard.
@@ -15,27 +16,39 @@ import os
 import re
 import sys
 
+HOST_LABELS = re.compile(r"^(traefik\.|com\.centurylinklabs\.watchtower\.enable$|autoheal$)")
+AUTOHEAL_LABEL = re.compile(r"^autoheal$")
+
 STACKS = {
     "database": {
         "networks": {"data"},
         "volumes": {"pgdata": {"name": "pgdata-v18", "external": True}},
         "containers": {"postgresql"},
         "env_files": ("postgres.env",),
-        "labels_allowed": False,
+        "labels": None,
     },
     "portfolio": {
         "networks": {"data", "edge"},
         "volumes": {"portfolio-media": {"name": "portfolio-media", "external": False}},
         "containers": {"portfolio"},
         "env_files": ("portfolio.env",),
-        "labels_allowed": True,
+        "labels": HOST_LABELS,
     },
     "hypernova": {
         "networks": {"data", "edge"},
         "volumes": {"prizm-storage": {"name": "hypernova_prizm-storage", "external": False}},
         "containers": {"prizm-provider", "prizm-web"},
         "env_files": ("provider.env",),
-        "labels_allowed": True,
+        "labels": HOST_LABELS,
+    },
+    # The tunnel holds no data, is never routed (it is the way in) and is never
+    # auto-updated (its image is pinned); autoheal may restart it.
+    "tunnel": {
+        "networks": {"edge"},
+        "volumes": {},
+        "containers": {"cloudflared"},
+        "env_files": ("tunnel.env",),
+        "labels": AUTOHEAL_LABEL,
     },
 }
 
@@ -65,7 +78,6 @@ FIELD_REASONS = {
 }
 NETWORK_FIELDS = {"name", "external", "ipam", "labels"}
 SAFE_SECURITY_OPTS = {"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"}
-HOST_LABELS = re.compile(r"^(traefik\.|com\.centurylinklabs\.watchtower\.enable$|autoheal$)")
 PINNED = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
 
 
@@ -159,7 +171,7 @@ def env_keys(path):
 
 def main():
     if len(sys.argv) < 4 or sys.argv[3] not in STACKS:
-        print("usage: infra-compose-guard <model.json> <stack_dir> database|portfolio|hypernova [<app image repository>...]")
+        print("usage: infra-compose-guard <model.json> <stack_dir> database|portfolio|hypernova|tunnel [<app image repository>...]")
         sys.exit(64)
     model_path, project, stack = sys.argv[1], os.path.normpath(sys.argv[2]), sys.argv[3]
     app_repos = set(sys.argv[4:])
@@ -259,10 +271,11 @@ def main():
                 refuse(f"service {name} reads env_file {show(foreign_env_keys[key])}; the {stack} stack may only read {allowed_env_list} from the bundle")
         labels = spec.get("labels") or {}
         labels = labels.keys() if isinstance(labels, dict) else [str(item).split("=", 1)[0] for item in labels]
-        if not spec_for["labels_allowed"]:
-            for label in sorted(labels):
-                if HOST_LABELS.match(label):
-                    refuse(f"service {name} sets the label {label}; the database is never routed, auto-updated or auto-healed")
+        allowed_labels = spec_for["labels"]
+        for label in sorted(labels):
+            if HOST_LABELS.match(label) and not (allowed_labels and allowed_labels.match(label)):
+                role = "is never routed or auto-updated" if allowed_labels else "is never routed, auto-updated or auto-healed"
+                refuse(f"service {name} sets the label {label}; the {stack} stack {role}")
         for mount in spec.get("volumes") or []:
             kind = mount.get("type") if isinstance(mount, dict) else None
             if kind in {"volume", "tmpfs"}:

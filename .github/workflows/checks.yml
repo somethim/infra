@@ -83,14 +83,11 @@ jobs:
       - name: Validate the edge, Watchtower and autoheal compose files
         run: |
           set -euo pipefail
-          printf 'ACME_EMAIL=ci@example.com\n' >"${RUNNER_TEMP}/edge.env"
           for role in edge watchtower autoheal; do
-            args=(--file "roles/${role}/files/docker-compose.yml")
-            if [ "$role" = edge ]; then args+=(--env-file "${RUNNER_TEMP}/edge.env"); fi
-            out="$(docker compose "${args[@]}" config --quiet 2>&1)" || { echo "$out"; exit 1; }
+            out="$(docker compose --file "roles/${role}/files/docker-compose.yml" config --quiet 2>&1)" || { echo "$out"; exit 1; }
             if grep -q 'variable is not set' <<<"$out"; then
               echo "$out"
-              echo "::error::roles/${role}/files/docker-compose.yml interpolates a variable its env file does not set"
+              echo "::error::roles/${role}/files/docker-compose.yml interpolates a variable; role compose files take none"
               exit 1
             fi
             echo "ok   roles/${role}/files/docker-compose.yml"
@@ -104,7 +101,7 @@ jobs:
           ansible-playbook -i localhost, -c local release.yml -e @ci/sample-extra-vars.json \
             -e "deploy_key_file=${RUNNER_TEMP}/deploy_key.pub" -e "bundle_dir=${RUNNER_TEMP}/bundle" </dev/null >"${RUNNER_TEMP}/render.log" 2>&1 ||
             { cat "${RUNNER_TEMP}/render.log"; echo "::error::release.yml refused to render ci/sample-extra-vars.json"; exit 1; }
-          for stack in database portfolio hypernova; do
+          for stack in database portfolio hypernova tunnel; do
             out="$(docker compose --file "stack/${stack}/docker-compose.yml" --project-directory "${RUNNER_TEMP}/bundle/${stack}" config --quiet 2>&1)" ||
               { echo "$out"; exit 1; }
             if grep -q 'variable is not set' <<<"$out"; then

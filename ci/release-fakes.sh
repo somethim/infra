@@ -100,6 +100,7 @@ case "$1" in
     [ -f "$state/running/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
     case "$format" in
       *StartedAt*) echo "2026-10-14T10:00:00.000000000Z" ;;
+      *IPAddress*) cat "$state/ip/$name" 2>/dev/null || echo ;;
       *) cat "$state/running/$name" ;;
     esac
     ;;
@@ -136,17 +137,38 @@ case "$1" in
 esac
 SH
 
+# curl: a route check sends -H "Host: <host>" to Traefik's edge address and
+# gets state/curl.<host> (default 301 for www., else 200); the tunnel check
+# (no Host header) asks cloudflared's /ready and gets state/curl.ready
+# (default 200). state/curl.<key>.rc sets the exit status.
 cat >"$work/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 host=""
+url=""
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = --resolve ]; then host="${2%%:*}"; shift; fi
-  shift
+  case "$1" in
+    -H)
+      case "$2" in "Host: "*) host="${2#Host: }" ;; esac
+      shift 2
+      ;;
+    -o | -w | --max-time) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
 done
-printf 'curl %s\n' "$host" >>"$FAKE_STATE/calls"
-if [ -f "$FAKE_STATE/curl.$host" ]; then cat "$FAKE_STATE/curl.$host"; else printf '403'; fi
-exit "$(cat "$FAKE_STATE/curl.$host.rc" 2>/dev/null || echo 0)"
+if [ -n "$host" ]; then
+  key="$host"
+  default=200
+  case "$host" in www.*) default=301 ;; esac
+  printf 'curl route %s %s\n' "$host" "$url" >>"$FAKE_STATE/calls"
+else
+  key=ready
+  default=200
+  printf 'curl ready %s\n' "$url" >>"$FAKE_STATE/calls"
+fi
+if [ -f "$FAKE_STATE/curl.$key" ]; then cat "$FAKE_STATE/curl.$key"; else printf '%s' "$default"; fi
+exit "$(cat "$FAKE_STATE/curl.$key.rc" 2>/dev/null || echo 0)"
 SH
 
 cat >"$work/bin/sudo" <<'SH'
@@ -168,19 +190,22 @@ new_state() {
   local name
   count=$((count + 1))
   state="$work/state$count"
-  mkdir -p "$state/stack" "$state/edge/dynamic" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
-    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once"
-  printf 'http: {}\n' >"$state/edge/dynamic/dynamic.yml"
-  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS=80,443 ORIGIN_PULL=0 \
+  mkdir -p "$state/stack" "$state/edge" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
+    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip"
+  printf 'name: edge\n' >"$state/edge/docker-compose.yml"
+  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
   printf '%s\n' \
     "c1 /postgresql running always healthy database" \
     "c2 /portfolio running always healthy portfolio" \
     "c3 /prizm-provider running always healthy hypernova" \
-    "c4 /prizm-web running always none hypernova" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal; do
+    "c4 /prizm-web running always none hypernova" \
+    "c5 /cloudflared running always healthy tunnel" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared; do
     echo "true false" >"$state/running/$name"
   done
+  echo 172.18.0.2 >"$state/ip/edge-traefik"
+  echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11
   running_image prizm-provider "$provider_repo:latest" 21
   running_image prizm-web "$web_repo:latest" 31

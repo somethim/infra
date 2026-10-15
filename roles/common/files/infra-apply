@@ -8,9 +8,10 @@
 # A release is checked completely (size, file list, checksums, env files,
 # release.env, image references, the compose model of each stack) before
 # anything changes. It is then installed as /opt/infra/releases/<id>, the
-# stacks start in order database, provision.sql, portfolio, hypernova, and the
-# release is verified (containers healthy, Traefik routes, socket proxies)
-# before it is marked .verified. `previous` only ever points at a verified
+# stacks start in order database, provision.sql, portfolio, hypernova, tunnel,
+# and the release is verified (containers healthy, Traefik routes each domain
+# to its app, the tunnel is connected, socket proxies) before it is marked
+# .verified. `previous` only ever points at a verified
 # release. Output lines start with "infra-apply: "; failures with
 # "infra-apply: FAILED: ". Never prints a secret.
 set -euo pipefail
@@ -36,15 +37,20 @@ readonly max_file_bytes=262144
 readonly releases_dir="$stack_dir/releases"
 readonly release_id_pattern='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$'
 readonly repo_pattern='^[a-z0-9.-]+(/[a-z0-9._-]+)+$'
-readonly stacks=(database portfolio hypernova)
+readonly stacks=(database portfolio hypernova tunnel)
 readonly bundle_files=(
   manifest.sha256 release.env ghcr.env
   database/docker-compose.yml database/postgres.env database/provision.sql
   portfolio/docker-compose.yml portfolio/.env portfolio/portfolio.env
   hypernova/docker-compose.yml hypernova/.env hypernova/provider.env
+  tunnel/docker-compose.yml tunnel/tunnel.env
 )
-readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env)
-readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env manifest.sha256)
+readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env)
+readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env manifest.sha256)
+# Traefik and cloudflared, by container name, on the shared edge network.
+readonly traefik_container=edge-traefik
+readonly tunnel_container=cloudflared
+readonly tunnel_metrics_port=2000
 # image key, the env file that sets it, the host.env key naming its repository, its container
 readonly image_specs=(
   "PORTFOLIO_IMAGE portfolio/.env PORTFOLIO_IMAGE_REPO portfolio"
@@ -55,7 +61,6 @@ readonly image_specs=(
 export DOCKER_CONFIG="${INFRA_APPLY_DOCKER_CONFIG:-/root/.docker}"
 
 declare -A repo_of=()
-origin_pull=0
 failure_hint=""
 work_dir=""
 watchtower_stopped=0
@@ -115,9 +120,6 @@ load_host() {
     [[ "$repo" =~ $repo_pattern ]] || fail "$host_file $repo_key is not an image repository; run provisioning"
     repo_of[$key]="$repo"
   done
-  origin_pull="$(host_value ORIGIN_PULL)"
-  origin_pull="${origin_pull:-0}"
-  [[ "$origin_pull" =~ ^[01]$ ]] || fail "$host_file ORIGIN_PULL must be 0 or 1; run provisioning"
 }
 
 compose_in() {
@@ -172,7 +174,7 @@ extract_bundle() {
   ) 2>/dev/null; then
     untouched "the bundle did not extract cleanly"
   fi
-  other="$(cd "$dest" && find . -mindepth 1 ! -type f ! \( -type d \( -path ./database -o -path ./portfolio -o -path ./hypernova \) \) -print -quit)"
+  other="$(cd "$dest" && find . -mindepth 1 ! -type f ! \( -type d \( -path ./database -o -path ./portfolio -o -path ./hypernova -o -path ./tunnel \) \) -print -quit)"
   [ -z "$other" ] || untouched "the bundle extracted to something other than regular files: $(printf '%q' "${other#./}")"
   [ -z "$(find "$dest" -type f -size +"${max_file_bytes}c" -print -quit)" ] || untouched "a file in the bundle is larger than $max_file_bytes bytes"
   (cd "$dest" && find . -mindepth 1 -type f -printf '%P\n' | LC_ALL=C sort) >"$found"
@@ -210,6 +212,9 @@ validate_env_files() {
   if ! grep -qE '^GHCR_USERNAME=[^[:space:]]+$' "$dir/ghcr.env" || ! grep -qE '^GHCR_TOKEN=[^[:space:]]+$' "$dir/ghcr.env" ||
     [ "$(grep -c . "$dir/ghcr.env")" -ne 2 ]; then
     untouched "ghcr.env must set exactly GHCR_USERNAME and GHCR_TOKEN"
+  fi
+  if ! grep -qE '^TUNNEL_TOKEN=[A-Za-z0-9+/_=-]+$' "$dir/tunnel/tunnel.env" || [ "$(grep -c . "$dir/tunnel/tunnel.env")" -ne 1 ]; then
+    untouched "tunnel/tunnel.env must set exactly TUNNEL_TOKEN"
   fi
 }
 
@@ -434,44 +439,66 @@ wait_for_stacks() {
   done
 }
 
+# Prints "<host> <path> <expected status pattern>" for every public route:
+# portfolio's health check, the www -> apex redirect, the hypernova web app and
+# its provider API behind /api.
 route_targets() {
   local release="$1" apex www web
   apex="$(sed -n 's/^APEX_DOMAIN=//p' "$release/portfolio/.env")"
   www="$(sed -n 's/^WWW_DOMAIN=//p' "$release/portfolio/.env")"
   web="$(sed -n 's/^WEB_DOMAIN=//p' "$release/hypernova/.env")"
-  printf '%s\n' "$apex /" "$www /" "$web /" "$web /api/"
+  printf '%s\n' "$apex /api/health ^2[0-9][0-9]$" "$www / ^30[18]$" "$web / ^[23][0-9][0-9]$" "$web /api/health ^2[0-9][0-9]$"
 }
 
+# Prints a container's IPv4 address on the edge network. Traefik and
+# cloudflared publish no port, so verify reaches them there, from the host.
+edge_address() {
+  local name="$1" address
+  address="$(docker container inspect --format '{{with index .NetworkSettings.Networks "edge"}}{{.IPAddress}}{{end}}' "$name" 2>/dev/null || true)"
+  [[ "$address" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || fail "$name has no address on the edge network; run provisioning (Traefik) or check the tunnel stack (cloudflared)"
+  printf '%s\n' "$address"
+}
+
+# Asks Traefik for every route the way the tunnel does (the public Host, https
+# in X-Forwarded-Proto) and requires the status the app answers with.
 check_routes() {
-  local release="$1" target host path code rc deadline unproven=""
+  local release="$1" target host path want code deadline traefik
   local -a targets hosts=()
+  traefik="$(edge_address "$traefik_container")"
   mapfile -t targets < <(route_targets "$release")
   for target in "${targets[@]}"; do
-    host="${target% *}"
-    path="${target#* }"
+    read -r host path want <<<"$target"
     [[ "$host" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected host name $(printf '%q' "$host") in the release's .env files"
     deadline=$((SECONDS + route_wait_seconds))
     while :; do
-      rc=0
-      code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 --resolve "$host:443:127.0.0.1" "https://$host$path")" || rc=$?
-      if [ "$code" = 403 ]; then
-        break
-      fi
-      if [ "$origin_pull" = 1 ] && [ "${code:-000}" = 000 ] && { [ "$rc" = 35 ] || [ "$rc" = 56 ]; }; then
-        unproven="$unproven $host$path"
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $host" -H 'X-Forwarded-Proto: https' "http://$traefik:80$path" || true)"
+      if [[ "${code:-000}" =~ $want ]]; then
         break
       fi
       if [ "$SECONDS" -ge "$deadline" ]; then
-        fail "Traefik answered ${code:-000} for $host$path on the host itself, expected 403 from the cloudflare-only allowlist (404 means no router serves $host$path)"
+        fail "Traefik answered ${code:-000} for $host$path, expected $want (404: no router serves $host$path; 502, 503 or 504: the app behind it is unreachable)"
       fi
       sleep "$poll_seconds"
     done
     hosts+=("$host$path")
   done
-  if [ -n "$unproven" ]; then
-    log "origin pull on: route presence not proven locally for${unproven}"
-  fi
-  log "Traefik routes ${hosts[*]} and keeps them behind the cloudflare-only allowlist"
+  log "Traefik routes ${hosts[*]} to their apps"
+}
+
+# cloudflared's /ready answers 200 only while it holds at least one connection
+# to Cloudflare's edge, that is, while the public hostnames can reach Traefik.
+check_tunnel() {
+  local address code deadline=$((SECONDS + route_wait_seconds))
+  address="$(edge_address "$tunnel_container")"
+  while :; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$address:$tunnel_metrics_port/ready" || true)"
+    [ "$code" != 200 ] || break
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      fail "cloudflared answered ${code:-000} on /ready: the tunnel holds no connection to Cloudflare (a revoked or wrong CF_TUNNEL_TOKEN, or no outbound internet); docker logs cloudflared on the host shows why"
+    fi
+    sleep "$poll_seconds"
+  done
+  log "the Cloudflare Tunnel is connected (cloudflared /ready answers 200)"
 }
 
 container_state() {
@@ -555,6 +582,7 @@ verify_release() {
   local id="$1"
   wait_for_stacks
   check_routes "$stack_dir/current"
+  check_tunnel
   check_socket_clients
   record_running_images "$id"
   touch "$releases_dir/$id/.verified"
@@ -601,7 +629,7 @@ install() {
   link_release current "$id"
   prune_releases "$id" "$previous"
   failure_hint="release $id is current but not verified. Run the Deploy workflow with action rollback only if an app image causes the failure above: a rollback changes nothing but the app image references and renders every stack/ file, env file and secret from master again; for any other cause revert that change on master and run release${last_verified_note}"
-  for stack in portfolio hypernova; do
+  for stack in portfolio hypernova tunnel; do
     log "starting $stack"
     compose_in "$stack_dir/current/$stack" up -d --remove-orphans || fail "$stack did not start"
   done
@@ -614,7 +642,7 @@ do_release() {
   require_root
   load_host
   take_lock
-  [ -f "$edge_dir/dynamic/dynamic.yml" ] || fail "$edge_dir/dynamic/dynamic.yml does not exist, so no route has the cloudflare-only allowlist; run provisioning first"
+  [ -f "$edge_dir/docker-compose.yml" ] || fail "$edge_dir/docker-compose.yml does not exist, so no Traefik routes the stacks; run provisioning first"
   mkdir -p "$releases_dir"
   work_dir="$(mktemp -d "$stack_dir/.incoming.XXXXXX")"
   trap cleanup EXIT

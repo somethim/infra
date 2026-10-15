@@ -199,6 +199,7 @@ jobs:
           PORTFOLIO_GOOGLE_CLIENT_SECRET: ${{ secrets.PORTFOLIO_GOOGLE_CLIENT_SECRET }}
           HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
           HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -212,7 +213,8 @@ jobs:
             portfolio_google_client_id: env.PORTFOLIO_GOOGLE_CLIENT_ID,
             portfolio_google_client_secret: env.PORTFOLIO_GOOGLE_CLIENT_SECRET,
             hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
-            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD
+            hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
+            cf_tunnel_token: env.CF_TUNNEL_TOKEN
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 
@@ -236,10 +238,10 @@ jobs:
           # shellcheck disable=SC2086 # SSH_OPTIONS is a word list
           ssh $SSH_OPTIONS "${DEPLOY_USER}@${SERVER_SSH_HOST}" release <"${RUNNER_TEMP}/bundle.tgz"
 
+      # The host has no public address and no open port: Cloudflare, through
+      # the tunnel, is the only way in, so this is the whole public check.
       - name: Smoke-test the public hosts through Cloudflare
         if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
         run: |
           set -euo pipefail
           apex="$(sed -n 's/^apex_domain: *//p' production.yml)"
@@ -257,27 +259,14 @@ jobs:
               if [[ "$got" =~ $want ]]; then echo "OK ${got} ${url}"; return 0; fi
               sleep 10
             done
-            echo "::error::${url} answered '${got}' through Cloudflare after 5 minutes, expected ${want} (403: DNS-only record or allowlist mismatch; 526: no origin certificate; 52x: origin unreachable)."
+            echo "::error::${url} answered '${got}' through Cloudflare after 5 minutes, expected ${want} (530 or error 1033: the tunnel is down or has no Public Hostname for this host; 502: the tunnel cannot reach http://edge-traefik:80; 404: Traefik has no router; 000: no DNS record or the record is not proxied)."
             return 1
           }
           expect "https://${apex}/api/health" '^2[0-9][0-9] '
           expect "https://${www}/" "^301 https://${apex//./\\.}/"
           expect "https://${hypernova}/" '^2[0-9][0-9] '
           expect "https://${hypernova}/api/health" '^2[0-9][0-9] '
-
-          if [ -z "$SERVER_HOST" ]; then
-            echo "SERVER_HOST is not set; skipping the direct-origin check"
-            exit 0
-          fi
-          origin="$SERVER_HOST"
-          case "$origin" in *:*) origin="[$origin]" ;; esac
-          code="$(curl -sS -k -o /dev/null -w '%{http_code}' --max-time 20 \
-            --resolve "${apex}:443:${origin}" "https://${apex}/" 2>/dev/null || true)"
-          case "$code" in
-            403) echo "OK the origin refuses direct requests (403)" ;;
-            000) echo "OK the origin does not answer direct requests (refused, dropped or no client certificate)" ;;
-            *) echo "::error::A direct request to the origin for ${apex} answered ${code}, expected 403 from the cloudflare-only allowlist or no answer."; exit 1 ;;
-          esac
+          expect "http://${apex}/api/health" "^30[18] https://${apex//./\\.}/api/health"
 
       - name: Remove the secrets from the runner
         if: always()
