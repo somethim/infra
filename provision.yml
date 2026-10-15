@@ -6,6 +6,8 @@
 - name: Provision the server from the owner's machine
   hosts: server
   become: true
+  # A failed run must still reload Docker and sshd for the config it already wrote.
+  force_handlers: true
 
   vars_files:
     - production.yml

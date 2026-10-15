@@ -62,6 +62,11 @@ cat "$FAKE_DOCKER_STATE/swap"
 SH
 cat >"$work/bin/systemctl" <<'SH'
 #!/usr/bin/env bash
+if [ "$*" = "reload docker" ]; then
+  # A reload picks up daemon.json: the runtimes Docker lists after it.
+  [ -f "$FAKE_DOCKER_STATE/docker.runtimes.reloaded" ] && cp "$FAKE_DOCKER_STATE/docker.runtimes.reloaded" "$FAKE_DOCKER_STATE/docker.runtimes"
+  exit 0
+fi
 [ "$1" = is-enabled ] || { echo "fake systemctl: unsupported: $*" >&2; exit 2; }
 shift
 for unit in "$@"; do
@@ -218,6 +223,11 @@ expect_pass "gpu: nvidia runtime listed, nvidia-smi sees the card" gpu
 scenario
 echo '{"io.containerd.runc.v2":{"path":"runc"},"runc":{"path":"runc"}}' >"$work/state/docker.runtimes"
 expect_fail "gpu: Docker has no nvidia runtime" "docker info lists no nvidia runtime" gpu
+
+scenario
+cp "$work/state/docker.runtimes" "$work/state/docker.runtimes.reloaded"
+echo '{"io.containerd.runc.v2":{"path":"runc"},"runc":{"path":"runc"}}' >"$work/state/docker.runtimes"
+expect_pass "gpu: a Docker that missed its reload gets one and then lists the nvidia runtime" gpu
 
 scenario
 echo "Failed to initialize NVML: Driver/library version mismatch" >"$work/state/nvidia-smi.err"

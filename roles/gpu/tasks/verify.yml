@@ -9,12 +9,28 @@
   changed_when: false
   check_mode: false
 
+# daemon.json may have been written by an earlier run that failed before its
+# reload handler ran; Ansible drops pending handlers on failure, so reload here.
+- name: Reload Docker when it has not picked up the nvidia runtime yet
+  ansible.builtin.command: systemctl reload docker
+  changed_when: true
+  when: (gpu_docker_runtimes.stdout | from_json).nvidia is not defined
+
+- name: Read the runtimes Docker offers after the reload
+  ansible.builtin.command: docker info --format '{{ "{{" }}json .Runtimes{{ "}}" }}'
+  register: gpu_docker_runtimes_reloaded
+  changed_when: false
+  check_mode: false
+  when: (gpu_docker_runtimes.stdout | from_json).nvidia is not defined
+
 - name: Require the nvidia runtime in Docker
+  vars:
+    gpu_docker_runtimes_seen: "{{ gpu_docker_runtimes_reloaded.stdout if gpu_docker_runtimes_reloaded is not skipped else gpu_docker_runtimes.stdout }}"
   ansible.builtin.assert:
     that:
-      - (gpu_docker_runtimes.stdout | from_json).nvidia is defined
+      - (gpu_docker_runtimes_seen | from_json).nvidia is defined
     fail_msg: >-
-      docker info lists no nvidia runtime ({{ gpu_docker_runtimes.stdout }}). /etc/docker/daemon.json comes from
+      docker info lists no nvidia runtime ({{ gpu_docker_runtimes_seen }}). /etc/docker/daemon.json comes from
       roles/docker with gpu_enabled: true; provision with --tags docker,gpu and check
       `sudo journalctl -u docker` for a daemon.json error.
     quiet: true
