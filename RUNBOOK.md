@@ -314,7 +314,7 @@ gh variable set TS_OAUTH_CLIENT_ID --env production --body '<client id>'
 gh secret set TS_OAUTH_SECRET --env production                     # paste the OAuth client secret
 
 # The Cloudflare Tunnel token from section 6
-op read "op://Personal/Cloudflare tunnel token (home-server)/password" | gh secret set CF_TUNNEL_TOKEN --env production
+op item get "Cloudflare tunnel token (home-server)" --vault Personal --fields label=password --reveal | gh secret set CF_TUNNEL_TOKEN --env production
 
 # GHCR: an account and a classic token with read:packages that can read
 # ghcr.io/somethim/portfolio and the ghcr.io/hypernova3643725 images
@@ -323,7 +323,7 @@ gh variable set GHCR_USERNAME --env production --body '<github user>'
 # GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) →
 # Generate new token (classic), scope read:packages only, expiry 1 year; store it in 1Password
 # (Personal, "GHCR read token (infra)"), then:
-op read "op://Personal/GHCR read token (infra)/password" | gh secret set GHCR_TOKEN --env production
+op item get "GHCR read token (infra)" --vault Personal --fields label=password --reveal | gh secret set GHCR_TOKEN --env production
 
 # Database: three different passwords, 48 hex characters each; nobody needs to know them
 for name in POSTGRES_SUPERUSER_PASSWORD PRIZM_DB_PASSWORD PORTFOLIO_DB_PASSWORD; do
