@@ -111,7 +111,7 @@ scenario() {
   printf '%s\n' '-N DOCKER-USER' "$hook" "$tailnet_hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
   echo 2147483648 >"$work/state/swap"
   echo 1 >"$work/state/nonlocal_bind"
-  printf '%s\n' "open-webui $ts_ip:8080->8080/tcp" "ollama " "ollama-pull " "edge-traefik " "postgresql " \
+  printf '%s\n' "open-webui $ts_ip:8080->8080/tcp, 8080/tcp" "ollama 11434/tcp" "ollama-pull " "edge-traefik 80/tcp" "postgresql 5432/tcp" \
     "jellyfin $ts_ip:8096->8096/tcp" "audiobookshelf $ts_ip:13378->13378/tcp" "kavita $ts_ip:5000->5000/tcp" >"$work/state/docker.ps"
 }
 run() {

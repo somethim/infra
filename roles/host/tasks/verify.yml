@@ -49,15 +49,16 @@
   changed_when: false
   check_mode: false
 
-# docker ps prints a binding as <address>:<port>-><port>/tcp; anything but an
-# allowlisted container's own port on the Tailscale address is refused.
+# docker ps prints a binding as <address>:<port>-><port>/tcp and a port the image
+# only declares (EXPOSE) as <port>/tcp; the latter reaches no host interface.
+# Any binding but an allowlisted container's own port on the Tailscale address is refused.
 - name: Require every published port to be an allowlisted one, on the Tailscale address only
   vars:
     found: >-
       {%- set out = [] -%}
       {%- for line in published_ports.stdout_lines -%}
         {%- set name = line.split(' ', 1)[0] -%}
-        {%- for binding in (line.split(' ', 1)[1] if ' ' in line else '').split(', ') if binding | trim -%}
+        {%- for binding in (line.split(' ', 1)[1] if ' ' in line else '').split(', ') if '->' in binding -%}
           {%- set _ = out.append(name ~ ' ' ~ (binding | trim)) -%}
         {%- endfor -%}
       {%- endfor -%}
