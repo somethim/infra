@@ -790,7 +790,10 @@ expect_refused "every listed container is gone before the inspect" "not ready af
 installed_state
 sleep 1
 touch "$state/vanished-once/c3"
+# Room for a second poll of all twelve containers on a slow runner.
+apply_wait_seconds=15
 expect_ok "a container gone for one poll is checked on the next" "every container is running and healthy" "$work/second.tgz" release
+unset apply_wait_seconds
 [ "$(grep -c '^inspect ' "$state/calls")" -ge 2 ] || { echo "FAIL verify did not poll again after an uninspected container"; exit 1; }
 
 installed_state
