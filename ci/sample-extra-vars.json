@@ -11,5 +11,6 @@
   "portfolio_google_client_secret": "fake-google-secret-0000",
   "hypernova_session_secret": "fake-hypernova-session-00000000",
   "hypernova_admin_password": "fake-hypernova-admin-0000",
-  "cf_tunnel_token": "eyJhIjoiZmFrZS1hY2NvdW50IiwidCI6ImZha2UtdHVubmVsIiwicyI6ImZha2UifQ=="
+  "cf_tunnel_token": "eyJhIjoiZmFrZS1hY2NvdW50IiwidCI6ImZha2UtdHVubmVsIiwicyI6ImZha2UifQ==",
+  "webui_secret_key": "FakeWebuiSecretKey00000000000000000000000000000000"
 }

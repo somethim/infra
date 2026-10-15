@@ -101,8 +101,9 @@ jobs:
           ansible-playbook -i localhost, -c local release.yml -e @ci/sample-extra-vars.json \
             -e "deploy_key_file=${RUNNER_TEMP}/deploy_key.pub" -e "bundle_dir=${RUNNER_TEMP}/bundle" </dev/null >"${RUNNER_TEMP}/render.log" 2>&1 ||
             { cat "${RUNNER_TEMP}/render.log"; echo "::error::release.yml refused to render ci/sample-extra-vars.json"; exit 1; }
-          for stack in database portfolio hypernova tunnel; do
-            out="$(docker compose --file "stack/${stack}/docker-compose.yml" --project-directory "${RUNNER_TEMP}/bundle/${stack}" config --quiet 2>&1)" ||
+          # TAILSCALE_IP comes from /etc/infra/host.env on the host (infra-apply exports it).
+          for stack in database portfolio hypernova tunnel ai; do
+            out="$(TAILSCALE_IP=100.64.0.7 docker compose --file "stack/${stack}/docker-compose.yml" --project-directory "${RUNNER_TEMP}/bundle/${stack}" config --quiet 2>&1)" ||
               { echo "$out"; exit 1; }
             if grep -q 'variable is not set' <<<"$out"; then
               echo "$out"

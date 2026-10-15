@@ -1,0 +1,20 @@
+---
+# The tailnet interface: the only one from which a new connection may reach a
+# Docker-published port (infra-firewall), and the only one ufw admits the
+# published ports on (roles/common/defaults/main.yml, ufw_allowed).
+tailnet_interface: tailscale0
+
+# Every port a container publishes, each bound to the host's Tailscale address
+# alone. The compose guard (TAILNET_PORTS) refuses any other before a release
+# starts it; verify.yml reads the bindings back from Docker.
+tailnet_ports:
+  - { container: open-webui, port: 8080 }
+
+# Accounts the hardened stacks run as (no login, no home), and the external
+# volumes they own: provisioning creates each volume once and hands its root to
+# the account (0700), so the containers never need root to write their data.
+service_accounts:
+  - { name: ai, uid: "{{ ai_uid }}", gid: "{{ ai_gid }}" }
+service_volumes:
+  - { name: ollama-models, account: ai }
+  - { name: open-webui-data, account: ai }

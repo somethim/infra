@@ -16,8 +16,10 @@ Rules (each problem is printed as a ::error:: line):
   4. 10-hardening.conf.j2 renders PasswordAuthentication no, KbdInteractiveAuthentication no,
      PermitRootLogin no and ExposeAuthInfo yes; ssh_permit_root_login defaults to "no";
      ssh_access.yml removes 50-cloud-init.conf and asserts the policy sshd -T reports.
-  5. ufw_allowed is exactly SSH on tailscale0 (no web port: the public arrives through the
-     Cloudflare Tunnel); firewall.yml opens LAN 22 only when ssh_outside_tailnet and deletes it only
+  5. ufw_allowed is exactly SSH and the tailnet-only ports on tailscale0 (no web port: the public
+     arrives through the Cloudflare Tunnel); the tailnet-only ports are the same in roles/host's
+     tailnet_ports, the compose guard's TAILNET_PORTS, infra-apply's tailnet_ports and
+     ci/check_templates.py's TAILNET_PORTS; firewall.yml opens LAN 22 only when ssh_outside_tailnet and deletes it only
      when not ssh_outside_tailnet; ssh_outside_tailnet is set only by tasks/ssh-route.yml (tested in
      ci/verify-tasks.sh), which provision-checks.yml imports; production.yml's public_ports is empty.
   6. provision.yml runs provision-checks as a pre_task and ssh_access as a post_task, and neither
@@ -56,7 +58,8 @@ ADMIN_SUDOERS = "admin ALL=(ALL:ALL) ALL\n"
 VISUDO = "/usr/sbin/visudo -cf %s"
 AUTHORIZED_KEY_PREFIX = f'restrict,command="{GATE}" '
 HARDENING_LINES = ("PasswordAuthentication no", "KbdInteractiveAuthentication no", "PermitRootLogin no", "ExposeAuthInfo yes")
-UFW_ALLOWED = ["in on tailscale0 proto tcp to any port 22"]
+UFW_SSH = "in on tailscale0 proto tcp to any port 22"
+UFW_TAILNET = "in on tailscale0 proto tcp to any port {port}"
 DOCKER_PIN = "/etc/apt/preferences.d/docker"
 DOCKER_PINNED = {"docker-ce", "docker-ce-cli", "docker-ce-rootless-extras"}
 
@@ -242,11 +245,39 @@ def check_sshd(root: pathlib.Path) -> list[str]:
     return problems
 
 
+def tailnet_port_lists(root: pathlib.Path) -> dict[str, list[tuple[str, int]]]:
+    """(container, port) pairs, sorted, from each place that lists the tailnet-only ports."""
+    host = load_yaml(root / "roles/host/defaults/main.yml") or {}
+    guard = (root / "roles/common/files/infra-compose-guard").read_text()
+    apply = (root / "roles/common/files/infra-apply").read_text()
+    templates = (root / "ci/check_templates.py").read_text()
+
+    def py_dict(text: str) -> list[tuple[str, int]]:
+        body = re.search(r"^TAILNET_PORTS = \{(.*?)^\}", text, re.M | re.S)
+        return sorted((s, int(p)) for _, s, p in re.findall(r'\("(\w+)", "([\w-]+)"\): (\d+)', body.group(1) if body else ""))
+
+    apply_body = re.search(r"^readonly tailnet_ports=\((.*?)\)", apply, re.M | re.S)
+    return {
+        "roles/host/defaults/main.yml tailnet_ports": sorted((str(e["container"]), int(e["port"])) for e in host.get("tailnet_ports") or []),
+        "roles/common/files/infra-compose-guard TAILNET_PORTS": py_dict(guard),
+        "roles/common/files/infra-apply tailnet_ports": sorted((n, int(p)) for n, p in re.findall(r'"([\w-]+) (\d+)"', apply_body.group(1) if apply_body else "")),
+        "ci/check_templates.py TAILNET_PORTS": py_dict(templates),
+    }
+
+
 # Rule 5
 def check_firewall(root: pathlib.Path) -> list[str]:
     problems = []
-    if defaults(root).get("ufw_allowed") != UFW_ALLOWED:
-        problems.append(f"rule 5: roles/common/defaults/main.yml: ufw_allowed must be exactly {UFW_ALLOWED}")
+    lists = tailnet_port_lists(root)
+    reference = lists["roles/host/defaults/main.yml tailnet_ports"]
+    if not reference:
+        problems.append("rule 5: roles/host/defaults/main.yml: tailnet_ports is empty or unreadable")
+    for where, pairs in lists.items():
+        if pairs != reference:
+            problems.append(f"rule 5: {where} lists {pairs}, but roles/host/defaults/main.yml tailnet_ports lists {reference}")
+    ufw_allowed = [UFW_SSH] + [UFW_TAILNET.format(port=port) for port in sorted({p for _, p in reference})]
+    if defaults(root).get("ufw_allowed") != ufw_allowed:
+        problems.append(f"rule 5: roles/common/defaults/main.yml: ufw_allowed must be exactly {ufw_allowed}")
     rel = "roles/common/tasks/firewall.yml"
     tasks = tasks_in(root, rel)
     for command, when in (("ufw allow 22/tcp", "ssh_outside_tailnet"), ("ufw delete allow 22/tcp", "not ssh_outside_tailnet")):
@@ -450,6 +481,11 @@ def self_test() -> None:
          "must read /usr/sbin/sshd -T and assert"),
         ("5", "public SSH in ufw_allowed", edit("roles/common/defaults/main.yml", "  - in on tailscale0 proto tcp to any port 22\n", "  - in on tailscale0 proto tcp to any port 22\n  - 22/tcp\n"), "ufw_allowed must be exactly"),
         ("5", "the web ports opened again", edit("roles/common/defaults/main.yml", "  - in on tailscale0 proto tcp to any port 22\n", "  - in on tailscale0 proto tcp to any port 22\n  - 80/tcp\n  - 443/tcp\n"), "ufw_allowed must be exactly"),
+        ("5", "a tailnet port opened on every interface", edit("roles/common/defaults/main.yml", "  - in on tailscale0 proto tcp to any port 8080\n", "  - 8080/tcp\n"), "ufw_allowed must be exactly"),
+        ("5", "a tailnet port the guard does not know", edit("roles/host/defaults/main.yml", "  - { container: open-webui, port: 8080 }\n", "  - { container: open-webui, port: 8080 }\n  - { container: ollama, port: 11434 }\n"),
+         "roles/common/files/infra-compose-guard TAILNET_PORTS lists"),
+        ("5", "infra-apply checking another port", edit("roles/common/files/infra-apply", 'readonly tailnet_ports=("open-webui 8080")', 'readonly tailnet_ports=("open-webui 8081")'),
+         "roles/common/files/infra-apply tailnet_ports lists [('open-webui', 8081)]"),
         ("5", "a published port admitted on the LAN", edit("production.yml", "public_ports: []", "public_ports: [443]"), "public_ports must be []"),
         ("5", "LAN 22 deleted on a run outside the tailnet", edit("roles/common/tasks/firewall.yml", "  when: not ssh_outside_tailnet\n", ""), "'ufw delete allow 22/tcp' must run exactly once"),
         ("5", "a second definition of the SSH route", append("roles/common/tasks/firewall.yml", "\n- name: Guess the route\n  ansible.builtin.set_fact:\n    ssh_outside_tailnet: false\n"),
@@ -498,7 +534,7 @@ def main() -> int:
     if problems:
         return 1
     print("deploy access: the gate, infra-apply, the sudo rule and the workflow agree on release and status; sudo validated, admin sudo "
-          "asks for a password; the deploy key is root-owned and forced to the gate; key-only sshd; ufw tailnet SSH only, no published port; "
+          "asks for a password; the deploy key is root-owned and forced to the gate; key-only sshd; ufw admits SSH and the tailnet-only ports on tailscale0 alone, no LAN port; "
           "provision holds no secret; master only, production Environment, tag:infra-ci, never root; the Docker pin precedes every apt upgrade")
     return 0
 

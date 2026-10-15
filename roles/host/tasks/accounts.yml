@@ -1,0 +1,72 @@
+---
+# The accounts the ai (and media) containers run as, and the volumes they own.
+# See docs/host.md, "Service accounts and their volumes".
+- name: Create the service account groups with their fixed gids
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid }}"
+    system: true
+  loop: "{{ service_accounts }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.gid }}"
+
+- name: Create the service accounts with their fixed uids, no login and no home
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    group: "{{ item.name }}"
+    groups: ""
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: /nonexistent
+    password: "!"
+  loop: "{{ service_accounts }}"
+  loop_control:
+    label: "{{ item.name }} {{ item.uid }}"
+
+- name: Look for the service volumes
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, --format, "{{ '{{' }}.Mountpoint{{ '}}' }}", "{{ item.name }}"]
+  loop: "{{ service_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: service_volume_before
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# External to their stacks, like pgdata-v18, so a release can never create an
+# empty one in its place. Never deleted or replaced once they exist.
+- name: Create the service volumes a fresh host lacks
+  ansible.builtin.command:
+    argv: [docker, volume, create, "{{ item.item.name }}"]
+  loop: "{{ service_volume_before.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.rc != 0
+  changed_when: true
+
+- name: Read where each service volume lives
+  ansible.builtin.command:
+    argv: [docker, volume, inspect, --format, "{{ '{{' }}.Mountpoint{{ '}}' }}", "{{ item.name }}"]
+  loop: "{{ service_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: service_volume_paths
+  changed_when: false
+  check_mode: false
+
+# Only the volume's root: the containers own what they write inside it. The
+# stacks mount these with nocopy, so Docker never copies an image directory
+# (and its root ownership) over the root.
+- name: Give each service volume's root to its account, private
+  ansible.builtin.file:
+    path: "{{ item.stdout | trim }}"
+    state: directory
+    owner: "{{ (service_accounts | selectattr('name', 'equalto', item.item.account) | first).uid }}"
+    group: "{{ (service_accounts | selectattr('name', 'equalto', item.item.account) | first).gid }}"
+    mode: "0700"
+  loop: "{{ service_volume_paths.results }}"
+  loop_control:
+    label: "{{ item.item.name }} -> {{ item.item.account }}"

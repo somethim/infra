@@ -7,6 +7,7 @@
   gather_facts: false
   vars_files:
     - ../production.yml
+    - ../roles/host/defaults/main.yml
   tasks:
     - name: Edge verify
       ansible.builtin.import_tasks: ../roles/edge/tasks/verify.yml

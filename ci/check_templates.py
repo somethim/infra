@@ -10,7 +10,8 @@ Rules (each problem is printed as a ::error:: line):
   2. Each extra-vars key renders only into the bundle files SECRET_FILES allows; a <stack>/.env
      (interpolation only) and the role templates render none.
   3. Each compose file's ${VAR} interpolations are all set by its stack's env.j2 (role compose
-     files take none), and every env_file a stack names is rendered by release.yml.
+     files take none; HOST_VARIABLES, which infra-apply exports from /etc/infra/host.env, are the
+     exception), and every env_file a stack names is rendered by release.yml.
   4. Literal image: lines are <repo>:<tag>@sha256:<digest>; app images are only ${<NAME>_IMAGE},
      only in stack/ files, and their env.j2 points them at the production.yml repositories.
   5. ansible.cfg has host_key_checking = True; no deploy file turns host key checking off; every ssh
@@ -21,9 +22,10 @@ Rules (each problem is printed as a ::error:: line):
      extra-vars keys; the step's env block sets exactly the variables its jq object reads.
   8. ci/sample-extra-vars.json sets exactly the extra-vars keys, with obviously fake values (never a
      real token prefix such as ghp_ or github_pat_).
-  9. No compose file publishes a host port (ports:, expose to the host, network_mode: host): the
-     public arrives only through the Cloudflare Tunnel, and Traefik is reachable only on the edge
-     network. The tunnel token reaches only tunnel/tunnel.env (rule 2) and only cloudflared reads it.
+  9. No compose file publishes a host port (ports:, network_mode: host): the public arrives only
+     through the Cloudflare Tunnel, and Traefik is reachable only on the edge network. The only
+     exceptions are TAILNET_PORTS, each exactly "${TAILSCALE_IP}:<port>:<port>" (the host's Tailscale
+     address). The tunnel token reaches only tunnel/tunnel.env (rule 2) and only cloudflared reads it.
 
 --self-test first seeds at least one violation per rule into a temp copy of the tree and requires
 each to be caught, then checks the real tree.
@@ -59,6 +61,13 @@ SECRET_PREFIX_FILES = {
     "hypernova_": {"hypernova/provider.env"},
     "ghcr_": {"ghcr.env"},
     "cf_": {"tunnel/tunnel.env"},
+    "webui_": {"ai/open-webui.env"},
+}
+# Set at apply time from /etc/infra/host.env (infra-apply exports them), never by a bundle file.
+HOST_VARIABLES = {"TAILSCALE_IP"}
+# The only published ports (the compose guard holds the same list): (stack, service) -> port.
+TAILNET_PORTS = {
+    ("ai", "open-webui"): 8080,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}
@@ -248,6 +257,8 @@ def check_compose_env(root: pathlib.Path, rendered: dict[str, str]) -> list[str]
         body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
         for braced, modifier, bare in INTERPOLATION.findall(body):
             name = braced or bare
+            if name in HOST_VARIABLES and rel.startswith("stack/"):
+                continue
             if name not in defined and not modifier.lstrip(":").startswith("-"):
                 problems.append(f"rule 3: {rel}: ${{{name}}} is not set by {source if source in rendered else 'any env template'} "
                                 "(Compose would interpolate an empty string)")
@@ -398,10 +409,16 @@ def check_no_published_ports(root: pathlib.Path) -> list[str]:
     problems = []
     for rel in compose_files(root):
         services = (load_yaml(root / rel) or {}).get("services") or {}
+        stack = rel.split("/")[1] if rel.startswith("stack/") else None
         for name, service in services.items():
-            if service.get("ports"):
+            port = TAILNET_PORTS.get((stack, name))
+            want = [f"${{TAILSCALE_IP}}:{port}:{port}"]
+            if port is not None and service.get("ports") != want:
+                problems.append(f"rule 9: {rel}: service {name} publishes {service.get('ports')}; it may publish exactly {want}, "
+                                "on the host's Tailscale address only (docs/architecture.md)")
+            elif port is None and service.get("ports"):
                 problems.append(f"rule 9: {rel}: service {name} publishes host ports {service['ports']}; nothing may be reachable "
-                                "but through the Cloudflare Tunnel (docs/edge.md)")
+                                "but through the Cloudflare Tunnel, or for TAILNET_PORTS on the tailnet (docs/edge.md)")
             if str(service.get("network_mode", "")) == "host":
                 problems.append(f"rule 9: {rel}: service {name} uses network_mode: host, which listens on the host's interfaces")
     return problems
@@ -450,8 +467,8 @@ def self_test() -> None:
                 m(tmp)
         return mutate
 
-    jq_last = "            cf_tunnel_token: env.CF_TUNNEL_TOKEN\n"
-    env_last = "          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}\n"
+    jq_last = "            webui_secret_key: env.WEBUI_SECRET_KEY\n"
+    env_last = "          WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}\n"
     dead_secret = both(
         edit(WORKFLOW, jq_last, jq_last.rstrip("\n") + ",\n            crm_db_password: env.CRM_DB_PASSWORD\n"),
         edit(WORKFLOW, env_last, env_last + "          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}\n"),
@@ -508,6 +525,14 @@ def self_test() -> None:
          "service cloudflared uses network_mode: host"),
         ("9", "a stack publishes a port", edit("stack/hypernova/docker-compose.yml", "    container_name: prizm-web\n", "    container_name: prizm-web\n    ports: [\"3000:3000\"]\n"),
          "service web publishes host ports"),
+        ("9", "Open WebUI published on every interface", edit("stack/ai/docker-compose.yml", '      - "${TAILSCALE_IP}:8080:8080"\n', '      - "8080:8080"\n'),
+         "service open-webui publishes ['8080:8080']; it may publish exactly ['${TAILSCALE_IP}:8080:8080']"),
+        ("9", "Ollama published on the tailnet", edit("stack/ai/docker-compose.yml", "    container_name: ollama\n", "    container_name: ollama\n    ports:\n      - \"${TAILSCALE_IP}:11434:11434\"\n"),
+         "service ollama publishes host ports"),
+        ("2", "the Open WebUI key rendered into hypernova's env", append("stack/hypernova/provider.env.j2", "WEBUI={{ webui_secret_key }}\n"),
+         "renders 'webui_secret_key' into hypernova/provider.env"),
+        ("3", "an ai variable no env.j2 sets", edit("stack/ai/docker-compose.yml", 'command: [pull, "${OLLAMA_MODEL}"]', 'command: [pull, "${OLLAMA_PULL_MODEL}"]'),
+         "${OLLAMA_PULL_MODEL} is not set by stack/ai/env.j2"),
     ]
     caught_rules = set()
     for rule, name, mutate, expected in cases:
@@ -536,7 +561,7 @@ def main() -> int:
         return 1
     print("deploy templates: every variable has a source and every extra var a use, secrets reach only their own env files, "
           "compose interpolations and env files are rendered, images pinned, host keys checked, docker.sock only in the "
-          "socket proxies (read-only), release.yml's asserts match the workflow, the sample vars are fake, no host port is published")
+          "socket proxies (read-only), release.yml's asserts match the workflow, the sample vars are fake, no host port is published but the tailnet-only ones on the Tailscale address")
     return 0
 
 

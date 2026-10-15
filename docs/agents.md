@@ -36,7 +36,9 @@ to `:latest` is a deploy.
   `com.centurylinklabs.watchtower.enable=true` are considered: `portfolio`, `prizm-provider`,
   `prizm-web`. PostgreSQL and Traefik carry no such label and are never touched. **Never
   label a database**: an unattended image swap on a stateful container is a restore, not an
-  update.
+  update. The `ai` stack carries none either: its images are digest-pinned third-party ones
+  that migrate their own data on start, so they move only with a reviewed re-pin and a
+  release ([stacks.md](stacks.md#ai)); the compose guard refuses the label there.
 - **Digest pins are skipped.** A rollback runs an app as `<repo>:latest@sha256:<digest>`,
   which Watchtower cannot move, so auto-updates pause for exactly the pinned apps until
   `resume` puts them back on `:latest`.
@@ -107,7 +109,9 @@ Containers are not pruned at all, so a deliberately stopped one survives. Run it
 ## Re-pinning third-party images
 
 Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: PostgreSQL
-(`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Traefik,
+(`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Ollama
+and Open WebUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for `ollama` and
+`ollama-pull`), Traefik,
 Watchtower, autoheal and the socket proxy
 (`roles/{edge,watchtower,autoheal}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
@@ -124,7 +128,9 @@ To move one:
 2. Replace `<tag>@sha256:<digest>` in every file that runs that repository, and merge to
    `master`.
 3. Apply it: provision with that role's tag (`--tags edge`, `--tags watchtower` or
-   `--tags autoheal`; the socket proxy needs all three), or run `release` for PostgreSQL and
-   cloudflared. A PostgreSQL pin may move only within the major
+   `--tags autoheal`; the socket proxy needs all three), or run `release` for PostgreSQL,
+   cloudflared, Ollama and Open WebUI. Read an Open WebUI release's notes first: it migrates
+   its database on start, so a copy of the `open-webui-data` volume
+   ([operations.md](operations.md#backups)) is the way back. A PostgreSQL pin may move only within the major
    ([database.md](database.md#upgrades)). Pick a cloudflared release that has been out for a
    couple of weeks; it is never auto-updated (`--no-autoupdate`, no Watchtower label).

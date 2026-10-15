@@ -89,8 +89,9 @@ through neither sshd nor the tailnet, and takes `admin`'s password.
 
 ## Firewall
 
-ufw denies inbound by default and allows only **22 on `tailscale0`**. There is no web port:
-the Cloudflare Tunnel is an outbound connection. Outbound is unrestricted (image pulls,
+ufw denies inbound by default and allows only **22 and the tailnet-only ports (8080) on
+`tailscale0`** (`ufw_allowed`). There is no web port: the Cloudflare Tunnel is an outbound
+connection. Outbound is unrestricted (image pulls,
 Cloudflare, Resend, Tailscale, NTP). The router forwards no port to the host, so even LAN 22
 is unreachable from the internet.
 
@@ -109,11 +110,37 @@ interface (`PUBLIC_INTERFACE`, the default route's) reach only `public_ports` â€
 this host, `public_ports: []` â€” and drops the rest, and hook it first in Docker's
 `DOCKER-USER` chain. So every new connection from the LAN (or the internet, were a port ever
 forwarded) to any container is dropped, even if a container published a port by mistake.
-Provisioning reads both chains back and stops if the hook is not first or a port is admitted.
-The interface and ports come from `/etc/infra/host.env`.
+A second hook sends every new connection that Docker destination-NATed to a published port
+(conntrack state `DNAT`) and that did not come in on `tailscale0` (`TAILNET_INTERFACE`) through
+the same chain, so the tailnet-only ports answer only on the tailnet, whatever other interface
+(Wi-Fi, a second NIC, a LAN host routing to the Tailscale address) a packet arrives on.
+Provisioning reads both chains back and stops if the hooks are not first and second or a port
+is admitted. The interfaces and ports come from `/etc/infra/host.env`.
+
+The tailnet-only ports are bound to the Tailscale IPv4 (`TAILSCALE_IP` in `host.env`, read with
+`tailscale ip -4` on every run). At boot Docker may start its containers before `tailscaled`
+has brought that address up, so `/etc/sysctl.d/62-infra-tailnet-bind.conf` sets
+`net.ipv4.ip_nonlocal_bind = 1` and the bind succeeds anyway; provisioning reads the setting
+back. It also lists every port any container publishes (`docker ps`) and stops on one that is
+not an allowlisted container's own port on that address. The node's Tailscale address stays
+the same for as long as the node exists; if the server ever re-joins the tailnet as a new
+node, run provisioning (it rewrites `host.env`) and then `release` (it re-binds the ports).
 
 The ufw tasks use the `command` module with `changed_when: false`: ufw rules are idempotent
 already, and `command` keeps the repo free of collection dependencies.
+
+## Service accounts and their volumes
+
+The hardened stacks never run as root. `roles/host` creates a system account per stack with a
+fixed uid and gid from `production.yml` (`ai`: `ai_uid`/`ai_gid`, `2001`), no login shell, no
+home and a locked password, and writes it to `host.env` (`AI_USER=2001:2001`); the compose
+guard refuses an `ai` service that runs as anything else.
+
+Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`), external
+to the stacks like `pgdata-v18`, so a release can never create an empty one in its place. Each
+volume's root is handed to its account, mode 0700, on every run; the stacks mount them with
+`nocopy`, because Docker otherwise copies the image's directory, root ownership included, onto
+an empty volume the first time it is mounted.
 
 ## fail2ban
 

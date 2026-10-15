@@ -1,6 +1,8 @@
 # hypernova (prizm-lodge) stack. See docs/stacks.md.
 # .env (images and domain) only feeds interpolation; the provider reads its
-# secrets from provider.env, and web has no secrets at all.
+# secrets from provider.env, and web has no secrets at all. The provider alone
+# also joins llm, the internal network it shares with Ollama (stack/ai) and
+# nothing else.
 name: hypernova
 
 services:
@@ -17,6 +19,7 @@ services:
     networks:
       - data
       - edge
+      - llm
     healthcheck:
       test:
         - CMD
@@ -71,6 +74,9 @@ networks:
     external: true
   data:
     name: data
+    external: true
+  llm:
+    name: llm
     external: true
 
 volumes:

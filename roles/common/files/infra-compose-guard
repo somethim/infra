@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Refuse a release's compose model that could reach past its stack.
 
-    python3 -I infra-compose-guard <model.json> <stack_dir> <stack> [<app image repository>...]
+    python3 -I infra-compose-guard <model.json> <stack_dir> <stack> [--tailscale-ip=<IPv4>]
+        [--service-user=<uid>:<gid>] [<app image repository>...]
 
 <model.json> is `docker compose config --no-env-resolution --format json` for
-<stack_dir>/docker-compose.yml; <stack> is database, portfolio, hypernova or
-tunnel; the repositories are the app images /etc/infra/host.env allows for that
-stack (none for database and tunnel, whose images must be digest-pinned).
+<stack_dir>/docker-compose.yml; <stack> is database, portfolio, hypernova,
+tunnel or ai; the repositories are the app images /etc/infra/host.env allows for
+that stack (none for the others, whose images must be digest-pinned).
+--tailscale-ip is the host's Tailscale IPv4 (TAILSCALE_IP in host.env): the
+only address a port may be published on, and only by the services TAILNET_PORTS
+names, as "${TAILSCALE_IP}:<port>:<port>". --service-user is the account the
+host made for a hardened stack (ai): every service there runs as it, with a
+mem_limit, cap_drop ALL and no-new-privileges.
 infra-apply runs this on every stack of a bundle before anything changes.
 Prints one summary line on success; prints `docker-compose.yml: <reason>` and
 exits 1 on a refusal. Installed as /usr/local/libexec/infra-compose-guard.
@@ -18,6 +24,21 @@ import sys
 
 HOST_LABELS = re.compile(r"^(traefik\.|com\.centurylinklabs\.watchtower\.enable$|autoheal$)")
 AUTOHEAL_LABEL = re.compile(r"^autoheal$")
+
+# The only published ports: (stack, service) -> port, published as
+# "${TAILSCALE_IP}:<port>:<port>" on the host's Tailscale address. ufw admits
+# the same ports on tailscale0 only (roles/common/defaults/main.yml) and the
+# Tailscale policy grants them to the owner alone (RUNBOOK.md).
+TAILNET_PORTS = {
+    ("ai", "open-webui"): 8080,
+}
+TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
+TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
+# The only services that may reserve a device: the NVIDIA GPU, all of it, nothing else.
+GPU_SERVICES = {("ai", "ollama")}
+GPU_DEVICE = {"driver": "nvidia", "count": -1, "capabilities": ["gpu"]}
+# The only bind mounts: (stack, service) -> {host source: (container target, read-only)}.
+BIND_MOUNTS = {}
 
 STACKS = {
     "database": {
@@ -35,11 +56,13 @@ STACKS = {
         "labels": HOST_LABELS,
     },
     "hypernova": {
-        "networks": {"data", "edge"},
+        "networks": {"data", "edge", "llm"},
         "volumes": {"prizm-storage": {"name": "hypernova_prizm-storage", "external": False}},
         "containers": {"prizm-provider", "prizm-web"},
         "env_files": ("provider.env",),
         "labels": HOST_LABELS,
+        # llm is the provider's private line to Ollama; the web app needs neither it nor the database.
+        "container_networks": {"prizm-provider": {"data", "edge", "llm"}, "prizm-web": {"edge"}},
     },
     # The tunnel holds no data, is never routed (it is the way in) and is never
     # auto-updated (its image is pinned); autoheal may restart it.
@@ -50,6 +73,20 @@ STACKS = {
         "env_files": ("tunnel.env",),
         "labels": AUTOHEAL_LABEL,
     },
+    # The owner's AI, reachable only over the tailnet: never routed, never
+    # auto-updated (pinned images), never on edge or data. Only Open WebUI
+    # reads the stack's secret.
+    "ai": {
+        "networks": {"ai", "llm"},
+        "volumes": {"ollama-models": {"name": "ollama-models", "external": True},
+                    "open-webui-data": {"name": "open-webui-data", "external": True}},
+        "containers": {"ollama", "ollama-pull", "open-webui"},
+        "env_files": ("open-webui.env",),
+        "labels": AUTOHEAL_LABEL,
+        "container_networks": {"ollama": {"ai", "llm"}, "ollama-pull": {"ai"}, "open-webui": {"ai"}},
+        "container_env_files": {"open-webui": {"open-webui.env"}},
+        "hardened": True,
+    },
 }
 
 SERVICE_FIELDS = {
@@ -57,6 +94,7 @@ SERVICE_FIELDS = {
     "environment", "extra_hosts", "healthcheck", "image", "labels", "mem_limit", "networks",
     "restart", "stop_grace_period", "stop_signal", "volumes", "profiles",
     "user", "security_opt", "cap_drop", "read_only", "init", "working_dir", "tmpfs",
+    "ports", "deploy",
 }
 FIELD_REASONS = {
     "privileged": "which gives it root on the host",
@@ -74,8 +112,14 @@ FIELD_REASONS = {
     "volumes_from": "which mounts another container's volumes",
     "build": "which builds an image from files on the host",
     "label_file": "which reads a file on the host",
-    "ports": "which publishes a host port past the firewall",
 }
+# Refused unless TAILNET_PORTS or GPU_SERVICES name the service (checked separately).
+GATED_FIELDS = {
+    "ports": "which publishes a host port past the firewall",
+    "deploy": "which can reserve host devices",
+}
+PORT_FIELDS = {"mode", "host_ip", "target", "published", "protocol"}
+BIND_FIELDS = {"type", "source", "target", "read_only", "bind"}
 NETWORK_FIELDS = {"name", "external", "ipam", "labels"}
 SAFE_SECURITY_OPTS = {"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"}
 PINNED = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
@@ -112,16 +156,27 @@ def raw_lines(path):
         yield len(text) - len(text.lstrip(" ")), text.strip()
 
 
-def raw_checks(path):
-    """Refuse what `compose config` resolves away before the model shows it."""
+def raw_checks(path, stack, raw_ports):
+    """Refuse what `compose config` resolves away before the model shows it.
+
+    Yields (service, env_file) pairs, and records each service's ports items,
+    as written, in raw_ports."""
     top = service = None
     block = None
+    ports_block = None
     for indent, stripped in raw_lines(path):
         key = stripped[2:] if stripped.startswith("- ") else stripped
         if "<<" in key.split(":", 1)[0] and ":" in key:
             refuse("uses a YAML merge key (<<), which can pull settings from elsewhere")
         if indent == 0 and stripped.split(":", 1)[0] == "include":
             refuse("includes another compose file")
+        if ports_block is not None:
+            if indent > ports_block:
+                if not stripped.startswith("- "):
+                    refuse(f"service {service} writes ports in a form other than a list of \"{TAILNET_PORT_FORM.format(port='<port>')}\" strings")
+                raw_ports.setdefault(service, []).append(stripped[2:].strip().strip("'\""))
+                continue
+            ports_block = None
         if block is not None:
             if indent > block:
                 item = key[5:].strip() if key.startswith("path:") else key
@@ -144,6 +199,13 @@ def raw_checks(path):
                 refuse(f"service {service} sets profiles, which hides it from the checked model")
             if field in FIELD_REASONS:
                 refuse(f"service {service} sets {field}, {FIELD_REASONS[field]}")
+            if field == "ports":
+                if (stack, service) not in TAILNET_PORTS:
+                    refuse(f"service {service} sets ports, {GATED_FIELDS['ports']}")
+                if value.strip():
+                    refuse(f"service {service} writes ports in a form other than a list of \"{TAILNET_PORT_FORM.format(port='<port>')}\" strings")
+                raw_ports.setdefault(service, [])
+                ports_block = indent
             if field == "env_file":
                 value = value.strip()
                 if not value:
@@ -169,20 +231,128 @@ def env_keys(path):
     return keys
 
 
+def usage():
+    print("usage: infra-compose-guard <model.json> <stack_dir> " + "|".join(STACKS)
+          + " [--tailscale-ip=<IPv4>] [--service-user=<uid>:<gid>] [<app image repository>...]")
+    sys.exit(64)
+
+
+def check_ports(stack, name, spec, raw_ports, tailscale_ip):
+    """The service publishes exactly its TAILNET_PORTS port, on the tailnet address, written as the form."""
+    port = TAILNET_PORTS.get((stack, name))
+    ports = spec.get("ports")
+    if port is None:
+        if ports:
+            refuse(f"service {name} sets ports, {GATED_FIELDS['ports']}")
+        return None
+    want = TAILNET_PORT_FORM.format(port=port)
+    if raw_ports.get(name) != [want]:
+        refuse(f"service {name} publishes {show(raw_ports.get(name, []))}; it may publish exactly [\"{want}\"]")
+    if not tailscale_ip:
+        refuse(f"service {name} publishes {port} on the tailnet, but no Tailscale address was given (TAILSCALE_IP in /etc/infra/host.env; run provisioning)")
+    if not isinstance(ports, list) or len(ports) != 1 or not isinstance(ports[0], dict):
+        refuse(f"service {name} publishes {show(ports)}; it may publish exactly {port} on {tailscale_ip}")
+    entry = ports[0]
+    for field in sorted(entry):
+        if field not in PORT_FIELDS:
+            refuse(f"service {name} sets ports.{field}, which a release may not set")
+    if (entry.get("host_ip") != tailscale_ip or entry.get("target") != port or str(entry.get("published")) != str(port)
+            or entry.get("protocol", "tcp") != "tcp" or entry.get("mode", "ingress") != "ingress"):
+        refuse(f"service {name} publishes {show(entry)}; it may publish exactly tcp {port} on {tailscale_ip}, the host's Tailscale address")
+    return f"{name} {tailscale_ip}:{port}"
+
+
+def check_deploy(stack, name, spec):
+    """Only GPU_SERVICES reserve a device, and only the whole NVIDIA GPU."""
+    deploy = spec.get("deploy")
+    if deploy is None:
+        return False
+    if (stack, name) not in GPU_SERVICES:
+        refuse(f"service {name} sets deploy, {GATED_FIELDS['deploy']}; only {', '.join(sorted(s for _, s in GPU_SERVICES))} may reserve the GPU")
+    try:
+        extra = {k: v for k, v in deploy.items() if k not in {"resources", "placement"}}
+        reservations = deploy["resources"]["reservations"]
+        devices = reservations["devices"]
+        shape_ok = (not extra and deploy.get("placement", {}) == {} and set(deploy["resources"]) == {"reservations"}
+                    and set(reservations) == {"devices"} and isinstance(devices, list) and len(devices) == 1)
+        device = dict(devices[0]) if shape_ok else {}
+    except (AttributeError, KeyError, TypeError):
+        shape_ok, device = False, {}
+    if device.get("count") == "all":
+        device["count"] = -1
+    if not shape_ok or device != GPU_DEVICE:
+        refuse(f"service {name} sets deploy {show(deploy)}; it may only reserve all NVIDIA GPUs (driver nvidia, count all, capabilities [gpu])")
+    return True
+
+
+def check_mounts(stack, name, spec):
+    """Named volumes and tmpfs only, plus the BIND_MOUNTS this service may have."""
+    allowed = BIND_MOUNTS.get((stack, name), {})
+    binds = []
+    for mount in spec.get("volumes") or []:
+        kind = mount.get("type") if isinstance(mount, dict) else None
+        if kind in {"volume", "tmpfs"}:
+            continue
+        source = str(mount.get("source", "")) if isinstance(mount, dict) else str(mount)
+        if "docker.sock" in source:
+            refuse(f"service {name} mounts the Docker socket {show(source)}")
+        if kind != "bind" or source not in allowed:
+            refuse(f"service {name} has a {show(kind)} mount of {show(source)}; a release may only use its named volumes and tmpfs"
+                   + (f", and {', '.join(sorted(allowed))}" if allowed else ""))
+        target, read_only = allowed[source]
+        for field in sorted(mount):
+            if field not in BIND_FIELDS:
+                refuse(f"service {name} sets {field} on its mount of {source}, which a release may not set")
+        if mount.get("target") != target or bool(mount.get("read_only")) != read_only or mount.get("bind") != {"create_host_path": False}:
+            refuse(f"service {name} mounts {source} as {show({k: mount.get(k) for k in ('target', 'read_only', 'bind')})}; it may only mount it at "
+                   f"{target}{' read-only' if read_only else ''}, with bind.create_host_path: false")
+        binds.append(f"{source}{' (ro)' if read_only else ''}")
+    return binds
+
+
+def check_hardened(name, spec, service_user):
+    """A hardened stack's services run as the host's service account, bounded and with no privileges."""
+    if not service_user:
+        refuse(f"service {name} is in a hardened stack, but no service account was given (run provisioning)")
+    if str(spec.get("user", "")) != service_user:
+        refuse(f"service {name} runs as {show(spec.get('user'))}; it must run as {service_user}, the account /etc/infra/host.env names")
+    if not spec.get("mem_limit"):
+        refuse(f"service {name} sets no mem_limit")
+    if "ALL" not in [str(c).upper() for c in spec.get("cap_drop") or []]:
+        refuse(f"service {name} does not drop every capability (cap_drop: [ALL])")
+    if not any(str(o) in SAFE_SECURITY_OPTS for o in spec.get("security_opt") or []):
+        refuse(f"service {name} does not set security_opt no-new-privileges")
+
+
 def main():
     if len(sys.argv) < 4 or sys.argv[3] not in STACKS:
-        print("usage: infra-compose-guard <model.json> <stack_dir> database|portfolio|hypernova|tunnel [<app image repository>...]")
-        sys.exit(64)
+        usage()
     model_path, project, stack = sys.argv[1], os.path.normpath(sys.argv[2]), sys.argv[3]
-    app_repos = set(sys.argv[4:])
+    tailscale_ip = service_user = None
+    app_repos = set()
+    for arg in sys.argv[4:]:
+        if arg.startswith("--tailscale-ip="):
+            tailscale_ip = arg.split("=", 1)[1]
+            if not TAILSCALE_IPV4.match(tailscale_ip):
+                refuse(f"the Tailscale address {show(tailscale_ip)} is not an IPv4 address in 100.64.0.0/10")
+        elif arg.startswith("--service-user="):
+            service_user = arg.split("=", 1)[1]
+            uid, _, gid = service_user.partition(":")
+            if not (uid.isdigit() and gid.isdigit() and int(uid) > 0 and int(gid) > 0):
+                refuse(f"the service account {show(service_user)} is not <uid>:<gid> of an account other than root")
+        elif arg.startswith("--"):
+            usage()
+        else:
+            app_repos.add(arg)
     spec_for = STACKS[stack]
     bundle_env_files = {os.path.join(project, name) for name in spec_for["env_files"]}
     allowed_env_list = ", ".join(spec_for["env_files"])
 
+    raw_ports = {}
     entries = sorted(os.listdir(project)) if os.path.isdir(project) else []
     for entry in entries:
         if entry.endswith((".yml", ".yaml")):
-            for service_name, raw in raw_checks(os.path.join(project, entry)):
+            for service_name, raw in raw_checks(os.path.join(project, entry), stack, raw_ports):
                 resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(project, raw))
                 if resolved not in bundle_env_files:
                     refuse(f"service {service_name or '?'} reads env_file {show(raw)}; the {stack} stack may only read {allowed_env_list} from the bundle")
@@ -240,6 +410,9 @@ def main():
         if spec.get("name") != want["name"] or bool(spec.get("external")) != want["external"]:
             refuse(f"volume {key} is {show(spec.get('name'))}{' (external)' if spec.get('external') else ''}; the {stack} stack keeps its data in {show(want['name'])}{' (external)' if want['external'] else ''}")
 
+    published, gpus, binds = [], [], []
+    container_networks = spec_for.get("container_networks")
+    container_env_files = spec_for.get("container_env_files")
     for name, spec in sorted(services.items()):
         for field in sorted(spec):
             if field not in SERVICE_FIELDS:
@@ -247,6 +420,28 @@ def main():
         container_name = spec.get("container_name")
         if container_name not in spec_for["containers"]:
             refuse(f"service {name} sets container_name {show(container_name)}; the {stack} stack names its containers {' or '.join(sorted(spec_for['containers']))}")
+        if spec_for.get("hardened") and name != container_name:
+            refuse(f"service {name} names its container {show(container_name)}; in the {stack} stack a service is named after its container")
+        if container_networks is not None:
+            joined = set(spec.get("networks") or {})
+            names = {str((networks.get(key) or {}).get("name", key)) for key in joined}
+            extra = names - container_networks.get(container_name, set())
+            if extra:
+                refuse(f"service {name} joins {', '.join(sorted(extra))}; {container_name} may only join {', '.join(sorted(container_networks.get(container_name, set()))) or 'no network'}")
+        if container_env_files is not None:
+            mine = {os.path.join(project, f) for f in container_env_files.get(container_name, set())}
+            for entry in spec.get("env_file") or []:
+                path = os.path.normpath(str(entry.get("path") if isinstance(entry, dict) else entry))
+                if path not in mine:
+                    refuse(f"service {name} reads env_file {show(path)}; in the {stack} stack only {', '.join(sorted(container_env_files))} read an env file, each its own")
+        if spec_for.get("hardened"):
+            check_hardened(name, spec, service_user)
+        port = check_ports(stack, name, spec, raw_ports, tailscale_ip)
+        if port:
+            published.append(port)
+        if check_deploy(stack, name, spec):
+            gpus.append(name)
+        binds += [f"{name} {b}" for b in check_mounts(stack, name, spec)]
         user = spec.get("user")
         if user is not None:
             uid = str(user).split(":", 1)[0].strip()
@@ -276,16 +471,17 @@ def main():
             if HOST_LABELS.match(label) and not (allowed_labels and allowed_labels.match(label)):
                 role = "is never routed or auto-updated" if allowed_labels else "is never routed, auto-updated or auto-healed"
                 refuse(f"service {name} sets the label {label}; the {stack} stack {role}")
-        for mount in spec.get("volumes") or []:
-            kind = mount.get("type") if isinstance(mount, dict) else None
-            if kind in {"volume", "tmpfs"}:
-                continue
-            source = str(mount.get("source", "")) if isinstance(mount, dict) else str(mount)
-            if "docker.sock" in source:
-                refuse(f"service {name} mounts the Docker socket {show(source)}")
-            refuse(f"service {name} has a {show(kind)} mount of {show(source)}; a release may only use its named volumes and tmpfs")
 
-    print(f"{len(services)} service(s) in the {stack} stack, no privileged settings, host ports, bind mounts or Docker socket")
+    for name in sorted(raw_ports):
+        if name not in services:
+            refuse(f"service {name} publishes ports the checked model does not show")
+    summary = f"{len(services)} service(s) in the {stack} stack, no privileged settings"
+    if published or gpus or binds:
+        summary += (f", no host port but {', '.join(published) or 'none'} on the tailnet, no bind mount but {', '.join(binds) or 'none'}, "
+                    f"the GPU only for {', '.join(gpus) or 'none'}, no Docker socket")
+    else:
+        summary += ", host ports, bind mounts or Docker socket"
+    print(summary)
 
 
 main()

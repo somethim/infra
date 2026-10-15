@@ -31,6 +31,7 @@ for the account the Ubuntu installer creates; use yours.
 | [9. First release](#9-first-release) | GitHub Actions |
 | [10. DNS switch-over and decommissioning the old server](#10-dns-switch-over-and-decommissioning-the-old-server) | Cloudflare, then the Hetzner console |
 | [11. Day-2 operations](#11-day-2-operations) | from then on |
+| [12. GPU, AI and media](#12-gpu-ai-and-media) | the server, Tailscale, GitHub, your devices |
 
 Tailscale (4) comes before the first provision (5) because that run joins the server to the
 tailnet and asks for the auth key made in 4.
@@ -121,7 +122,8 @@ it cannot do.
 **Owner action**, in the Tailscale admin console (<https://login.tailscale.com/admin>).
 
 1. **Access controls**: merge these into the policy file, and give nothing else access to
-   `tag:infra-server`. Admins (you) and the CI runners reach the server on tcp 22 only;
+   `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
+   (Open WebUI on 8080, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
    ```json
@@ -132,6 +134,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -322,6 +325,7 @@ done
 # Apps: generated secrets
 gh secret set PORTFOLIO_TOTP_ENCRYPTION_KEY --env production --body "$(openssl rand -base64 32)"
 gh secret set HYPERNOVA_SESSION_SECRET --env production --body "$(openssl rand -hex 24)"
+gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
 
 # Apps: the two operator passwords you will log in with; store each in your password manager first
 portfolio_admin="$(openssl rand -hex 16)"; echo "portfolio admin: $portfolio_admin"
@@ -366,7 +370,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22/tcp and 8080/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -384,7 +388,8 @@ infra-apply: compose model accepted: 1 service(s) in the database stack, ...
 infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
-infra-apply: bundle accepted: 14 files, manifest checksums match
+infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
+infra-apply: bundle accepted: 17 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -392,17 +397,21 @@ infra-apply: database roles, passwords and grants are in place
 infra-apply: starting portfolio
 infra-apply: starting hypernova
 infra-apply: starting tunnel
+infra-apply: starting ai
 infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
+infra-apply: the tailnet-only ports open-webui:8080 are bound to 100.x.y.z alone
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
 
 PostgreSQL initialises the empty `pgdata-v18` volume on this first start, and `provision.sql`
 creates the `prizm` and `portfolio` roles and databases; the apps create their schemas. The
-portfolio can take up to 180 s to report healthy. In the Cloudflare dashboard the tunnel now
+portfolio can take up to 180 s to report healthy. The `ai` stack needs the GPU and the
+`WEBUI_SECRET_KEY` secret; set both up first ([section 12](#12-gpu-ai-and-media)), since a
+release refuses without them. In the Cloudflare dashboard the tunnel now
 shows **Healthy** with connections.
 
 The smoke step that follows checks the hostnames through Cloudflare. Until section 10 they
@@ -566,6 +575,8 @@ most values:
 - **`SSH_PRIVATE_KEY`** (the CI deploy key): make a new pair as in section 5, commit the public
   half, provision (it replaces `deploy`'s one line), then set the secret.
 - **`TS_OAUTH_SECRET`**: generate a new OAuth client as in section 4 and replace both values.
+- **`WEBUI_SECRET_KEY`**: `openssl rand -hex 32`, then `release`. It only signs Open WebUI's
+  sessions, so everyone is signed out and nothing else changes.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
@@ -630,3 +641,104 @@ major is a dump and restore, [docs/database.md](docs/database.md#upgrades)) and 
 
 PostgreSQL access, disk, backups, a major PostgreSQL upgrade, Watchtower and a hung site are
 in [docs/operations.md](docs/operations.md).
+
+## 12. GPU, AI and media
+
+**Owner action.** Turns on what the RTX 2060 is for: Ollama with Open WebUI for you alone.
+None of it is public: it is reachable only over the tailnet, on the server's Tailscale address,
+and only by the Tailscale accounts the policy names (you). Do the steps in this order; each
+one names how to check it.
+
+### Tailscale grants
+
+In the Tailscale admin console, **Access controls**, add exactly this grant to the policy file
+(section 4 already lists it for a new tailnet; an older policy needs it added) and nothing
+else for `tag:infra-server`:
+
+```json
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080"]}
+```
+
+`tag:infra-ci` gets no new port. Check from the laptop once the release below is done:
+`nc -z -w 5 infra-host 8080` succeeds, and `nc -z -w 5 192.168.1.50 8080` (the LAN address)
+times out.
+
+### The Open WebUI secret
+
+```bash
+gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
+```
+
+It signs Open WebUI's sessions and reaches only the `open-webui` container. Nobody needs to
+know it.
+
+### Provision, reboot and check the GPU
+
+`production.yml` already has `gpu_enabled: true` and `nvidia_driver_major: 580`. On the server
+(console or `ssh admin@infra-host`), check that Ubuntu offers that branch for the card:
+
+```bash
+lspci | grep -i nvidia                       # the RTX 2060 (TU106)
+ubuntu-drivers list --gpgpu                  # must include nvidia:580-server
+```
+
+If it lists another `-server` branch instead, set `nvidia_driver_major` to it (through
+`master`). Then provision from the laptop:
+
+```bash
+ansible-playbook -u admin --ask-become-pass provision.yml
+```
+
+The `gpu` role installs the driver and the NVIDIA Container Toolkit; `host` writes the
+Tailscale address into `/etc/infra/host.env`, turns on non-local binds, adds the second
+firewall hook, the `ai` and `llm` networks, the `ai` account and its two volumes. A first run
+ends the `gpu` part with "The NVIDIA driver was just installed or updated and is not loaded
+yet … Reboot when it suits you": the driver loads at the next boot. Reboot (the sites are back
+when Docker has restarted the stacks, about a minute), then verify:
+
+```bash
+ssh -t admin@infra-host sudo reboot
+ansible-playbook -u admin --ask-become-pass provision.yml --tags gpu,host
+ssh admin@infra-host nvidia-smi                        # the RTX 2060, 12288MiB, driver 580.x
+ssh admin@infra-host sudo docker info --format '{{json .Runtimes}}'    # includes "nvidia"
+```
+
+The second run passes "Require nvidia-smi to see the GPU through the loaded driver". With
+Secure Boot on, Ubuntu's signed modules load without any key enrolment; if `nvidia-smi` says it
+cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
+
+### Release
+
+Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` stack accepted with
+"no host port but open-webui 100.x.y.z:8080 on the tailnet … the GPU only for ollama", "starting
+ai", and "the tailnet-only ports open-webui:8080 are bound to 100.x.y.z alone". The images are
+large (Open WebUI about 4 GB); the first pull takes a while. `ollama-pull` then downloads
+`qwen2.5:7b` (about 4.7 GB) in the background:
+
+```bash
+ssh admin@infra-host sudo docker logs -f ollama-pull      # ends with "success"
+ssh admin@infra-host sudo docker exec ollama nvidia-smi -L   # GPU 0: NVIDIA GeForce RTX 2060 (inside the container)
+ssh admin@infra-host sudo docker exec ollama ollama ps    # after a chat: 100% GPU
+ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # only open-webui 100.x.y.z:8080->8080/tcp
+```
+
+hypernova's AI features use the same Ollama over the internal `llm` network from this release
+on.
+
+### First logins
+
+**Open WebUI**, right after the release, before anyone else could: open
+`http://infra-host:8080` on the laptop (on the tailnet) and **sign up**. The first account
+becomes the admin; use a password from your password manager. Then **Admin Panel → Settings →
+General → Enable New Sign Ups: off**, and save. Any account that signed up before that waits
+as "pending" and can do nothing until you approve it; delete it under **Admin Panel → Users**.
+The model list shows `qwen2.5:7b` once `ollama-pull` has finished.
+
+### Phones and TVs
+
+Install Tailscale on the device (App Store / Play Store; Android TV and Apple TV have it too)
+and sign in with the same account as the laptop, so it is one of `autogroup:admin`'s devices.
+Then use `http://infra-host:8080` (MagicDNS) or the server's `100.x.y.z` address
+(`tailscale ip -4 infra-host` on the laptop). Nothing works from a device that is not on the
+tailnet, by design.
+

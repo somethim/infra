@@ -16,6 +16,67 @@
     fail_msg: "DOCKER-USER does not start with the INFRA-PUBLIC hook ({{ hook }}): {{ docker_user_rules.stdout_lines }}"
     quiet: true
 
+- name: Require INFRA-PUBLIC hooked second for new connections to a published port from anywhere but the tailnet
+  vars:
+    hook: "-A DOCKER-USER ! -i {{ tailnet_interface }} -m conntrack --ctstate NEW -m conntrack --ctstate DNAT -j INFRA-PUBLIC"
+    appended: "{{ docker_user_rules.stdout_lines | select('match', '^-A DOCKER-USER ') | list }}"
+  ansible.builtin.assert:
+    that:
+      - appended | length > 1
+      - appended[1] == hook
+    fail_msg: >-
+      DOCKER-USER's second rule is not the tailnet hook ({{ hook }}): {{ docker_user_rules.stdout_lines }}.
+      Without it a published port would be reachable from any interface but the LAN-facing one; provision with
+      --tags host (sudo systemctl restart infra-firewall).
+    quiet: true
+
+- name: Read whether services may bind the Tailscale address before it exists
+  ansible.builtin.command: sysctl -n net.ipv4.ip_nonlocal_bind
+  register: nonlocal_bind_now
+  changed_when: false
+  check_mode: false
+
+- name: Require non-local binds, so a tailnet-only port survives Docker starting before tailscaled
+  ansible.builtin.assert:
+    that:
+      - nonlocal_bind_now.stdout | trim == '1'
+    fail_msg: "net.ipv4.ip_nonlocal_bind is {{ nonlocal_bind_now.stdout | trim }}; /etc/sysctl.d/62-infra-tailnet-bind.conf sets 1 (provision with --tags host)."
+    quiet: true
+
+- name: Read the host ports every container publishes
+  ansible.builtin.command: docker ps --all --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Ports{{ "}}" }}'
+  register: published_ports
+  changed_when: false
+  check_mode: false
+
+# docker ps prints a binding as <address>:<port>-><port>/tcp; anything but an
+# allowlisted container's own port on the Tailscale address is refused.
+- name: Require every published port to be an allowlisted one, on the Tailscale address only
+  vars:
+    found: >-
+      {%- set out = [] -%}
+      {%- for line in published_ports.stdout_lines -%}
+        {%- set name = line.split(' ', 1)[0] -%}
+        {%- for binding in (line.split(' ', 1)[1] if ' ' in line else '').split(', ') if binding | trim -%}
+          {%- set _ = out.append(name ~ ' ' ~ (binding | trim)) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+    wanted: >-
+      {%- set out = [] -%}
+      {%- for p in tailnet_ports -%}
+        {%- set _ = out.append(p.container ~ ' ' ~ tailscale_ipv4 ~ ':' ~ p.port ~ '->' ~ p.port ~ '/tcp') -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.assert:
+    that:
+      - found | difference(wanted) | length == 0
+    fail_msg: >-
+      A container publishes a port that is not a tailnet-only one on {{ tailscale_ipv4 }}: {{ found | difference(wanted) }}
+      (allowed: {{ wanted }}). The compose guard refuses this in a release; find who started it
+      (sudo docker ps) and remove it.
+    quiet: true
+
 - name: Read the swap in use
   ansible.builtin.command: swapon --noheadings --bytes --show=SIZE
   register: swap_now

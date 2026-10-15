@@ -9,8 +9,9 @@
 # release.env, image references, the compose model of each stack) before
 # anything changes. It is then installed as /opt/infra/releases/<id>, the
 # stacks start in order database, provision.sql, portfolio, hypernova, tunnel,
-# and the release is verified (containers healthy, Traefik routes each domain
-# to its app, the tunnel is connected, socket proxies) before it is marked
+# ai, and the release is verified (containers healthy, Traefik routes each
+# domain to its app, the tunnel is connected, the tailnet-only ports are bound
+# to the Tailscale address alone, socket proxies) before it is marked
 # .verified. `previous` only ever points at a verified
 # release. Output lines start with "infra-apply: "; failures with
 # "infra-apply: FAILED: ". Never prints a secret.
@@ -37,16 +38,24 @@ readonly max_file_bytes=262144
 readonly releases_dir="$stack_dir/releases"
 readonly release_id_pattern='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$'
 readonly repo_pattern='^[a-z0-9.-]+(/[a-z0-9._-]+)+$'
-readonly stacks=(database portfolio hypernova tunnel)
+readonly stacks=(database portfolio hypernova tunnel ai)
 readonly bundle_files=(
   manifest.sha256 release.env ghcr.env
   database/docker-compose.yml database/postgres.env database/provision.sql
   portfolio/docker-compose.yml portfolio/.env portfolio/portfolio.env
   hypernova/docker-compose.yml hypernova/.env hypernova/provider.env
   tunnel/docker-compose.yml tunnel/tunnel.env
+  ai/docker-compose.yml ai/.env ai/open-webui.env
 )
-readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env)
-readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env manifest.sha256)
+readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
+  ai/.env ai/open-webui.env)
+readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
+  ai/.env ai/open-webui.env manifest.sha256)
+# The only published ports, "<container> <port>", each bound to the host's
+# Tailscale address alone (the compose guard's TAILNET_PORTS).
+readonly tailnet_ports=("open-webui 8080")
+readonly tailscale_ip_pattern='^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
+readonly service_user_pattern='^[1-9][0-9]*:[1-9][0-9]*$'
 # Traefik and cloudflared, by container name, on the shared edge network.
 readonly traefik_container=edge-traefik
 readonly tunnel_container=cloudflared
@@ -61,6 +70,8 @@ readonly image_specs=(
 export DOCKER_CONFIG="${INFRA_APPLY_DOCKER_CONFIG:-/root/.docker}"
 
 declare -A repo_of=()
+tailscale_ip=""
+ai_user=""
 failure_hint=""
 work_dir=""
 watchtower_stopped=0
@@ -120,12 +131,18 @@ load_host() {
     [[ "$repo" =~ $repo_pattern ]] || fail "$host_file $repo_key is not an image repository; run provisioning"
     repo_of[$key]="$repo"
   done
+  tailscale_ip="$(host_value TAILSCALE_IP)"
+  [[ "$tailscale_ip" =~ $tailscale_ip_pattern ]] || fail "$host_file TAILSCALE_IP is not this host's Tailscale IPv4 (100.64.0.0/10); run provisioning"
+  ai_user="$(host_value AI_USER)"
+  [[ "$ai_user" =~ $service_user_pattern ]] || fail "$host_file AI_USER is not the <uid>:<gid> of the ai account; run provisioning"
 }
 
+# TAILSCALE_IP feeds the "${TAILSCALE_IP}:<port>:<port>" bindings; the
+# environment wins over a stack's .env, and the guard checks the result.
 compose_in() {
   local dir="$1"
   shift
-  docker compose --file "$dir/docker-compose.yml" --project-directory "$dir" "$@"
+  TAILSCALE_IP="$tailscale_ip" docker compose --file "$dir/docker-compose.yml" --project-directory "$dir" "$@"
 }
 
 allowed_name() {
@@ -174,7 +191,7 @@ extract_bundle() {
   ) 2>/dev/null; then
     untouched "the bundle did not extract cleanly"
   fi
-  other="$(cd "$dest" && find . -mindepth 1 ! -type f ! \( -type d \( -path ./database -o -path ./portfolio -o -path ./hypernova -o -path ./tunnel \) \) -print -quit)"
+  other="$(cd "$dest" && find . -mindepth 1 ! -type f ! \( -type d \( -path ./database -o -path ./portfolio -o -path ./hypernova -o -path ./tunnel -o -path ./ai \) \) -print -quit)"
   [ -z "$other" ] || untouched "the bundle extracted to something other than regular files: $(printf '%q' "${other#./}")"
   [ -z "$(find "$dest" -type f -size +"${max_file_bytes}c" -print -quit)" ] || untouched "a file in the bundle is larger than $max_file_bytes bytes"
   (cd "$dest" && find . -mindepth 1 -type f -printf '%P\n' | LC_ALL=C sort) >"$found"
@@ -215,6 +232,9 @@ validate_env_files() {
   fi
   if ! grep -qE '^TUNNEL_TOKEN=[A-Za-z0-9+/_=-]+$' "$dir/tunnel/tunnel.env" || [ "$(grep -c . "$dir/tunnel/tunnel.env")" -ne 1 ]; then
     untouched "tunnel/tunnel.env must set exactly TUNNEL_TOKEN"
+  fi
+  if ! grep -qE '^WEBUI_SECRET_KEY=[A-Za-z0-9]{32,}$' "$dir/ai/open-webui.env" || [ "$(grep -c . "$dir/ai/open-webui.env")" -ne 1 ]; then
+    untouched "ai/open-webui.env must set exactly WEBUI_SECRET_KEY"
   fi
 }
 
@@ -272,13 +292,15 @@ stack_repos() {
 
 guard_stacks() {
   local dir="$1" stack guarded
-  local -a repos
+  local -a repos options
   for stack in "${stacks[@]}"; do
     if ! compose_in "$dir/$stack" config --no-env-resolution --format json >"$dir.$stack.json" 2>"$dir.$stack.err"; then
       untouched "docker compose rejects $stack/docker-compose.yml: $(tail -n 3 "$dir.$stack.err" | tr '\n' ' ')"
     fi
     mapfile -t repos < <(stack_repos "$stack")
-    if ! guarded="$(python3 -I "$guard" "$dir.$stack.json" "$dir/$stack" "$stack" "${repos[@]}")"; then
+    options=("--tailscale-ip=$tailscale_ip")
+    [ "$stack" != ai ] || options+=("--service-user=$ai_user")
+    if ! guarded="$(python3 -I "$guard" "$dir.$stack.json" "$dir/$stack" "$stack" "${options[@]}" "${repos[@]}")"; then
       untouched "$stack/${guarded:-docker-compose.yml: the compose model could not be checked}"
     fi
     log "compose model accepted: $guarded"
@@ -501,6 +523,21 @@ check_tunnel() {
   log "the Cloudflare Tunnel is connected (cloudflared /ready answers 200)"
 }
 
+# Each tailnet-only port is bound to the Tailscale address and nothing else, as
+# Docker applied it (the guard checked the compose model before the start).
+check_tailnet_ports() {
+  local entry name port want got
+  local -a checked=()
+  for entry in "${tailnet_ports[@]}"; do
+    read -r name port <<<"$entry"
+    want="{\"$port/tcp\":[{\"HostIp\":\"$tailscale_ip\",\"HostPort\":\"$port\"}]}"
+    got="$(docker container inspect --format '{{json .HostConfig.PortBindings}}' "$name" 2>/dev/null || true)"
+    [ "$got" = "$want" ] || fail "$name publishes ${got:-nothing}, expected only $tailscale_ip:$port (the host's Tailscale address)"
+    checked+=("$name:$port")
+  done
+  log "the tailnet-only ports ${checked[*]} are bound to $tailscale_ip alone"
+}
+
 container_state() {
   docker container inspect --format '{{.State.Running}} {{.State.Restarting}}' "$1" 2>/dev/null || true
 }
@@ -583,6 +620,7 @@ verify_release() {
   wait_for_stacks
   check_routes "$stack_dir/current"
   check_tunnel
+  check_tailnet_ports
   check_socket_clients
   record_running_images "$id"
   touch "$releases_dir/$id/.verified"
@@ -629,7 +667,7 @@ install() {
   link_release current "$id"
   prune_releases "$id" "$previous"
   failure_hint="release $id is current but not verified. Run the Deploy workflow with action rollback only if an app image causes the failure above: a rollback changes nothing but the app image references and renders every stack/ file, env file and secret from master again; for any other cause revert that change on master and run release${last_verified_note}"
-  for stack in portfolio hypernova tunnel; do
+  for stack in portfolio hypernova tunnel ai; do
     log "starting $stack"
     compose_in "$stack_dir/current/$stack" up -d --remove-orphans || fail "$stack did not start"
   done

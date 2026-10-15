@@ -200,6 +200,7 @@ jobs:
           HYPERNOVA_SESSION_SECRET: ${{ secrets.HYPERNOVA_SESSION_SECRET }}
           HYPERNOVA_ADMIN_PASSWORD: ${{ secrets.HYPERNOVA_ADMIN_PASSWORD }}
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -214,7 +215,8 @@ jobs:
             portfolio_google_client_secret: env.PORTFOLIO_GOOGLE_CLIENT_SECRET,
             hypernova_session_secret: env.HYPERNOVA_SESSION_SECRET,
             hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
-            cf_tunnel_token: env.CF_TUNNEL_TOKEN
+            cf_tunnel_token: env.CF_TUNNEL_TOKEN,
+            webui_secret_key: env.WEBUI_SECRET_KEY
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 

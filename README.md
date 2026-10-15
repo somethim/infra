@@ -4,7 +4,8 @@ The **one** repo that configures the server: a dedicated PC on the owner's home 
 Ubuntu Server 26.04 LTS, with no port open to the internet. The public reaches the sites only
 through a **Cloudflare Tunnel** the server dials out to; SSH works only over **Tailscale**. It
 provisions the host, runs the edge Traefik proxy and the autonomous agents, and releases every
-stack: the shared `database`, two applications, `portfolio` and `hypernova`, and the `tunnel`.
+stack: the shared `database`, two applications, `portfolio` and `hypernova`, the `tunnel`, and
+`ai` (Ollama and Open WebUI on the GPU, for the owner alone, over the tailnet only).
 
 The app repos (`hypernova`, `portfolio`) are **build-only** — their CI builds images and
 pushes them to GHCR. They never deploy. Watchtower on the server pulls a new `:latest` and
@@ -36,17 +37,18 @@ portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate
 - **Releases** — GitHub → **Actions → "Deploy" → Run workflow** (`release`, `resume`,
   `rollback`, `status`). The runner renders a bundle from the `production` Environment and
   streams it to the `deploy` account, whose one key is forced to `release` or `status`. The
-  host checks the bundle, starts `database`, `portfolio`, `hypernova` and `tunnel` in that
-  order, and marks the release verified only when everything is healthy, Traefik routes every
-  domain to its app and the tunnel is connected. Run one when a secret (the Cloudflare Tunnel
+  host checks the bundle, starts `database`, `portfolio`, `hypernova`, `tunnel` and `ai` in
+  that order, and marks the release verified only when everything is healthy, Traefik routes
+  every domain to its app, the tunnel is connected and each tailnet-only port is bound to the
+  Tailscale address alone. Run one when a secret (the Cloudflare Tunnel
   token included) or a stack file changes — not for routine image updates.
 - **Watchtower** — on the host, with no login: follows `:latest` for the app containers.
   A rollback pins digests, which pauses it for those apps until `resume`.
 
 Three access paths, and nothing else: `admin` (owner, sudo with a password), `deploy` (CI,
 forced to `release|status`), and Watchtower (no login, Docker through a socket proxy).
-Inbound ports (other than SSH on the tailnet), password login and root login are off; host
-keys are checked everywhere.
+Inbound ports (other than SSH and the owner's tailnet-only ports, on the Tailscale address),
+password login and root login are off; host keys are checked everywhere.
 
 ## Layout
 
@@ -60,7 +62,7 @@ ansible.cfg            auto-loaded; points at inventory/hosts, checks host keys
 inventory/             hosts.example only — inventory/hosts is gitignored
 roles/                 common · tailscale · docker · gpu · host · edge · watchtower · autoheal
 roles/common/files/    infra-deploy-gate · infra-apply · infra-compose-guard (the host side of a release)
-stack/                 database · portfolio · hypernova · tunnel (compose files and env templates)
+stack/                 database · portfolio · hypernova · tunnel · ai (compose files and env templates)
 tasks/                 placeholder-guards · provision-checks · ssh-route
 ci/                    the release path, verify tasks and access/template rules, tested against fakes
 .github/workflows/     deploy.yml, the Deploy workflow; checks.yml, the deploy lint
@@ -73,10 +75,10 @@ docs/                  why any of it is the way it is
 [RUNBOOK.md](RUNBOOK.md) says what to do, in order. The code says what happens.
 [`docs/`](docs/README.md) says why, and what breaks if you change it.
 
-- [architecture.md](docs/architecture.md) — the home server and the tunnel, access paths, stacks and their order, releases, env files, networks, no public ports
+- [architecture.md](docs/architecture.md) — the home server and the tunnel, access paths, stacks and their order, releases, env files, networks, public vs tailnet-only, no public ports
 - [deploying.md](docs/deploying.md) — the Deploy workflow, every secret and variable, what the host checks, provisioning tags, adding a project
 - [database.md](docs/database.md) — the shared PostgreSQL
-- [stacks.md](docs/stacks.md) — what is peculiar about each application
+- [stacks.md](docs/stacks.md) — what is peculiar about each application, and the `ai` stack (Ollama, Open WebUI, VRAM)
 - [edge.md](docs/edge.md) — the Cloudflare Tunnel, Traefik, its socket proxy, client IPs, routing conventions
 - [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker, the GPU
 - [agents.md](docs/agents.md) — Watchtower, autoheal, the prune timer, re-pinning images

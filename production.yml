@@ -21,9 +21,17 @@ reboot_time: "04:00"
 # this branch (ubuntu-drivers --gpgpu, signed modules) and the NVIDIA Container
 # Toolkit, and roles/docker adds the nvidia runtime. Confirm the branch on the
 # host with `ubuntu-drivers list --gpgpu` (RUNBOOK.md, "GPU, AI and media").
-# false: provisioning skips the GPU (a host without the card).
+# false: provisioning skips the GPU (a host without the card), and a release
+# refuses, since the ai stack reserves it.
 gpu_enabled: true
 nvidia_driver_major: 580
+
+# The ai stack (Ollama, Open WebUI) runs as this account, which roles/host
+# creates; its volumes belong to it. The model ollama-pull fetches on every
+# release, and the one hypernova's provider asks Ollama for.
+ai_uid: 2001
+ai_gid: 2001
+ollama_model: qwen2.5:7b
 
 swap_size: 2G
 # Docker-published ports the LAN-facing interface may reach. None: the public

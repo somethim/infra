@@ -91,6 +91,12 @@ case "$1" in
     format="$4"
     name="$5"
     case "$format" in
+      *PortBindings*)
+        # state/ports/<name>: the bindings Docker applied (default: none).
+        [ -f "$state/running/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
+        cat "$state/ports/$name" 2>/dev/null || echo '{}'
+        exit 0
+        ;;
       *Config.Image*)
         [ -f "$state/images/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
         cat "$state/images/$name"
@@ -182,7 +188,14 @@ chmod +x "$work/bin/docker" "$work/bin/curl" "$work/bin/sudo"
 readonly portfolio_repo=ghcr.io/somethim/portfolio
 readonly provider_repo=ghcr.io/hypernova3643725/hypernova-provider
 readonly web_repo=ghcr.io/hypernova3643725/hypernova-web
+readonly tailscale_ip=100.101.102.103
 d() { printf 'sha256:%064x' "$1"; }
+
+# tailnet_binding <container> <port> [address]: Docker bound the port to that
+# address (default: the host's Tailscale address).
+tailnet_binding() {
+  printf '{"%s/tcp":[{"HostIp":"%s","HostPort":"%s"}]}\n' "$2" "${3:-$tailscale_ip}" "$2" >"$state/ports/$1"
+}
 
 count=0
 state=""
@@ -191,19 +204,24 @@ new_state() {
   count=$((count + 1))
   state="$work/state$count"
   mkdir -p "$state/stack" "$state/edge" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
-    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip"
+    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip" "$state/ports"
   printf 'name: edge\n' >"$state/edge/docker-compose.yml"
-  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= \
+  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
+  # ollama-pull is a one-shot (restart: "no"): verify does not wait for it.
   printf '%s\n' \
     "c1 /postgresql running always healthy database" \
     "c2 /portfolio running always healthy portfolio" \
     "c3 /prizm-provider running always healthy hypernova" \
     "c4 /prizm-web running always none hypernova" \
-    "c5 /cloudflared running always healthy tunnel" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared; do
+    "c5 /cloudflared running always healthy tunnel" \
+    "c6 /ollama running always healthy ai" \
+    "c7 /ollama-pull exited no none ai" \
+    "c8 /open-webui running always healthy ai" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui; do
     echo "true false" >"$state/running/$name"
   done
+  tailnet_binding open-webui 8080
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the verify tasks of edge, watchtower, autoheal, docker, gpu and host
 # (roles/*/tasks/verify.yml) on localhost against fake docker, iptables,
-# swapon, systemctl and nvidia-smi that answer from per-case state files, and the provision
+# swapon, systemctl, sysctl and nvidia-smi that answer from per-case state files, and the provision
 # SSH route (tasks/ssh-route.yml) for LAN, other and tailnet SSH_CONNECTION
 # values. Nothing here touches the local Docker daemon, firewall, swap or
 # systemd.
@@ -40,6 +40,8 @@ case "$1 ${2:-}" in
     cat "$state/docker.version" ;;
   "info --format")
     cat "$state/docker.runtimes" ;;
+  "ps --all")
+    cat "$state/docker.ps" ;;
   "compose version")
     [ -f "$state/compose.missing" ] && { echo "docker: unknown command: docker compose" >&2; exit 1; }
     echo "Docker Compose version v5.6.0" ;;
@@ -66,13 +68,18 @@ for unit in "$@"; do
   if [ -f "$FAKE_DOCKER_STATE/$unit.enabled" ]; then cat "$FAKE_DOCKER_STATE/$unit.enabled"; else echo masked; fi
 done
 SH
+cat >"$work/bin/sysctl" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = "-n net.ipv4.ip_nonlocal_bind" ] || { echo "fake sysctl: unsupported: $*" >&2; exit 2; }
+cat "$FAKE_DOCKER_STATE/nonlocal_bind"
+SH
 cat >"$work/bin/nvidia-smi" <<'SH'
 #!/usr/bin/env bash
 [ "$*" = "--query-gpu=name,driver_version,memory.total --format=csv,noheader" ] || { echo "fake nvidia-smi: unsupported: $*" >&2; exit 2; }
 if [ -f "$FAKE_DOCKER_STATE/nvidia-smi.err" ]; then cat "$FAKE_DOCKER_STATE/nvidia-smi.err" >&2; exit 9; fi
 echo "NVIDIA GeForce RTX 2060, 580.95.05, 12288 MiB"
 SH
-chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon" "$work/bin/systemctl" "$work/bin/nvidia-smi"
+chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon" "$work/bin/systemctl" "$work/bin/sysctl" "$work/bin/nvidia-smi"
 
 session_ok='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=0 notify=no scanned=3 skipped=0 updated=1'
 session_failed='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=1 notify=no scanned=3 skipped=0 updated=0'
@@ -80,6 +87,8 @@ too_old='time="2026-10-13T10:00:30Z" level=error msg="Error response from daemon
 blocked='time=2026-10-13T10:00:59Z level=WARN msg="blocked request" reason="path not allowed" method=POST URL=/v1.51/containers/3f4e5d6c7b8a/stop client=172.20.0.3:40122 response=403'
 allowed_only='time=2026-10-13T10:00:01Z level=INFO msg="socket-proxy running and listening..."'
 hook='-A DOCKER-USER -i eth0 -m conntrack --ctstate NEW -j INFRA-PUBLIC'
+tailnet_hook='-A DOCKER-USER ! -i tailscale0 -m conntrack --ctstate NEW -m conntrack --ctstate DNAT -j INFRA-PUBLIC'
+ts_ip=100.101.102.103
 
 scenario() {
   local name
@@ -94,15 +103,17 @@ scenario() {
   : >"$work/state/autoheal.log"
   echo "29.1.3" >"$work/state/docker.version"
   echo '{"io.containerd.runc.v2":{"path":"runc"},"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}}' >"$work/state/docker.runtimes"
-  printf '%s\n' '-N DOCKER-USER' "$hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
+  printf '%s\n' '-N DOCKER-USER' "$hook" "$tailnet_hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
   echo 2147483648 >"$work/state/swap"
+  echo 1 >"$work/state/nonlocal_bind"
+  printf '%s\n' "open-webui $ts_ip:8080->8080/tcp" "ollama " "ollama-pull " "edge-traefik " "postgresql " >"$work/state/docker.ps"
 }
 run() {
   local role="$1"
   shift
   PATH="$work/bin:$PATH" FAKE_DOCKER_STATE="$work/state" \
     ansible-playbook -i localhost, -c local "$here/verify-tasks.yml" -e "verify_role=$role" \
-    -e '{"ansible_facts": {"default_ipv4": {"interface": "eth0"}}}' "$@" \
+    -e '{"ansible_facts": {"default_ipv4": {"interface": "eth0"}}}' -e "tailscale_ipv4=$ts_ip" "$@" \
     </dev/null >"$work/out.log" 2>&1
 }
 expect_pass() {
@@ -220,7 +231,39 @@ echo "ok   pass: gpu: a driver installed in this run asks for a reboot instead o
 ### host
 
 scenario
-expect_pass "host: INFRA-PUBLIC hooked first, 2 GiB swap, sleep masked" host
+expect_pass "host: INFRA-PUBLIC hooked first and for the tailnet, 2 GiB swap, sleep masked, one tailnet port" host
+
+scenario
+printf '%s\n' '-N DOCKER-USER' "$hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
+expect_fail "host: the tailnet hook missing" "DOCKER-USER's second rule is not the tailnet hook" host
+
+scenario
+printf '%s\n' '-N DOCKER-USER' "$hook" "${tailnet_hook/tailscale0/eth0}" >"$work/state/docker-user.rules"
+expect_fail "host: the tailnet hook names another interface" "DOCKER-USER's second rule is not the tailnet hook" host
+
+scenario
+echo 0 >"$work/state/nonlocal_bind"
+expect_fail "host: non-local binds off" "net.ipv4.ip_nonlocal_bind is 0" host
+
+scenario
+printf '%s\n' "open-webui 0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp" >"$work/state/docker.ps"
+expect_fail "host: Open WebUI on every interface" "A container publishes a port that is not a tailnet-only one" host
+
+scenario
+printf '%s\n' "open-webui $ts_ip:8080->8080/tcp" "ollama $ts_ip:11434->11434/tcp" >"$work/state/docker.ps"
+expect_fail "host: Ollama published on the tailnet" "ollama 100.101.102.103:11434->11434/tcp" host
+
+scenario
+printf '%s\n' "open-webui 192.168.1.50:8080->8080/tcp" >"$work/state/docker.ps"
+expect_fail "host: Open WebUI on the LAN address" "open-webui 192.168.1.50:8080->8080/tcp" host
+
+scenario
+printf '%s\n' "portfolio 0.0.0.0:3000->3000/tcp" >"$work/state/docker.ps"
+expect_fail "host: an app container publishing a port" "portfolio 0.0.0.0:3000->3000/tcp" host
+
+scenario
+: >"$work/state/docker.ps"
+expect_pass "host: no container at all" host
 
 scenario
 echo static >"$work/state/suspend.target.enabled"
@@ -235,7 +278,7 @@ printf '%s\n' '-N DOCKER-USER' '-A DOCKER-USER -j RETURN' "$hook" >"$work/state/
 expect_fail "host: INFRA-PUBLIC hook not first" "DOCKER-USER does not start with the INFRA-PUBLIC hook" host
 
 scenario
-printf '%s\n' '-N DOCKER-USER' "${hook/-i eth0/-i eth1}" >"$work/state/docker-user.rules"
+printf '%s\n' '-N DOCKER-USER' "${hook/-i eth0/-i eth1}" "$tailnet_hook" >"$work/state/docker-user.rules"
 expect_fail "host: INFRA-PUBLIC hooked on another interface" "DOCKER-USER does not start with the INFRA-PUBLIC hook" host
 
 scenario

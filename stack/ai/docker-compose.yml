@@ -1,0 +1,132 @@
+# Ollama and Open WebUI on the GPU, for the owner only. See docs/stacks.md.
+# Nothing here is public: Ollama publishes no port and joins only the ai
+# network (and llm, which it shares with hypernova's provider alone); Open
+# WebUI publishes 8080 on the host's Tailscale address and nowhere else
+# (TAILSCALE_IP comes from /etc/infra/host.env, which infra-apply exports). No
+# Traefik label, no Watchtower label: the images are pinned and move only with
+# a reviewed re-pin and a release. .env (uid, gid, model) feeds interpolation
+# only; Open WebUI reads its one secret from open-webui.env.
+name: ai
+
+services:
+  ollama:
+    image: ollama/ollama:0.40.4@sha256:926d40fd6eeeebd346b5c358a63de2a10ec995371cd93dd22f1843200694b1a6
+    container_name: ollama
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 8g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # The models and Ollama's key live in the ollama-models volume.
+      HOME: /ollama
+      # One model in VRAM at a time, unloaded after 10 minutes idle, so
+      # Jellyfin's transcodes keep room on the 12 GB card (docs/stacks.md).
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: 10m
+    volumes:
+      - type: volume
+        source: ollama-models
+        target: /ollama
+        volume:
+          nocopy: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - ai
+      - llm
+    healthcheck:
+      test: [CMD, /bin/ollama, list]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - autoheal=true
+
+  # One-shot: asks Ollama to pull OLLAMA_MODEL on every release. A pull of a
+  # model Ollama already has only re-checks its manifest. docker logs
+  # ollama-pull shows the result.
+  ollama-pull:
+    image: ollama/ollama:0.40.4@sha256:926d40fd6eeeebd346b5c358a63de2a10ec995371cd93dd22f1843200694b1a6
+    container_name: ollama-pull
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 128m
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: [pull, "${OLLAMA_MODEL}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - ai
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.4@sha256:9591b13f13843c7721c2b8eaf7382846c81b3ffe126526d1888d1fed50c6a33f
+    container_name: open-webui
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 2g
+    restart: always
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: open-webui.env
+    environment:
+      HOME: /app/backend/data
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: "true"
+      # The first account becomes the admin; new sign-ups then wait as
+      # "pending" until the admin approves them. Turn sign-up off in the
+      # admin panel right after (RUNBOOK.md, "First logins").
+      DEFAULT_USER_ROLE: pending
+      ENABLE_OPENAI_API: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+    ports:
+      - "${TAILSCALE_IP}:8080:8080"
+    volumes:
+      - type: volume
+        source: open-webui-data
+        target: /app/backend/data
+        volume:
+          nocopy: true
+    depends_on:
+      - ollama
+    networks:
+      - ai
+    labels:
+      - autoheal=true
+
+networks:
+  ai:
+    name: ai
+    external: true
+  llm:
+    name: llm
+    external: true
+
+volumes:
+  ollama-models:
+    name: ollama-models
+    external: true
+  open-webui-data:
+    name: open-webui-data
+    external: true

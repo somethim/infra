@@ -19,7 +19,7 @@ them knows how to reach the server.
 │  (stack/tunnel)        (roles/edge)        (stack/portfolio, stack/hypernova)     (stack/database)│
 │                                                                                                   │
 │  Watchtower ── sees a new :latest digest in GHCR → pull + recreate the app container              │
-│  sshd :22 ◀── tailscale0 only                                                                     │
+│  sshd :22 ◀── tailscale0 only;  open-webui :8080 ◀── the Tailscale address only (stack/ai)        │
 └──────────────────────────────────────▲────────────────────────────────────────────────────────────┘
                                        │ Tailscale (SSH, tcp 22)
           ┌────────────────────────────┴───────────────────────────────┐
@@ -65,7 +65,7 @@ boundary. A rollback pins an app to a digest, which pauses that for the pinned a
 
 ## Stacks and their order
 
-A stack is a directory under `stack/` — `database`, `portfolio`, `hypernova`, `tunnel` —
+A stack is a directory under `stack/` — `database`, `portfolio`, `hypernova`, `tunnel`, `ai` —
 holding a `docker-compose.yml` and the env templates `release.yml` renders. Each is its own
 Compose project with fixed project, container and volume names, so a release recreates
 containers in place and never moves data. On a fresh host the first release creates the
@@ -75,11 +75,12 @@ apps initialise them; nothing ever deletes one.
 `infra-apply` brings them up **in this order**:
 
 ```
-database (--wait) → provision.sql → portfolio → hypernova → tunnel
+database (--wait) → provision.sql → portfolio → hypernova → tunnel → ai
 ```
 
-The tunnel goes last so that by the time Cloudflare can send requests, the apps behind
-Traefik are starting; its own failure cannot hold back the apps.
+The tunnel goes after the apps so that by the time Cloudflare can send requests, the apps
+behind Traefik are starting; its own failure cannot hold back the apps. `ai`, which nothing
+public depends on, comes last: the sites are up before its large images start.
 
 The order is load-bearing, and the reason is a limitation of Compose: `depends_on` is scoped
 to a single project, so nothing outside the `database` stack can declare a dependency on
@@ -109,10 +110,11 @@ and the failure message names the last verified one. See
 ## Env files
 
 Each container reads its secrets from its own env file (`postgres.env`, `portfolio.env`,
-`provider.env`, `tunnel.env`), declared with `env_file:`, where the value passes through
-untouched. Each
-stack's `.env` is read by Compose only for `${VAR}` interpolation in the compose file, and
-holds image references and domains — never a secret.
+`provider.env`, `tunnel.env`, `open-webui.env`), declared with `env_file:`, where the value
+passes through untouched. Each stack's `.env` is read by Compose only for `${VAR}`
+interpolation in the compose file, and holds image references, domains, uids and the model —
+never a secret. One interpolated value comes from the host instead: `TAILSCALE_IP`, which
+`infra-apply` exports from `/etc/infra/host.env` for every Compose call.
 
 The split matters because a value Compose interpolates is subject to its syntax (a `$` is
 eaten), and because a single `.env` injected wholesale would hand every container every
@@ -126,11 +128,36 @@ refuses any env line that is not `KEY=value`.
 | --- | --- | --- |
 | `edge` | `roles/host` | Traefik, `cloudflared`, plus every container that serves a public domain |
 | `data` | `roles/host` | PostgreSQL, plus every container that talks to it |
+| `ai` | `roles/host` | Ollama, `ollama-pull`, Open WebUI (a plain bridge: Ollama downloads models, Open WebUI publishes its tailnet port) |
+| `llm` | `roles/host`, `--internal` | Ollama and hypernova's `prizm-provider`, nothing else; no route out |
 | `edge-socket`, `watchtower-socket`, `autoheal-socket` | their compose projects, `internal: true` | one agent and its socket proxy each |
 
-The stacks declare `edge` and `data` `external: true`, and the compose guard refuses a
-release that adds or creates any other network. They are created by provisioning so they
-exist before any stack or the edge proxy starts.
+The stacks declare these networks `external: true`, and the compose guard refuses a release
+that adds or creates any other network, or (for `hypernova` and `ai`) puts a container on a
+network that is not its own. They are created by provisioning so they exist before any stack
+or the edge proxy starts.
+
+## Public and tailnet-only
+
+Two audiences, two ways in, and nothing else:
+
+| Service | Who | Way in | Address |
+| --- | --- | --- | --- |
+| portfolio (`arbikullakshi.com`, `www.`) | anyone | Cloudflare → tunnel → Traefik | the public hostnames |
+| hypernova (`hypernova.arbikullakshi.com`) | anyone | Cloudflare → tunnel → Traefik | the public hostname |
+| SSH | the owner (`admin`), the Deploy workflow (`deploy`) | Tailscale, tcp 22 | `infra-host` |
+| Open WebUI (`stack/ai`) | the owner | Tailscale, tcp 8080 | `http://infra-host:8080` |
+| Ollama, PostgreSQL, Traefik | containers only | Docker networks (`llm`, `data`, `edge`) | none on the host |
+
+A tailnet-only service publishes its port on the host's **Tailscale IPv4 alone**
+(`"${TAILSCALE_IP}:<port>:<port>"`, the address provisioning reads with `tailscale ip -4` into
+`/etc/infra/host.env`), never `0.0.0.0` or the LAN address, and never through the tunnel or
+Traefik. The ports are an allowlist in five places that `ci/check_access.py` keeps equal: the
+compose guard's and `ci/check_templates.py`'s `TAILNET_PORTS`, `infra-apply`'s and
+`roles/host`'s `tailnet_ports`, and `ufw_allowed` (on `tailscale0` only). On the tailnet, the
+Tailscale policy grants these ports to the owner (`autogroup:admin`) alone
+([RUNBOOK.md](../RUNBOOK.md#4-tailscale)). Plain HTTP is fine there: WireGuard encrypts every
+packet between the owner's devices and the server.
 
 ## No public ports
 
@@ -139,14 +166,20 @@ but SSH until the tailnet takes over.** The public reaches the sites only throug
 Cloudflare Tunnel, an outbound connection from `cloudflared`; Traefik listens only on the
 `edge` network. Several layers make that true:
 
-- No container publishes a port: the compose guard refuses `ports:` in every release stack,
-  `ci/check_templates.py` (rule 9) refuses it in every compose file, and provisioning reads
-  back that Traefik has no port bindings.
-- ufw denies everything inbound except 22 on `tailscale0` (and LAN 22 only until the first
-  run over the tailnet).
+- No container publishes a port but the tailnet-only ones, and those only on the Tailscale
+  address: the compose guard refuses any other `ports:` (and any other form or address for
+  those) in every release stack, `ci/check_templates.py` (rule 9) in every compose file,
+  `infra-apply` reads each binding back from Docker after the start, and provisioning reads
+  back that Traefik has no port bindings and that every published port on the host is an
+  allowlisted one on the Tailscale address.
+- ufw denies everything inbound except 22 and the tailnet-only ports on `tailscale0` (and LAN
+  22 only until the first run over the tailnet).
 - Docker's published ports bypass ufw (they are NAT rules), so `infra-firewall` hooks a chain
   `INFRA-PUBLIC` first in `DOCKER-USER` that drops every new connection from the LAN-facing
-  interface to a container (`public_ports: []` in `production.yml`).
+  interface to a container (`public_ports: []` in `production.yml`), and second for every new
+  connection to a published port (conntrack `DNAT`) that did not arrive on `tailscale0`. So a
+  port bound wider by mistake is still unreachable from the LAN, Wi-Fi or anything but the
+  tailnet.
 - The home router forwards no port to the server, and the server's public IP is not in DNS.
 
 PostgreSQL publishes nothing and is reachable only from containers on `data`. See

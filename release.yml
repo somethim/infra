@@ -12,8 +12,9 @@
 #   portfolio/portfolio.env DSN, TOTP, admin, mail  (portfolio)
 #   hypernova/provider.env  DSN, session, admin     (prizm-provider)
 #   tunnel/tunnel.env       Cloudflare Tunnel token (cloudflared)
+#   ai/open-webui.env       Open WebUI session key  (open-webui)
 #   ghcr.env                registry login          (infra-apply's docker login)
-# The <stack>/.env files hold only image references and domains.
+# The <stack>/.env files hold only image references, domains, uids and the model.
 - name: Render the infra release bundle on the runner
   hosts: localhost
   connection: local
@@ -38,6 +39,7 @@
       - hypernova_session_secret
       - hypernova_admin_password
       - cf_tunnel_token
+      - webui_secret_key
 
   pre_tasks:
     - name: Require deploy secrets
@@ -54,11 +56,13 @@
           - hypernova_session_secret | default('') | length > 0
           - hypernova_admin_password | default('') | length > 0
           - cf_tunnel_token | default('') is match('^eyJ[A-Za-z0-9+/_-]{40,}={0,2}$')
+          - webui_secret_key | default('') is match('^[A-Za-z0-9]{32,}$')
         fail_msg: >-
           Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
           32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, the portfolio and
-          hypernova admin passwords and session secret, and CF_TUNNEL_TOKEN as the token Cloudflare shows for
-          the tunnel (base64, starting eyJ) (RUNBOOK.md, "Rotating a secret").
+          hypernova admin passwords and session secret, CF_TUNNEL_TOKEN as the token Cloudflare shows for
+          the tunnel (base64, starting eyJ), and WEBUI_SECRET_KEY of at least 32 letters and digits
+          (openssl rand -hex 32) (RUNBOOK.md, "Rotating a secret").
         quiet: true
 
     - name: Refuse deploy values the Compose env files would rewrite
@@ -78,6 +82,15 @@
       ansible.builtin.import_tasks: tasks/placeholder-guards.yml
       vars:
         deploy_key_file: "{{ playbook_dir }}/roles/common/files/deploy_key.pub"
+
+    - name: Require the GPU the ai stack reserves
+      ansible.builtin.assert:
+        that:
+          - gpu_enabled | bool
+        fail_msg: >-
+          production.yml sets gpu_enabled: false, but the ai stack reserves the NVIDIA GPU, so its containers could
+          not start. Set gpu_enabled: true and provision (roles/gpu) before releasing.
+        quiet: true
 
     - name: Require a bundle directory that does not exist yet
       ansible.builtin.assert:
@@ -99,6 +112,7 @@
         - "{{ bundle_dir }}/portfolio"
         - "{{ bundle_dir }}/hypernova"
         - "{{ bundle_dir }}/tunnel"
+        - "{{ bundle_dir }}/ai"
 
     - name: Copy the stack files into the bundle
       ansible.builtin.copy:
@@ -110,6 +124,7 @@
         - portfolio
         - hypernova
         - tunnel
+        - ai
 
     - name: Render the env files into the bundle
       ansible.builtin.template:
@@ -124,6 +139,8 @@
         - { src: hypernova/env.j2, dest: hypernova/.env }
         - { src: hypernova/provider.env.j2, dest: hypernova/provider.env }
         - { src: tunnel/tunnel.env.j2, dest: tunnel/tunnel.env }
+        - { src: ai/env.j2, dest: ai/.env }
+        - { src: ai/open-webui.env.j2, dest: ai/open-webui.env }
         - { src: ghcr.env.j2, dest: ghcr.env }
       loop_control:
         label: "{{ item.dest }}"

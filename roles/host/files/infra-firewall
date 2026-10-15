@@ -3,8 +3,13 @@
 # interface (PUBLIC_INTERFACE, the default route), new connections reach only
 # the ports in PUBLIC_PORTS, which is empty on this host: the public arrives
 # through the Cloudflare Tunnel, so every new inbound connection forwarded to a
-# container is dropped. Docker's own NAT rules bypass ufw, so this filters in
-# the DOCKER-USER chain instead.
+# container is dropped. A second hook sends every new connection that Docker
+# destination-NATed to a published port (ctstate DNAT) and that did not arrive
+# on the tailnet interface (TAILNET_INTERFACE) through the same chain, so the
+# tailnet-only ports, bound to the Tailscale address, stay unreachable from any
+# other interface (a second NIC, Wi-Fi, a LAN host routing to that address)
+# even if one were ever bound wider. Docker's own NAT rules bypass ufw, so this
+# filters in the DOCKER-USER chain instead.
 # Installed by roles/host; run by infra-firewall.service after every Docker start.
 set -euo pipefail
 
@@ -22,8 +27,11 @@ fail() {
 [ -r "$host_file" ] || fail "$host_file is not readable"
 public="$(value PUBLIC_INTERFACE)"
 ports="$(value PUBLIC_PORTS)"
+tailnet="$(value TAILNET_INTERFACE)"
 
 [[ "$public" =~ ^[a-zA-Z0-9._-]{1,15}$ ]] || fail "PUBLIC_INTERFACE is not an interface name"
+[[ "$tailnet" =~ ^[a-zA-Z0-9._-]{1,15}$ ]] || fail "TAILNET_INTERFACE is not an interface name"
+[ "$tailnet" != "$public" ] || fail "TAILNET_INTERFACE is the LAN-facing interface"
 [[ "$ports" =~ ^([0-9]{1,5}(,[0-9]{1,5})*)?$ ]] || fail "PUBLIC_PORTS is not a comma-separated list of ports"
 
 iptables -N DOCKER-USER 2>/dev/null || true
@@ -37,4 +45,6 @@ if [ -n "$ports" ]; then
 fi
 iptables -A INFRA-PUBLIC -j DROP
 while iptables -D DOCKER-USER -i "$public" -m conntrack --ctstate NEW -j INFRA-PUBLIC 2>/dev/null; do :; done
+while iptables -D DOCKER-USER ! -i "$tailnet" -m conntrack --ctstate NEW -m conntrack --ctstate DNAT -j INFRA-PUBLIC 2>/dev/null; do :; done
+iptables -I DOCKER-USER 1 ! -i "$tailnet" -m conntrack --ctstate NEW -m conntrack --ctstate DNAT -j INFRA-PUBLIC
 iptables -I DOCKER-USER 1 -i "$public" -m conntrack --ctstate NEW -j INFRA-PUBLIC
