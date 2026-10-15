@@ -1,6 +1,8 @@
-# Provisions the one server from the owner's machine. Holds no app secrets.
-# First run: -u root over the public IPv4; every run after: -u admin
-# --ask-become-pass over the tailnet (RUNBOOK.md, "Cut-over").
+# Provisions the one server, a dedicated home machine, from the owner's laptop.
+# Holds no app secrets. First run: over the LAN as the account the Ubuntu
+# installer created (-u <that account> --ask-become-pass, ansible_host = its
+# LAN address); every run after: -u admin --ask-become-pass over the tailnet
+# (RUNBOOK.md, "First provision over the LAN").
 - name: Provision the server from the owner's machine
   hosts: server
   become: true

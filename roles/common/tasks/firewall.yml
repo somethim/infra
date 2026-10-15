@@ -1,8 +1,10 @@
 ---
-# See docs/host.md — Firewall. SSH is admitted on tailscale0 before public 22 is
-# ever deleted, and public 22 is deleted only by a run that itself came in over
-# the tailnet (its server address in 100.64.0.0/10 or fd7a:115c:a1e0::/48,
-# tasks/ssh-route.yml), so no run can cut its own session.
+# See docs/host.md — Firewall. Nothing is open but SSH on tailscale0: the
+# public reaches the sites through the Cloudflare Tunnel, which dials out. The
+# first run comes in over the LAN, so 22 stays open there until a run that
+# itself came in over the tailnet (its server address in 100.64.0.0/10 or
+# fd7a:115c:a1e0::/48, tasks/ssh-route.yml) deletes it, so no run can cut its
+# own session. The router forwards no port to this host.
 - name: Set default incoming policy to deny
   ansible.builtin.command: ufw default deny incoming
   changed_when: false
@@ -11,21 +13,21 @@
   ansible.builtin.command: ufw default allow outgoing
   changed_when: false
 
-- name: Allow only this server's ports (SSH on the tailnet, HTTP, HTTPS)
+- name: Allow only this server's ports (SSH on the tailnet)
   ansible.builtin.command: "ufw allow {{ item }}"
   loop: "{{ ufw_allowed }}"
   changed_when: false
 
-- name: Keep SSH on the public address while this run itself did not come in over the tailnet
+- name: Keep SSH open on the LAN while this run itself did not come in over the tailnet
   ansible.builtin.command: ufw allow 22/tcp
   changed_when: false
-  when: ssh_over_public
+  when: ssh_outside_tailnet
 
-- name: Close SSH on the public address once runs come in over the tailnet
+- name: Close SSH on the LAN once runs come in over the tailnet
   ansible.builtin.command: ufw delete allow 22/tcp
-  register: public_ssh_closed
-  changed_when: "'Rule deleted' in public_ssh_closed.stdout"
-  when: not ssh_over_public
+  register: lan_ssh_closed
+  changed_when: "'Rule deleted' in lan_ssh_closed.stdout"
+  when: not ssh_outside_tailnet
 
 - name: Enable ufw
   ansible.builtin.command: ufw --force enable

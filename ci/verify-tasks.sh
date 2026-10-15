@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs the verify tasks of edge, watchtower, autoheal, docker and host
-# (roles/*/tasks/verify.yml) on localhost against fake docker, iptables and
-# swapon that answer from per-case state files, and the provision SSH route
-# (tasks/ssh-route.yml) for public and tailnet SSH_CONNECTION values. Nothing
-# here touches the local Docker daemon, firewall or swap.
+# (roles/*/tasks/verify.yml) on localhost against fake docker, iptables,
+# swapon and systemctl that answer from per-case state files, and the provision
+# SSH route (tasks/ssh-route.yml) for LAN, other and tailnet SSH_CONNECTION
+# values. Nothing here touches the local Docker daemon, firewall, swap or
+# systemd.
 #
 #   bash ci/verify-tasks.sh
 #
@@ -28,6 +29,7 @@ case "$1 ${2:-}" in
     case "$format" in
       "") echo "[{}]" ;;
       *StartedAt*) echo "2026-10-13T10:00:00.123456789Z" ;;
+      *PortBindings*) cat "$state/$name.ports" 2>/dev/null || echo "{}" ;;
       running=*) echo "running=$running restarting=$restarting" ;;
       *) echo "$running $restarting" ;;
     esac ;;
@@ -54,7 +56,15 @@ cat >"$work/bin/swapon" <<'SH'
 [ "$*" = "--noheadings --bytes --show=SIZE" ] || { echo "fake swapon: unsupported: $*" >&2; exit 2; }
 cat "$FAKE_DOCKER_STATE/swap"
 SH
-chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon"
+cat >"$work/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = is-enabled ] || { echo "fake systemctl: unsupported: $*" >&2; exit 2; }
+shift
+for unit in "$@"; do
+  if [ -f "$FAKE_DOCKER_STATE/$unit.enabled" ]; then cat "$FAKE_DOCKER_STATE/$unit.enabled"; else echo masked; fi
+done
+SH
+chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon" "$work/bin/systemctl"
 
 session_ok='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=0 notify=no scanned=3 skipped=0 updated=1'
 session_failed='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=1 notify=no scanned=3 skipped=0 updated=0'
@@ -111,6 +121,14 @@ expect_fail "edge: proxy restart-looping" "edge-socket-proxy is not running" edg
 scenario
 echo "${blocked/POST URL=\/v1.51\/containers\/3f4e5d6c7b8a\/stop/GET URL=\/v1.51\/networks}" >>"$work/state/edge-socket-proxy.log"
 expect_fail "edge: proxy logged a blocked request" "GET URL=/v1.51/networks" edge
+
+scenario
+echo '{"80/tcp":[{"HostIp":"","HostPort":"80"}]}' >"$work/state/edge-traefik.ports"
+expect_fail "edge: Traefik publishes a host port" "edge-traefik publishes host ports" edge
+
+scenario
+echo 'null' >"$work/state/edge-traefik.ports"
+expect_pass "edge: Traefik with no port bindings at all" edge
 
 scenario
 rm "$work/state/edge-socket-proxy.running" "$work/state/edge-traefik.running"
@@ -174,7 +192,11 @@ expect_fail "docker: no compose plugin" "unknown command: docker compose" docker
 ### host
 
 scenario
-expect_pass "host: INFRA-PUBLIC hooked first, 2 GiB swap" host
+expect_pass "host: INFRA-PUBLIC hooked first, 2 GiB swap, sleep masked" host
+
+scenario
+echo static >"$work/state/suspend.target.enabled"
+expect_fail "host: suspend not masked" "The host could still suspend or hibernate" host
 
 scenario
 printf '%s\n' '-N DOCKER-USER' '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
@@ -193,7 +215,7 @@ echo 536870912 >"$work/state/swap"
 expect_fail "host: less than 1 GiB of swap" "it needs at least 1 GiB" host
 
 ### provision SSH route (tasks/ssh-route.yml): only a run whose own connection
-### reached a tailnet address may close public 22.
+### reached a tailnet address may close 22 on the LAN.
 
 expect_route() {
   local name="$1" connection="$2" want="$3"
@@ -201,16 +223,18 @@ expect_route() {
   if ! run ssh_route -e "{\"ssh_connection\": {\"stdout\": \"$connection\"}}" "$@"; then
     cat "$work/out.log"; echo "FAIL ssh route probe did not run: $name"; exit 1
   fi
-  if ! grep -qF "\"msg\": \"ssh_over_public=$want\"" "$work/out.log"; then
-    cat "$work/out.log"; echo "FAIL ssh route: $name: wanted ssh_over_public=$want"; exit 1
+  if ! grep -qF "\"msg\": \"ssh_outside_tailnet=$want\"" "$work/out.log"; then
+    cat "$work/out.log"; echo "FAIL ssh route: $name: wanted ssh_outside_tailnet=$want"; exit 1
   fi
-  echo "ok   ssh route: $name -> ssh_over_public=$want"
+  echo "ok   ssh route: $name -> ssh_outside_tailnet=$want"
 }
 
-expect_route "public IPv4 (the default address)" "203.0.113.5 51000 198.51.100.10 22" True
-expect_route "public IPv6" "2001:db8::5 51000 2a01:4f8:c012:abcd::1 22" True
-expect_route "a Floating or second IPv4" "203.0.113.5 51000 198.51.100.77 22" True
-expect_route "public IPv6 on a host without a default IPv4" "2001:db8::5 51000 2a01:4f8:c012:abcd::1 22" True -e '{"ansible_facts": {}}'
+expect_route "the LAN (the first run)" "192.168.1.20 51000 192.168.1.50 22" True
+expect_route "a 10.x LAN" "10.0.0.20 51000 10.0.0.50 22" True
+expect_route "LAN IPv6 (link-local)" "fe80::5 51000 fe80::1 22" True
+expect_route "a public IPv4" "203.0.113.5 51000 198.51.100.10 22" True
+expect_route "a public IPv6" "2001:db8::5 51000 2001:db8:c012:abcd::1 22" True
+expect_route "IPv6 on a host without a default IPv4" "2001:db8::5 51000 2001:db8:c012:abcd::1 22" True -e '{"ansible_facts": {}}'
 expect_route "just below 100.64.0.0/10" "203.0.113.5 51000 100.63.255.255 22" True
 expect_route "just above 100.64.0.0/10" "203.0.113.5 51000 100.128.0.1 22" True
 expect_route "an address that only contains 100.64." "203.0.113.5 51000 1100.64.0.1 22" True

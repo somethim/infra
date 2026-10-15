@@ -1,0 +1,38 @@
+---
+# A dedicated home server: it never suspends or hibernates, and closing a
+# laptop lid (if it is one) or pressing a sleep key does nothing. Powering on
+# after a power cut is a firmware setting (RUNBOOK.md, "BIOS").
+- name: Mask every sleep target so nothing can suspend or hibernate the host
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    masked: true
+  loop:
+    - sleep.target
+    - suspend.target
+    - hibernate.target
+    - hybrid-sleep.target
+    - suspend-then-hibernate.target
+
+- name: Create the logind drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/logind.conf.d
+    state: directory
+    mode: "0755"
+
+# Read by systemd-logind when it starts; the masked targets already block
+# sleep until the next boot.
+- name: Ignore the lid switch, sleep keys and idleness
+  ansible.builtin.copy:
+    dest: /etc/systemd/logind.conf.d/50-infra-server.conf
+    content: |
+      # Managed by Ansible (roles/host/tasks/power.yml). See docs/host.md.
+      [Login]
+      HandleLidSwitch=ignore
+      HandleLidSwitchExternalPower=ignore
+      HandleLidSwitchDocked=ignore
+      HandleSuspendKey=ignore
+      HandleHibernateKey=ignore
+      IdleAction=ignore
+    owner: root
+    group: root
+    mode: "0644"

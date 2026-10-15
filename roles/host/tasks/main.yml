@@ -1,6 +1,7 @@
 ---
-# Host facts for the release script, the Docker firewall, swap, and the shared
-# Docker networks and database volume every stack uses as external.
+# Host facts for the release script, the Docker firewall, swap, power (a home
+# server must never sleep), and the shared Docker networks and database volume
+# every stack uses as external.
 - name: Create the host configuration directory
   ansible.builtin.file:
     path: /etc/infra
@@ -15,7 +16,6 @@
     content: |
       PUBLIC_INTERFACE={{ ansible_facts['default_ipv4']['interface'] }}
       PUBLIC_PORTS={{ public_ports | join(',') }}
-      ORIGIN_PULL={{ 1 if (edge_origin_pull_enabled | default(false) | bool) else 0 }}
       PORTFOLIO_IMAGE_REPO={{ portfolio_image_repo }}
       HYPERNOVA_PROVIDER_IMAGE_REPO={{ hypernova_provider_image_repo }}
       HYPERNOVA_WEB_IMAGE_REPO={{ hypernova_web_image_repo }}
@@ -54,7 +54,7 @@
   changed_when: false
   check_mode: false
 
-- name: Require the public interface to reach only this host's public ports
+- name: Require the LAN-facing interface to reach only this host's public ports (none)
   ansible.builtin.assert:
     that:
       - public_rules.stdout_lines | select('search', '-j RETURN$') | map('regex_replace', '^.*--ctorigdstport ([0-9]+) -j RETURN$', '\\1') | list == public_ports | map('string') | list
@@ -64,6 +64,9 @@
 
 - name: Make sure the host has swap for memory spikes
   ansible.builtin.import_tasks: swap.yml
+
+- name: Keep the server awake and running
+  ansible.builtin.import_tasks: power.yml
 
 # Moved here from roles/edge so they exist before any stack or the edge starts.
 - name: Create shared Docker networks
@@ -75,7 +78,8 @@
   changed_when: "network_create.stdout | length > 0"
 
 # The database volume is external to its stack, so a release can never create
-# an empty one in its place. Created only when missing; never deleted.
+# an empty one in its place. Created empty on a fresh host (the first release
+# initialises it); never deleted or replaced once it exists.
 - name: Look for the database volume
   ansible.builtin.command:
     argv: [docker, volume, inspect, pgdata-v18]
@@ -90,5 +94,5 @@
   when: pgdata_volume.rc != 0
   changed_when: true
 
-- name: Verify the Docker firewall and swap
+- name: Verify the Docker firewall, swap and power settings
   ansible.builtin.import_tasks: verify.yml

@@ -1,7 +1,10 @@
 #!/bin/bash
-# Keeps Docker's published ports behind the host firewall: on the public
-# interface, new connections reach only the ports in PUBLIC_PORTS. Docker's own
-# NAT rules bypass ufw, so this filters in the DOCKER-USER chain instead.
+# Keeps Docker's published ports behind the host firewall: on the LAN-facing
+# interface (PUBLIC_INTERFACE, the default route), new connections reach only
+# the ports in PUBLIC_PORTS, which is empty on this host: the public arrives
+# through the Cloudflare Tunnel, so every new inbound connection forwarded to a
+# container is dropped. Docker's own NAT rules bypass ufw, so this filters in
+# the DOCKER-USER chain instead.
 # Installed by roles/host; run by infra-firewall.service after every Docker start.
 set -euo pipefail
 

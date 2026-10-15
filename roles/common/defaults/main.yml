@@ -1,14 +1,14 @@
 ---
-# Root login is closed unless the run itself logs in as root (ssh_access.yml
-# then keeps it at prohibit-password until the admin run).
+# Root never logs in: the first run uses the account the Ubuntu installer
+# created, every later run the admin user (docs/host.md, "Accounts").
 ssh_permit_root_login: "no"
 admin_user: admin
 deploy_user: deploy
-# Public 22 is added or removed separately in firewall.yml (ssh_over_public).
+# The only inbound rule: SSH over the tailnet. LAN 22 is added or removed
+# separately in firewall.yml (ssh_outside_tailnet). No web port: the public
+# arrives through the Cloudflare Tunnel, which dials out.
 ufw_allowed:
   - in on tailscale0 proto tcp to any port 22
-  - 80/tcp
-  - 443/tcp
 ssh_public_key_pattern: '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh[.]com|sk-ecdsa-sha2-nistp256@openssh[.]com) [A-Za-z0-9+/]+={0,3}( .*)?$'
 deploy_sudo_rule: "(root) NOPASSWD: /usr/local/sbin/infra-apply release, /usr/local/sbin/infra-apply status"
 deploy_ssh_public_key_file: "{{ role_path }}/files/deploy_key.pub"

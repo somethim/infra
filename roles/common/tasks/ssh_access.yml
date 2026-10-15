@@ -30,7 +30,8 @@
     fail_msg: >-
       sudo -l -U {{ admin_user }} must show only password-protected rules, and sudo -l -U {{ deploy_user }}
       exactly "{{ deploy_sudo_rule }}". Remove other sudoers entries or group memberships for them
-      (a cloud image's /etc/sudoers.d/90-cloud-init-users, or the sudo group).
+      (a cloud image's /etc/sudoers.d/90-cloud-init-users, or the sudo group, which the installer's account
+      is in until the first admin run removes it).
     quiet: true
 
 - name: Read the deploy user's groups
@@ -60,22 +61,17 @@
   register: admin_login
   changed_when: false
   check_mode: false
-  when: ssh_login_user.stdout == 'root'
+  when: bootstrap_run
 
-- name: Require a working admin login before root login can close
+- name: Require a working admin login, and a sudo password once the admin user provisions
   ansible.builtin.assert:
     that:
-      - ssh_login_user.stdout != 'root' or admin_login.stdout == admin_user
-      - ssh_login_user.stdout == 'root' or admin_password_status.stdout.split()[1] == 'P'
+      - not bootstrap_run or admin_login.stdout == admin_user
+      - bootstrap_run or admin_password_status.stdout.split()[1] == 'P'
     fail_msg: >-
-      {{ admin_user }} could not log in with the keys copied from root's authorized_keys, or has no usable
-      password; root login stays as it is.
+      {{ admin_user }} could not log in with the keys copied from {{ ssh_login_user.stdout }}'s authorized_keys,
+      or has no usable password; nothing about logins changed.
     quiet: true
-
-- name: Keep root login open while the run itself logs in as root
-  ansible.builtin.set_fact:
-    ssh_permit_root_login: prohibit-password
-  when: ssh_login_user.stdout == 'root'
 
 - name: Set the SSH login policy
   ansible.builtin.template:
@@ -107,14 +103,12 @@
   changed_when: false
   check_mode: false
 
-- name: Require key-only logins and root login only while the run itself is root
+- name: Require key-only logins and no root login
   ansible.builtin.assert:
     that:
       - "'passwordauthentication no' in sshd_effective.stdout_lines"
       - "'kbdinteractiveauthentication no' in sshd_effective.stdout_lines"
-      - >-
-        ('permitrootlogin ' ~ ssh_permit_root_login) in sshd_effective.stdout_lines
-        or ('permitrootlogin ' ~ (ssh_permit_root_login | replace('prohibit-password', 'without-password'))) in sshd_effective.stdout_lines
+      - ('permitrootlogin ' ~ ssh_permit_root_login) in sshd_effective.stdout_lines
     fail_msg: >-
       sshd on {{ inventory_hostname }} does not apply PasswordAuthentication no, KbdInteractiveAuthentication no and
       PermitRootLogin {{ ssh_permit_root_login }}; another file in /etc/ssh/sshd_config.d or /etc/ssh/sshd_config overrides
@@ -122,35 +116,62 @@
     quiet: true
   when: not ansible_check_mode
 
-- name: Show the next step after a run as root
+- name: Show the next step after the bootstrap run
   vars:
     password_step: >-
       {{ (admin_password_status.stdout.split()[1] == 'P')
          | ternary('The ' ~ admin_user ~ ' password is set.',
-                   'Set the ' ~ admin_user ~ ' sudo password over the tailnet first: ssh -t root@' ~ server_name ~ ' passwd ' ~ admin_user) }}
+                   'Set the ' ~ admin_user ~ ' sudo password: ssh -t ' ~ ssh_login_user.stdout ~ '@' ~ ansible_host ~ ' sudo passwd ' ~ admin_user) }}
   ansible.builtin.debug:
     msg:
-      - "Root can still log in with a key until provisioning runs as {{ admin_user }}."
+      - "{{ ssh_login_user.stdout }} stays until the first run as {{ admin_user }} removes it."
       - "{{ password_step }}"
-      - "Then set ansible_host={{ server_name }} in inventory/hosts and run: ansible-playbook -u {{ admin_user }} --ask-become-pass provision.yml (RUNBOOK.md, \"Cut-over\")."
-  when: ssh_login_user.stdout == 'root'
+      - "Then set ansible_host={{ server_name }} in inventory/hosts and run: ansible-playbook -u {{ admin_user }} --ask-become-pass provision.yml (RUNBOOK.md, \"Second provision over the tailnet\")."
+  when: bootstrap_run
 
-- name: Say that SSH on the public address stays open until a run comes in over the tailnet
+- name: Say that SSH on the LAN stays open until a run comes in over the tailnet
   ansible.builtin.debug:
     msg: >-
-      This run did not reach {{ inventory_hostname }} over the tailnet, so ufw keeps 22/tcp open on its public address. Run provisioning
-      again over the tailnet (ansible_host={{ server_name }}, RUNBOOK.md, "Cut-over") to close it.
-  when: ssh_over_public
+      This run did not reach {{ inventory_hostname }} over the tailnet, so ufw keeps 22/tcp open on the LAN. Run provisioning
+      again over the tailnet (ansible_host={{ server_name }}, RUNBOOK.md, "Second provision over the tailnet") to close it.
+  when: ssh_outside_tailnet
+
+- name: Read which account the Ubuntu installer created, recorded by the bootstrap run
+  ansible.builtin.slurp:
+    src: /etc/infra/bootstrap-user
+  register: bootstrap_user_file
+  failed_when: false
+  when: not bootstrap_run
+
+- name: Remove the installer's account once the admin user provisions with its own login and sudo password
+  vars:
+    bootstrap_user: "{{ (bootstrap_user_file.content | default('') | b64decode).strip() }}"
+  ansible.builtin.user:
+    name: "{{ bootstrap_user }}"
+    state: absent
+    remove: true
+    force: true
+  when:
+    - not bootstrap_run
+    - bootstrap_user_file.content is defined
+    - bootstrap_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+    - bootstrap_user not in ['root', admin_user, deploy_user, ssh_login_user.stdout]
+
+- name: Forget the installer's account
+  ansible.builtin.file:
+    path: /etc/infra/bootstrap-user
+    state: absent
+  when: not bootstrap_run
 
 - name: Remove a cloud image's default account, if it has one, once the admin user logs in
   ansible.builtin.user:
     name: ubuntu
     state: absent
     remove: true
-  when: ssh_login_user.stdout == admin_user
+  when: not bootstrap_run
 
 - name: Remove the cloud image's passwordless sudo rule with it
   ansible.builtin.file:
     path: /etc/sudoers.d/90-cloud-init-users
     state: absent
-  when: ssh_login_user.stdout == admin_user
+  when: not bootstrap_run

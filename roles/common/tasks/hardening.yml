@@ -28,6 +28,19 @@
   register: utc_clock
   changed_when: "'changed' in utc_clock.stdout"
 
+# chrony is Ubuntu's time daemon since 25.10 (it replaces systemd-timesyncd).
+- name: Keep the clock in sync with NTP
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Install security updates every day
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n"
+    mode: "0644"
+
 - name: Reboot for kernel updates in the quiet hours
   ansible.builtin.template:
     src: 20auto-upgrades-reboot.j2

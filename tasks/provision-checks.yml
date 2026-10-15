@@ -25,16 +25,24 @@
   tags: [always]
   ansible.builtin.import_tasks: ssh-route.yml
 
-- name: Log in as root on a fresh server and as the admin user afterwards
+- name: Log in as the installer's account on a fresh server and as the admin user afterwards
   tags: [always]
   ansible.builtin.assert:
     that:
-      - ssh_login_user.stdout in ['root', admin_user]
+      - ssh_login_user.stdout not in ['root', deploy_user]
     fail_msg: >-
-      This run logged in as {{ ssh_login_user.stdout }}. Provisioning logs in as root (-u root) only on the
-      first run, and as {{ admin_user }} (-u {{ admin_user }} --ask-become-pass) on every run after that
-      (RUNBOOK.md, "Cut-over").
+      This run logged in as {{ ssh_login_user.stdout }}. Provisioning logs in as the account the Ubuntu installer
+      created (-u <that account> --ask-become-pass) only on the first run, over the LAN, and as {{ admin_user }}
+      (-u {{ admin_user }} --ask-become-pass) on every run after that, never as root or {{ deploy_user }}
+      (RUNBOOK.md, "First provision over the LAN").
     quiet: true
+
+# The bootstrap run creates the admin user from the installer's account; every
+# later run is the admin user's own.
+- name: Note whether this is the bootstrap run, logged in as the installer's account
+  tags: [always]
+  ansible.builtin.set_fact:
+    bootstrap_run: "{{ ssh_login_user.stdout != admin_user }}"
 
 - name: Require exactly one server in the inventory
   tags: [always]

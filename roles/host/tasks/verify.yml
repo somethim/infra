@@ -27,3 +27,18 @@
     that: swap_now.stdout_lines | map('trim') | map('int') | sum >= 1073741824
     fail_msg: "This host has {{ swap_now.stdout_lines | map('trim') | map('int') | sum }} bytes of swap; it needs at least 1 GiB."
     quiet: true
+
+- name: Read whether the sleep targets are masked
+  ansible.builtin.command: systemctl is-enabled sleep.target suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
+  register: sleep_targets
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require every sleep target masked
+  ansible.builtin.assert:
+    that:
+      - sleep_targets.stdout_lines | length == 5
+      - sleep_targets.stdout_lines | reject('equalto', 'masked') | list | length == 0
+    fail_msg: "The host could still suspend or hibernate (systemctl is-enabled: {{ sleep_targets.stdout_lines }}); run provisioning with --tags host."
+    quiet: true

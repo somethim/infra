@@ -1,6 +1,7 @@
 # Copy to inventory/hosts (gitignored) and edit. One host in [server].
 # Runs reach it over the tailnet by its tailnet name. The first run, before the
-# host has joined the tailnet, sets ansible_host to its public IPv4 instead
-# (RUNBOOK.md, "Cut-over").
+# host has joined the tailnet, sets ansible_host to its LAN address instead
+# (RUNBOOK.md, "First provision over the LAN"):
+#   infra-host ansible_host=192.168.1.50
 [server]
 infra-host ansible_host=infra-host

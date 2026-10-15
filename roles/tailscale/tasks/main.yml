@@ -1,6 +1,6 @@
 ---
 # Joins the host to the tailnet as {{ server_name }}, tagged {{ tailscale_server_tag }}.
-# server_name, not inventory_hostname: the first run may name the host by its public IP.
+# server_name, not inventory_hostname: the first run may name the host by its LAN address.
 - name: Create the apt keyring directory
   ansible.builtin.file:
     path: /etc/apt/keyrings

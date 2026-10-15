@@ -16,9 +16,10 @@ Rules (each problem is printed as a ::error:: line):
   4. 10-hardening.conf.j2 renders PasswordAuthentication no, KbdInteractiveAuthentication no,
      PermitRootLogin no and ExposeAuthInfo yes; ssh_permit_root_login defaults to "no";
      ssh_access.yml removes 50-cloud-init.conf and asserts the policy sshd -T reports.
-  5. ufw_allowed is SSH on tailscale0, 80/tcp and 443/tcp; firewall.yml opens public 22 only
-     when ssh_over_public and deletes it only when not ssh_over_public; ssh_over_public is set only
-     by tasks/ssh-route.yml (tested in ci/verify-tasks.sh), which provision-checks.yml imports.
+  5. ufw_allowed is exactly SSH on tailscale0 (no web port: the public arrives through the
+     Cloudflare Tunnel); firewall.yml opens LAN 22 only when ssh_outside_tailnet and deletes it only
+     when not ssh_outside_tailnet; ssh_outside_tailnet is set only by tasks/ssh-route.yml (tested in
+     ci/verify-tasks.sh), which provision-checks.yml imports; production.yml's public_ports is empty.
   6. provision.yml runs provision-checks as a pre_task and ssh_access as a post_task, and neither
      it nor anything it runs references a Deploy secret.
   7. deploy.yml refuses every ref but refs/heads/master, runs in the production Environment,
@@ -55,7 +56,7 @@ ADMIN_SUDOERS = "admin ALL=(ALL:ALL) ALL\n"
 VISUDO = "/usr/sbin/visudo -cf %s"
 AUTHORIZED_KEY_PREFIX = f'restrict,command="{GATE}" '
 HARDENING_LINES = ("PasswordAuthentication no", "KbdInteractiveAuthentication no", "PermitRootLogin no", "ExposeAuthInfo yes")
-UFW_ALLOWED = ["in on tailscale0 proto tcp to any port 22", "80/tcp", "443/tcp"]
+UFW_ALLOWED = ["in on tailscale0 proto tcp to any port 22"]
 DOCKER_PIN = "/etc/apt/preferences.d/docker"
 DOCKER_PINNED = {"docker-ce", "docker-ce-cli", "docker-ce-rootless-extras"}
 
@@ -248,7 +249,7 @@ def check_firewall(root: pathlib.Path) -> list[str]:
         problems.append(f"rule 5: roles/common/defaults/main.yml: ufw_allowed must be exactly {UFW_ALLOWED}")
     rel = "roles/common/tasks/firewall.yml"
     tasks = tasks_in(root, rel)
-    for command, when in (("ufw allow 22/tcp", "ssh_over_public"), ("ufw delete allow 22/tcp", "not ssh_over_public")):
+    for command, when in (("ufw allow 22/tcp", "ssh_outside_tailnet"), ("ufw delete allow 22/tcp", "not ssh_outside_tailnet")):
         found = [t for t in tasks if str((module_args(t, "command") or {}).get("_raw", "")).strip() == command]
         if len(found) != 1 or str(found[0].get("when", "")).strip() != when:
             problems.append(f"rule 5: {rel}: {command!r} must run exactly once, only when: {when}")
@@ -257,10 +258,12 @@ def check_firewall(root: pathlib.Path) -> list[str]:
         if re.search(r"ufw (allow|delete allow)", raw) and raw.strip() not in ("ufw allow {{ item }}", "ufw allow 22/tcp", "ufw delete allow 22/tcp"):
             problems.append(f"rule 5: {rel}: an extra ufw rule {raw.strip()!r}; list allowed ports in ufw_allowed")
     setters = sorted(str(p.relative_to(root)) for p in [root / "provision.yml", *root.glob("tasks/*.yml"), *root.glob("roles/**/*.yml")]
-                     if any("ssh_over_public" in (module_args(t, "set_fact") or {}) for t in (load_yaml(p) or []) if isinstance(t, dict)))
+                     if any("ssh_outside_tailnet" in (module_args(t, "set_fact") or {}) for t in (load_yaml(p) or []) if isinstance(t, dict)))
     imports = [module_args(t, "import_tasks") for t in tasks_in(root, "tasks/provision-checks.yml")]
     if setters != ["tasks/ssh-route.yml"] or not any(a and a.get("_raw") == "ssh-route.yml" for a in imports):
-        problems.append(f"rule 5: ssh_over_public must be set only by tasks/ssh-route.yml, imported by tasks/provision-checks.yml (set by {setters})")
+        problems.append(f"rule 5: ssh_outside_tailnet must be set only by tasks/ssh-route.yml, imported by tasks/provision-checks.yml (set by {setters})")
+    if (load_yaml(root / "production.yml") or {}).get("public_ports") != []:
+        problems.append("rule 5: production.yml: public_ports must be [] (the LAN-facing interface reaches no Docker-published port)")
     return problems
 
 
@@ -445,12 +448,14 @@ def self_test() -> None:
          "must remove /etc/ssh/sshd_config.d/50-cloud-init.conf"),
         ("4", "the effective policy no longer asserted", edit("roles/common/tasks/ssh_access.yml", "      - \"'passwordauthentication no' in sshd_effective.stdout_lines\"\n", ""),
          "must read /usr/sbin/sshd -T and assert"),
-        ("5", "public SSH in ufw_allowed", edit("roles/common/defaults/main.yml", "  - 80/tcp\n", "  - 22/tcp\n  - 80/tcp\n"), "ufw_allowed must be exactly"),
-        ("5", "public 22 deleted on a public run", edit("roles/common/tasks/firewall.yml", "  when: not ssh_over_public\n", ""), "'ufw delete allow 22/tcp' must run exactly once"),
-        ("5", "a second definition of the SSH route", append("roles/common/tasks/firewall.yml", "\n- name: Guess the route\n  ansible.builtin.set_fact:\n    ssh_over_public: false\n"),
-         "ssh_over_public must be set only by tasks/ssh-route.yml"),
+        ("5", "public SSH in ufw_allowed", edit("roles/common/defaults/main.yml", "  - in on tailscale0 proto tcp to any port 22\n", "  - in on tailscale0 proto tcp to any port 22\n  - 22/tcp\n"), "ufw_allowed must be exactly"),
+        ("5", "the web ports opened again", edit("roles/common/defaults/main.yml", "  - in on tailscale0 proto tcp to any port 22\n", "  - in on tailscale0 proto tcp to any port 22\n  - 80/tcp\n  - 443/tcp\n"), "ufw_allowed must be exactly"),
+        ("5", "a published port admitted on the LAN", edit("production.yml", "public_ports: []", "public_ports: [443]"), "public_ports must be []"),
+        ("5", "LAN 22 deleted on a run outside the tailnet", edit("roles/common/tasks/firewall.yml", "  when: not ssh_outside_tailnet\n", ""), "'ufw delete allow 22/tcp' must run exactly once"),
+        ("5", "a second definition of the SSH route", append("roles/common/tasks/firewall.yml", "\n- name: Guess the route\n  ansible.builtin.set_fact:\n    ssh_outside_tailnet: false\n"),
+         "ssh_outside_tailnet must be set only by tasks/ssh-route.yml"),
         ("5", "the SSH route no longer imported", edit("tasks/provision-checks.yml", "ansible.builtin.import_tasks: ssh-route.yml", "ansible.builtin.import_tasks: placeholder-guards.yml"),
-         "ssh_over_public must be set only by tasks/ssh-route.yml"),
+         "ssh_outside_tailnet must be set only by tasks/ssh-route.yml"),
         ("6", "provision without its pre-checks", edit("provision.yml", "      ansible.builtin.import_tasks: tasks/provision-checks.yml\n", "      ansible.builtin.import_tasks: tasks/placeholder-guards.yml\n"),
          "pre_tasks must import tasks/provision-checks.yml"),
         ("6", "ssh_access no longer last", edit("provision.yml", "        tasks_from: ssh_access\n", "        tasks_from: main\n"), "post_tasks must import_role common"),
@@ -493,7 +498,7 @@ def main() -> int:
     if problems:
         return 1
     print("deploy access: the gate, infra-apply, the sudo rule and the workflow agree on release and status; sudo validated, admin sudo "
-          "asks for a password; the deploy key is root-owned and forced to the gate; key-only sshd; ufw tailnet SSH plus 80/443; "
+          "asks for a password; the deploy key is root-owned and forced to the gate; key-only sshd; ufw tailnet SSH only, no published port; "
           "provision holds no secret; master only, production Environment, tag:infra-ci, never root; the Docker pin precedes every apt upgrade")
     return 0
 

@@ -28,5 +28,5 @@
       when: verify_role == 'ssh_route'
     - name: Report the SSH route
       ansible.builtin.debug:
-        msg: "ssh_over_public={{ ssh_over_public }}"
+        msg: "ssh_outside_tailnet={{ ssh_outside_tailnet }}"
       when: verify_role == 'ssh_route'

@@ -14,13 +14,6 @@
     fail_msg: "{{ deploy_ssh_public_key_file }} must hold one plain public key line (RUNBOOK.md, \"New CI deploy key\")."
     quiet: true
 
-- name: Remove the retired CI deploy key from root
-  ansible.builtin.lineinfile:
-    path: /root/.ssh/authorized_keys
-    regexp: "{{ legacy_ci_deploy_key.split()[1] | regex_escape }}"
-    state: absent
-  when: ssh_login_user.stdout == 'root'
-
 - name: Create the admin user with a locked password
   ansible.builtin.user:
     name: "{{ admin_user }}"
@@ -38,37 +31,63 @@
     group: "{{ admin_user }}"
     mode: "0700"
 
-- name: Read the keys the owner installed for root with ssh-copy-id
+- name: Find the home of the installer's account this bootstrap run logged in as
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ssh_login_user.stdout }}"
+  when: bootstrap_run
+
+- name: Read the keys the owner installed for the installer's account with ssh-copy-id
   ansible.builtin.slurp:
-    src: /root/.ssh/authorized_keys
-  register: root_authorized_keys
-  when: ssh_login_user.stdout == 'root'
+    src: "{{ ansible_facts['getent_passwd'][ssh_login_user.stdout][4] }}/.ssh/authorized_keys"
+  register: bootstrap_authorized_keys
+  when: bootstrap_run
 
 - name: Require only the owner's plain public keys there, never the CI deploy key
   vars:
-    root_key_lines: >-
-      {{ (root_authorized_keys.content | b64decode).splitlines() | map('trim') | reject('match', '^(#|$)') | list }}
+    bootstrap_key_lines: >-
+      {{ (bootstrap_authorized_keys.content | b64decode).splitlines() | map('trim') | reject('match', '^(#|$)') | list }}
   ansible.builtin.assert:
     that:
-      - root_key_lines | length > 0
-      - root_key_lines | reject('match', ssh_public_key_pattern) | list | length == 0
-      - ci_key_line | regex_search('^[^ ]+ [^ ]+') not in (root_key_lines | map('regex_search', '^[^ ]+ [^ ]+') | list)
+      - bootstrap_key_lines | length > 0
+      - bootstrap_key_lines | reject('match', ssh_public_key_pattern) | list | length == 0
+      - ci_key_line | regex_search('^[^ ]+ [^ ]+') not in (bootstrap_key_lines | map('regex_search', '^[^ ]+ [^ ]+') | list)
     fail_msg: >-
-      Root's authorized_keys on {{ inventory_hostname }} must hold only your own public keys, installed with
-      ssh-copy-id, as plain lines with no options, and never the CI deploy key (RUNBOOK.md, "What you need").
+      {{ ssh_login_user.stdout }}'s authorized_keys on {{ inventory_hostname }} must hold only your own public keys,
+      installed with ssh-copy-id, as plain lines with no options, and never the CI deploy key
+      (RUNBOOK.md, "First provision over the LAN").
     quiet: true
-  when: ssh_login_user.stdout == 'root'
+  when: bootstrap_run
 
-- name: Give the admin user the owner's keys from root, once
+- name: Give the admin user the owner's keys from the installer's account, once
   ansible.builtin.copy:
-    src: /root/.ssh/authorized_keys
+    src: "{{ ansible_facts['getent_passwd'][ssh_login_user.stdout][4] }}/.ssh/authorized_keys"
     dest: "{{ admin_account.home }}/.ssh/authorized_keys"
     remote_src: true
     force: false
     owner: "{{ admin_user }}"
     group: "{{ admin_user }}"
     mode: "0600"
-  when: ssh_login_user.stdout == 'root'
+  when: bootstrap_run
+
+- name: Create the host configuration directory
+  ansible.builtin.file:
+    path: /etc/infra
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# The admin run removes this account once the admin user has logged in itself
+# (ssh_access.yml), so the installer's sudo account does not outlive setup.
+- name: Remember the installer's account for removal by the first admin run
+  ansible.builtin.copy:
+    dest: /etc/infra/bootstrap-user
+    content: "{{ ssh_login_user.stdout }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  when: bootstrap_run
 
 - name: Read the admin user's keys
   ansible.builtin.slurp:

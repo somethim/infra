@@ -1,7 +1,8 @@
 ---
-# Facts about the one production host, shared by provision.yml (and release.yml
-# from plans/004). No secrets here: app secrets live in the GitHub production
-# Environment and never reach provisioning.
+# Facts about the one production host, a dedicated home server on the owner's
+# LAN, shared by provision.yml and release.yml. No secrets here: app secrets and
+# the Cloudflare Tunnel token live in the GitHub production Environment and
+# never reach provisioning.
 
 # Tailnet hostname of the server; provisioning names the node after it.
 server_name: infra-host
@@ -16,7 +17,10 @@ docker_engine_major: 29
 
 reboot_time: "04:00"
 swap_size: 2G
-public_ports: [80, 443]
+# Docker-published ports the LAN-facing interface may reach. None: the public
+# arrives only through the Cloudflare Tunnel, which dials out, so every new
+# inbound connection to a published port is dropped (roles/host).
+public_ports: []
 
 apex_domain: arbikullakshi.com
 www_domain: www.arbikullakshi.com
@@ -25,9 +29,3 @@ hypernova_domain: hypernova.arbikullakshi.com
 portfolio_image_repo: ghcr.io/somethim/portfolio
 hypernova_provider_image_repo: ghcr.io/hypernova3643725/hypernova-provider
 hypernova_web_image_repo: ghcr.io/hypernova3643725/hypernova-web
-
-acme_email: contact@arbikullakshi.com
-
-# The CI deploy key root trusted before this layout (public, not a secret).
-# Used only to remove it from /root/.ssh/authorized_keys on the first provision.
-legacy_ci_deploy_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKCs++XLCd+tOTAQZWlkyX4Hnr7fetplNefi2w/9jGNU github-actions@infra-deploy"
