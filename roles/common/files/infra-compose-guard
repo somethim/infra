@@ -36,6 +36,7 @@ TAILNET_PORTS = {
     ("media", "jellyfin"): 8096,
     ("media", "audiobookshelf"): 13378,
     ("media", "kavita"): 5000,
+    ("media", "home"): 80,
 }
 TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
 TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
@@ -101,10 +102,10 @@ STACKS = {
         "networks": {"media"},
         "volumes": {name: {"name": name, "external": True} for name in
                     ("jellyfin-config", "jellyfin-cache", "audiobookshelf-config", "audiobookshelf-metadata", "kavita-config")},
-        "containers": {"jellyfin", "audiobookshelf", "kavita"},
+        "containers": {"jellyfin", "audiobookshelf", "kavita", "home"},
         "env_files": (),
         "labels": AUTOHEAL_LABEL,
-        "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}},
+        "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}, "home": {"media"}},
         "container_env_files": {},
         "hardened": True,
     },

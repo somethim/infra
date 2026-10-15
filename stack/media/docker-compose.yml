@@ -1,4 +1,5 @@
-# Jellyfin, Audiobookshelf and Kavita, for the owner over the tailnet only.
+# Jellyfin, Audiobookshelf and Kavita, and a links page to them and Open WebUI,
+# for the owner over the tailnet only.
 # See docs/stacks.md. Each publishes one port on the host's Tailscale address
 # and nowhere else (TAILSCALE_IP comes from /etc/infra/host.env, which
 # infra-apply exports); never through the tunnel or Traefik (Cloudflare's terms
@@ -145,6 +146,100 @@ services:
           create_host_path: false
     networks:
       - media
+    labels:
+      - autoheal=true
+
+  # The links page: http://infra-host/ shows Open WebUI and the three services
+  # above as four tiles, so nobody has to remember a port. busybox httpd
+  # serves the page from tmpfs; the page itself is HOME_HTML below (no host
+  # file, no bind mount). Port 80 needs no capability: Docker lets any user
+  # bind low ports inside a container's own network namespace. No data, so
+  # nothing to back up.
+  home:
+    image: busybox:1.37.0-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
+    container_name: home
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 32m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - sh
+      - -c
+      - mkdir -p /tmp/www && printf '%s' "$$HOME_HTML" >/tmp/www/index.html && exec httpd -f -p 80 -h /tmp/www
+    ports:
+      - "${TAILSCALE_IP}:80:80"
+    environment:
+      # Links are built from the address the page was opened on (infra-host, the
+      # Tailscale IP or a DNS name for it); the hrefs are the fallback.
+      HOME_HTML: |
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="color-scheme" content="light dark">
+        <title>Home</title>
+        <style>
+        :root { --bg: #f3f4f6; --tile: #ffffff; --text: #111827; --muted: #6b7280; --edge: #e5e7eb; }
+        @media (prefers-color-scheme: dark) {
+          :root { --bg: #0b0d10; --tile: #171a1f; --text: #f3f4f6; --muted: #9ca3af; --edge: #262a31; }
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+          font: 16px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+        main { height: 100vh; height: 100dvh; display: grid; gap: 12px;
+          grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+          padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+                   max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+        a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+          min-width: 0; padding: 12px; text-align: center; text-decoration: none; color: inherit;
+          background: var(--tile); border: 1px solid var(--edge); border-radius: 20px; }
+        a:hover, a:focus-visible { border-color: var(--c); outline: none; }
+        a:active { transform: scale(0.98); }
+        svg { width: clamp(40px, 12vmin, 88px); height: auto; color: var(--c); }
+        b { font-size: clamp(17px, 3.6vmin, 28px); font-weight: 600; }
+        span { font-size: clamp(13px, 2.4vmin, 18px); color: var(--muted); }
+        </style>
+        </head>
+        <body>
+        <main>
+        <a data-port="8080" href="http://infra-host:8080" style="--c: #10a37f">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>
+          <b>Open WebUI</b><span>AI chat</span>
+        </a>
+        <a data-port="8096" href="http://infra-host:8096" style="--c: #7c5cff">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/></svg>
+          <b>Jellyfin</b><span>Films &amp; shows</span>
+        </a>
+        <a data-port="13378" href="http://infra-host:13378" style="--c: #e0892b">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="5" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg>
+          <b>Audiobookshelf</b><span>Audiobooks &amp; podcasts</span>
+        </a>
+        <a data-port="5000" href="http://infra-host:5000" style="--c: #2b8be0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10 5 7 4.5 3 5v13c4-.5 7 0 9 1.5 2-1.5 5-2 9-1.5V5c-4-.5-7 0-9 1.5z"/><path d="M12 6.5v13"/></svg>
+          <b>Kavita</b><span>Books</span>
+        </a>
+        </main>
+        <script>
+        document.querySelectorAll("a[data-port]").forEach(function (a) {
+          a.href = location.protocol + "//" + location.hostname + ":" + a.getAttribute("data-port") + "/";
+        });
+        </script>
+        </body>
+        </html>
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     labels:
       - autoheal=true
 

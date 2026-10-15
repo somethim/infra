@@ -138,7 +138,7 @@ turns unhealthy.
 ## media
 
 Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), for
-the owner alone. Like `ai`, nothing here is public: no `edge`, no Traefik label, never behind
+the owner alone, and `home`, a links page (`http://infra-host/`) with a tile for each of them and Open WebUI. Like `ai`, nothing here is public: no `edge`, no Traefik label, never behind
 the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
 the tailnet is faster: a phone or TV on Tailscale talks to the server directly (or through a
 relay when it must), WireGuard-encrypted.
@@ -148,6 +148,7 @@ relay when it must), WireGuard-encrypted.
 | `jellyfin` | 8096 | `/srv/media/shows` → `/media/shows`, `/srv/media/movies` → `/media/movies`, read-only | `jellyfin-config` (`/config`), `jellyfin-cache` (`/cache`, with the transcodes) |
 | `audiobookshelf` | 13378 (`PORT=13378`) | `/srv/media/audiobooks` → `/audiobooks`, `/srv/media/podcasts` → `/podcasts`, read-write | `audiobookshelf-config`, `audiobookshelf-metadata` |
 | `kavita` | 5000 | `/srv/media/books` → `/books`, read-only | `kavita-config` (`/kavita/config`) |
+| `home` | 80 | none | none (the links page is `HOME_HTML` in the compose file, written to tmpfs and served by busybox `httpd`) |
 
 **The library** is on the internal 1 TB HDD at `/srv/media` ([host.md](host.md#disks)); the
 apps' own databases, artwork and caches are in volumes on the SSD. Each container mounts only
@@ -173,7 +174,7 @@ NVENC/NVDEC transcodes; turn it on in Jellyfin's **Dashboard → Playback → Tr
 ([ai](#ai)): a transcode takes a few hundred MB, so a 7B model and two or three streams fit
 together. Consumer drivers allow a handful of concurrent NVENC sessions, plenty for one home.
 
-**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB.
+**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB, `home` 32 MiB.
 With `ollama` at 8 GiB and the rest, the stacks fit a 16 GB machine with the swap file as a
 buffer; give Ollama less if the server has less RAM.
 

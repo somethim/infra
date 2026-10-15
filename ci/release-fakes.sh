@@ -226,14 +226,16 @@ new_state() {
     "c8 /open-webui running always healthy ai" \
     "c9 /jellyfin running always healthy media" \
     "c10 /audiobookshelf running always healthy media" \
-    "c11 /kavita running always healthy media" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita; do
+    "c11 /kavita running always healthy media" \
+    "c12 /home running always healthy media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita home; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
   tailnet_binding jellyfin 8096
   tailnet_binding audiobookshelf 13378
   tailnet_binding kavita 5000
+  tailnet_binding home 80
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

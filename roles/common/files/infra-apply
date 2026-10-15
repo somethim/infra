@@ -54,7 +54,7 @@ readonly secret_files=(ghcr.env database/postgres.env database/provision.sql por
   ai/.env ai/open-webui.env media/.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
-readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000")
+readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80")
 readonly tailscale_ip_pattern='^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
 readonly service_user_pattern='^[1-9][0-9]*:[1-9][0-9]*$'
 # Traefik and cloudflared, by container name, on the shared edge network.

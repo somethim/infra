@@ -126,7 +126,7 @@ it cannot do.
 
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
-   (Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
+   (the links page 80, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
    [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
@@ -138,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -378,7 +378,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -397,7 +397,7 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: compose model accepted: 3 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, ...
+infra-apply: compose model accepted: 4 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, home 100.x.y.z:80, ...
 infra-apply: bundle accepted: 19 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
@@ -412,7 +412,7 @@ infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 are bound to 100.x.y.z alone
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
@@ -712,6 +712,7 @@ check it.
 
 | Service | Address (on the tailnet) | Port |
 | --- | --- | --- |
+| Links page (the four below as tiles) | `http://infra-host/` | 80 |
 | Open WebUI | `http://infra-host:8080` | 8080 |
 | Jellyfin | `http://infra-host:8096` | 8096 |
 | Audiobookshelf | `http://infra-host:13378` | 13378 |
@@ -764,7 +765,7 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
 
 `tag:infra-ci` gets no new port. Check from the laptop once the release below is done:
@@ -821,8 +822,8 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
-"the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 are bound
-to 100.x.y.z alone". The images are large (Open WebUI about 4 GB); the first pull takes a
+"the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80
+are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB); the first pull takes a
 while. `ollama-pull` then downloads `qwen2.5:7b` (about 4.7 GB) in the background:
 
 ```bash
@@ -861,6 +862,27 @@ password from your password manager for each.
 Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/audiobooks` and
 `/podcasts` (podcast downloads, covers).
 
+### The links page
+
+`http://infra-host/` on any device on the tailnet shows the four services as four tiles (two by
+two, on a phone too), so nobody has to remember a port; bookmark it or add it to the home
+screen. It is the `home` container in the media stack (busybox `httpd`, the page is in
+`stack/media/docker-compose.yml`), on port 80 of the Tailscale address only, like the others.
+A tailnet whose policy predates the page needs `tcp:80` added to the admins' grant to
+`tag:infra-server` ([Tailscale grants](#tailscale-grants)); until then the page times out.
+The tiles link to the address the page was opened on, so it also works by IP
+(`http://100.x.y.z/`) or by a name of your own. Optional, a name that is easier to type:
+a DNS-only record (grey cloud, not proxied) `home.arbikullakshi.com` → the server's Tailscale
+address. Off the tailnet that address leads nowhere, so the record reveals nothing usable:
+
+```bash
+Z=b548cd8d33527abe0bc4f3fc106096d1
+cf dns records create -z $Z --body '{"type":"A","name":"home","content":"100.126.107.95","proxied":false,"comment":"tailnet-only links page"}'
+```
+
+Then `http://home.arbikullakshi.com/` works on every tailnet device. Use `http://`: there is
+no certificate for that name, and Tailscale already encrypts the connection end to end.
+
 ### Copying media in
 
 `admin` is in the `media` group, and the library folders are setgid `media` and
@@ -885,7 +907,7 @@ new files on their next scan (or **Scan library** now).
 
 Install Tailscale on the device (App Store / Play Store; Android TV and Apple TV have it too)
 and sign in with the same account as the laptop, so it is one of `autogroup:admin`'s devices.
-Then use the addresses in the table above, or the server's `100.x.y.z` address (`tailscale ip
+Then open `http://infra-host/` (the links page) or the addresses in the table above, or the server's `100.x.y.z` address (`tailscale ip
 -4 infra-host` on the laptop) where the app wants an IP: the Jellyfin app (server
 `http://infra-host:8096`), the Audiobookshelf app (`http://infra-host:13378`), Kavita in the
 browser or an OPDS reader, and Open WebUI in the browser. Nothing works from a device that is

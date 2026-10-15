@@ -12,6 +12,7 @@ tailnet_ports:
   - { container: jellyfin, port: 8096 }
   - { container: audiobookshelf, port: 13378 }
   - { container: kavita, port: 5000 }
+  - { container: home, port: 80 }
 
 # Accounts the hardened stacks run as (no login, no home), and the external
 # volumes they own: provisioning creates each volume once and hands its root to

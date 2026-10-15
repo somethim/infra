@@ -71,6 +71,7 @@ TAILNET_PORTS = {
     ("media", "jellyfin"): 8096,
     ("media", "audiobookshelf"): 13378,
     ("media", "kavita"): 5000,
+    ("media", "home"): 80,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}

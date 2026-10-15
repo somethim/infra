@@ -143,7 +143,7 @@ anything changes ("…; the running release is untouched") unless all of this ho
    name, container names, volumes and existing networks only (and, where it says so, per
    container: only hypernova's provider joins `llm`); no privileged settings, added
    capabilities, devices, host namespaces or Docker socket; no host port but the tailnet-only
-   ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000), each
+   ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000, `home` 80), each
    written exactly `"${TAILSCALE_IP}:<port>:<port>"` and resolved to the address `host.env`
    names; no bind mount but the media library folders, each in its own container at its fixed
    path, read-only except Audiobookshelf's audiobooks and podcasts, `create_host_path: false`;

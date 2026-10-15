@@ -5,12 +5,13 @@ ssh_permit_root_login: "no"
 admin_user: admin
 deploy_user: deploy
 # The only inbound rules, all on the tailnet: SSH, and the tailnet-only ports
-# (roles/host/defaults/main.yml, tailnet_ports: Kavita, Open WebUI, Jellyfin,
-# Audiobookshelf). LAN 22 is added or
-# removed separately in firewall.yml (ssh_outside_tailnet). No web port: the
-# public arrives through the Cloudflare Tunnel, which dials out.
+# (roles/host/defaults/main.yml, tailnet_ports: the home links page on 80,
+# Kavita, Open WebUI, Jellyfin, Audiobookshelf). LAN 22 is added or
+# removed separately in firewall.yml (ssh_outside_tailnet). No public web port:
+# the public arrives through the Cloudflare Tunnel, which dials out.
 ufw_allowed:
   - in on tailscale0 proto tcp to any port 22
+  - in on tailscale0 proto tcp to any port 80
   - in on tailscale0 proto tcp to any port 5000
   - in on tailscale0 proto tcp to any port 8080
   - in on tailscale0 proto tcp to any port 8096
