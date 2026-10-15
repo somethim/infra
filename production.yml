@@ -41,8 +41,8 @@ media_gid: 2000
 # mounted at /srv/media, and the external 1 TB USB HDD at /srv/backup. Empty:
 # not mounted (provisioning says so); the library then lives on the SSD and
 # the nightly backup writes nothing.
-media_disk_uuid: ""
-backup_disk_uuid: ""
+media_disk_uuid: "f99f003b-8e49-477e-8f1b-1026dbabda3b"
+backup_disk_uuid: "25097f46-16a0-4995-b5e6-84001f8efb21"
 # UTC, at least an hour before reboot_time (provisioning checks).
 backup_time: "02:30"
 
