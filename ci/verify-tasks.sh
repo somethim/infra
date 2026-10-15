@@ -236,8 +236,25 @@ expect_fail "gpu: driver and library differ (update waiting for a reboot)" "Driv
 scenario
 echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver." >"$work/state/nvidia-smi.err"
 if ! run gpu -e gpu_just_installed=true; then cat "$work/out.log"; echo "FAIL a driver installed in this run failed the verify instead of asking for a reboot"; exit 1; fi
-grep -qF "The NVIDIA driver was just installed or updated and is not loaded yet" "$work/out.log" || { cat "$work/out.log"; echo "FAIL no reboot notice after a fresh driver install"; exit 1; }
+grep -qF "The NVIDIA driver was installed or updated since the last boot and is not loaded yet" "$work/out.log" || { cat "$work/out.log"; echo "FAIL no reboot notice after a fresh driver install"; exit 1; }
 echo "ok   pass: gpu: a driver installed in this run asks for a reboot instead of failing"
+
+scenario
+echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver." >"$work/state/nvidia-smi.err"
+touch "$work/state/driver.list"
+printf 'cpu  1 2 3\nbtime 1000\n' >"$work/state/proc-stat"
+if ! run gpu -e "gpu_driver_package_list=$work/state/driver.list" -e "gpu_proc_stat=$work/state/proc-stat"; then
+  cat "$work/out.log"; echo "FAIL a driver installed by an earlier run, not yet rebooted into, failed the verify"; exit 1
+fi
+grep -qF "installed or updated since the last boot" "$work/out.log" || { cat "$work/out.log"; echo "FAIL no reboot notice for a driver installed before this run"; exit 1; }
+echo "ok   pass: gpu: a driver installed since the last boot by an earlier run asks for a reboot"
+
+scenario
+echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver." >"$work/state/nvidia-smi.err"
+touch -d @500 "$work/state/driver.list"
+printf 'cpu  1 2 3\nbtime 1000\n' >"$work/state/proc-stat"
+expect_fail "gpu: driver installed before the last boot but not loaded" "couldn't communicate with the NVIDIA driver" gpu \
+  -e "gpu_driver_package_list=$work/state/driver.list" -e "gpu_proc_stat=$work/state/proc-stat"
 
 ### host
 

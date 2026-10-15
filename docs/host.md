@@ -276,7 +276,7 @@ sets `gpu_enabled: true` (with `false` it only says so and touches nothing):
   info` shows.
 - **No reboot.** A driver installed or updated in a run is not loaded until the next boot (a
   fresh Ubuntu may even have `nouveau` loaded). Provisioning then prints "The NVIDIA driver was
-  just installed or updated and is not loaded yet … Reboot when it suits you" instead of
+  installed or updated since the last boot and is not loaded yet … Reboot when it suits you" instead of
   failing, and the next run (`--tags gpu`) requires `nvidia-smi` to answer. Unattended-upgrades
   can update the driver within the branch; until the 04:00 reboot it schedules, `nvidia-smi`
   reports "Driver/library version mismatch" and a GPU container that restarts in that window

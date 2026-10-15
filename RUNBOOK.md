@@ -801,7 +801,7 @@ The `gpu` role installs the driver and the NVIDIA Container Toolkit; `host` writ
 Tailscale address into `/etc/infra/host.env`, turns on non-local binds, adds the second
 firewall hook, the `ai`, `llm` and `media` networks, the `ai` and `media` accounts (and puts
 `admin` in the `media` group) with their volumes, mounts the disks and installs the nightly
-backup. A first run ends the `gpu` part with "The NVIDIA driver was just installed or updated
+backup. A first run ends the `gpu` part with "The NVIDIA driver was installed or updated since the last boot
 and is not loaded yet … Reboot when it suits you": the driver loads at the next boot. Reboot
 (the sites are back when Docker has restarted the stacks, about a minute), then verify:
 

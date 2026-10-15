@@ -42,10 +42,30 @@
   failed_when: false
   check_mode: false
 
+# A driver installed by an earlier run (one that failed later, say) also waits
+# for a reboot: its package files are newer than the running kernel's boot.
+- name: Look up when the driver package was installed
+  ansible.builtin.stat:
+    path: "{{ gpu_driver_package_list | default('/var/lib/dpkg/info/nvidia-driver-' ~ nvidia_driver_major ~ '-server.list') }}"
+  register: gpu_driver_package
+
+- name: Read when the running kernel booted
+  ansible.builtin.slurp:
+    src: "{{ gpu_proc_stat | default('/proc/stat') }}"
+  register: gpu_proc_stat_read
+
+- name: Note whether the installed driver waits for a reboot
+  ansible.builtin.set_fact:
+    gpu_just_installed: >-
+      {{ (gpu_just_installed | default(false) | bool)
+         or (gpu_driver_package.stat.exists
+             and gpu_driver_package.stat.mtime | int
+                 > ((gpu_proc_stat_read.content | b64decode).splitlines() | select('match', 'btime ') | first | split | last | int)) }}
+
 - name: Say that the new driver needs a reboot
   ansible.builtin.debug:
     msg: >-
-      The NVIDIA driver was just installed or updated and is not loaded yet (nvidia-smi: {{ (gpu_smi.stdout ~ ' ' ~ gpu_smi.stderr) | trim }}).
+      The NVIDIA driver was installed or updated since the last boot and is not loaded yet (nvidia-smi: {{ (gpu_smi.stdout ~ ' ' ~ gpu_smi.stderr) | trim }}).
       Reboot when it suits you (ssh -t admin@{{ server_name }} sudo reboot); the sites are back once Docker
       has restarted the stacks. Then run provisioning with --tags gpu to verify (RUNBOOK.md, "GPU, AI and media").
   when:
