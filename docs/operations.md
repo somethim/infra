@@ -12,6 +12,8 @@ that are not part of a procedure. Every command runs as `admin` over the tailnet
 | SSH does not let you in | [RUNBOOK.md, Locked out](../RUNBOOK.md#locked-out) |
 | The sites are down but the server is up | [RUNBOOK.md, The sites are down but the server is up](../RUNBOOK.md#the-sites-are-down-but-the-server-is-up) |
 | A third-party image must move | [RUNBOOK.md, Re-pinning third-party images](../RUNBOOK.md#re-pinning-third-party-images) |
+| Something must come back from the backup disk | [RUNBOOK.md, Restoring from the backup disk](../RUNBOOK.md#restoring-from-the-backup-disk) |
+| GPU, AI, media, disks | [RUNBOOK.md, GPU, AI and media](../RUNBOOK.md#12-gpu-ai-and-media) |
 
 ## Getting into PostgreSQL
 
@@ -36,21 +38,53 @@ Old releases need no cleanup: `infra-apply` keeps only `current` and `previous`.
 
 ## Backups
 
-Nothing is backed up automatically. Two things must be captured together:
+`infra-backup.timer` runs `/usr/local/sbin/infra-backup` (`roles/host/files/infra-backup`)
+every night at `backup_time` (02:30 UTC, plus up to 15 minutes of jitter), at least an hour
+before the 04:00 reboot window and clear of the Sunday 03:00 image prune; a night missed while
+the server was off runs at the next boot. It writes only to the external USB disk at
+`/srv/backup`:
 
-- the `portfolio` database (`sudo docker exec postgresql pg_dump -U postgres -Fc portfolio`)
-- the `portfolio-media` volume
+| Path | What | Kept |
+| --- | --- | --- |
+| `postgres/<date>.sql.gz` | `pg_dumpall` of the shared PostgreSQL (every role and database), mode 0600 | the newest 14 |
+| `apps/<date>/<volume>.tar.gz` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage` | the newest 7 |
+| `media/{audiobooks,books,podcasts}/` | an `rsync --delete` mirror of those library folders | last night's |
 
-The `media` table is a ledger of what is on that volume. Restoring one without the other gives
-a working site with broken images rather than an error, which is the failure mode that goes
-unnoticed longest.
+Not copied: the Ollama models (`ollama-models`; they download again), Jellyfin's cache volume,
+and the films and series (they would not fit; re-rip them).
 
-The server is one disk in one house: copy backups off it (to the laptop over the tailnet, or
-an external drive), for example:
+- **No disk, no writes.** If `/srv/backup` is not a mountpoint (the disk is unplugged, or
+  `backup_disk_uuid` is empty) the script logs a warning and exits 0 without writing
+  anything; the mountpoint itself is immutable while empty, so nothing can land on the SSD.
+- **Consistent copies.** Jellyfin, Audiobookshelf, Kavita and Open WebUI keep SQLite databases
+  in their volumes, so the script stops those of them that run (`docker stop`, up to 60 s),
+  copies, and starts exactly those again, also when a copy fails. They are down for the
+  minutes of the copy, in the night. The public sites are never stopped: PostgreSQL is dumped
+  live (`pg_dumpall` is consistent), and their file volumes are copied as they are.
+- **No empty mirror over a full one.** A library folder that is missing, or empty while its
+  mirror is not (a disk that did not mount), is refused instead of mirrored; deletions you make
+  on purpose are mirrored the next night.
+- **Every step runs**, and the run fails if any did: a partial dump or app copy is deleted, the
+  earlier ones stay, and `infra-backup-failed.service` logs "the nightly backup FAILED" at
+  error priority. Read it with:
+
+  ```bash
+  ssh admin@infra-host journalctl -u infra-backup.service --since yesterday
+  ssh admin@infra-host journalctl -p err -t infra-backup
+  ssh admin@infra-host sudo systemctl start infra-backup.service     # a run now
+  ```
+
+The portfolio's `media` table is a ledger of what is on `portfolio-media`: restore the
+database and that volume from the same night, or the site works with broken images, the
+failure that goes unnoticed longest. Restoring is in
+[RUNBOOK.md](../RUNBOOK.md#restoring-from-the-backup-disk).
+
+The backup disk sits next to the server: it covers a dead SSD or HDD and a bad upgrade, not a
+fire or a burglary. For that, copy `/srv/backup/postgres` and `/srv/backup/apps` off-site now
+and then (they are small), for example to the laptop over the tailnet:
 
 ```bash
-ssh admin@infra-host sudo docker exec postgresql pg_dump -U postgres -Fc portfolio > portfolio-$(date +%F).dump
-ssh admin@infra-host sudo tar -C /var/lib/docker/volumes/portfolio-media/_data -czf - . > portfolio-media-$(date +%F).tgz
+ssh admin@infra-host sudo tar -C /srv/backup -czf - postgres apps > infra-backup-$(date +%F).tgz
 ```
 
 ## A major PostgreSQL upgrade

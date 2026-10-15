@@ -1,0 +1,57 @@
+---
+# See docs/operations.md, "Backups". The script writes only to a mounted
+# /srv/backup; with the disk unplugged or not configured it warns and exits 0.
+- name: Require the backup to finish its hour before the reboot window
+  ansible.builtin.assert:
+    that:
+      - backup_time is match('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+      - (backup_time.split(':')[0] | int) * 60 + (backup_time.split(':')[1] | int) + 60 <= (reboot_time.split(':')[0] | int) * 60 + (reboot_time.split(':')[1] | int)
+    fail_msg: "production.yml backup_time ({{ backup_time }}) must be HH:MM, at least an hour before reboot_time ({{ reboot_time }}), both UTC."
+    quiet: true
+
+- name: Install rsync
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+
+- name: Install the backup script and its units
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: infra-backup, dest: /usr/local/sbin/infra-backup, mode: "0755" }
+    - { src: infra-backup.service, dest: /etc/systemd/system/infra-backup.service, mode: "0644" }
+    - { src: infra-backup-failed.service, dest: /etc/systemd/system/infra-backup-failed.service, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Install the nightly timer
+  ansible.builtin.template:
+    src: infra-backup.timer.j2
+    dest: /etc/systemd/system/infra-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Run the backup every night
+  ansible.builtin.systemd:
+    name: infra-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Read the next backup
+  ansible.builtin.command: systemctl list-timers infra-backup.timer --no-pager --output=json
+  register: backup_timer
+  changed_when: false
+  check_mode: false
+
+- name: Require the timer to be scheduled
+  ansible.builtin.assert:
+    that:
+      - backup_timer.stdout | from_json | selectattr('unit', 'equalto', 'infra-backup.timer') | list | length == 1
+    fail_msg: "infra-backup.timer is not scheduled: {{ backup_timer.stdout }}"
+    quiet: true

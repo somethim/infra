@@ -68,6 +68,9 @@ HOST_VARIABLES = {"TAILSCALE_IP"}
 # The only published ports (the compose guard holds the same list): (stack, service) -> port.
 TAILNET_PORTS = {
     ("ai", "open-webui"): 8080,
+    ("media", "jellyfin"): 8096,
+    ("media", "audiobookshelf"): 13378,
+    ("media", "kavita"): 5000,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}
@@ -529,6 +532,10 @@ def self_test() -> None:
          "service open-webui publishes ['8080:8080']; it may publish exactly ['${TAILSCALE_IP}:8080:8080']"),
         ("9", "Ollama published on the tailnet", edit("stack/ai/docker-compose.yml", "    container_name: ollama\n", "    container_name: ollama\n    ports:\n      - \"${TAILSCALE_IP}:11434:11434\"\n"),
          "service ollama publishes host ports"),
+        ("9", "Jellyfin published on the LAN address", edit("stack/media/docker-compose.yml", '"${TAILSCALE_IP}:8096:8096"', '"192.168.1.50:8096:8096"'),
+         "service jellyfin publishes ['192.168.1.50:8096:8096']; it may publish exactly ['${TAILSCALE_IP}:8096:8096']"),
+        ("2", "the Open WebUI key rendered into the media .env", append("stack/media/env.j2", "WEBUI={{ webui_secret_key }}\n"),
+         "renders the secret 'webui_secret_key' into media/.env"),
         ("2", "the Open WebUI key rendered into hypernova's env", append("stack/hypernova/provider.env.j2", "WEBUI={{ webui_secret_key }}\n"),
          "renders 'webui_secret_key' into hypernova/provider.env"),
         ("3", "an ai variable no env.j2 sets", edit("stack/ai/docker-compose.yml", 'command: [pull, "${OLLAMA_MODEL}"]', 'command: [pull, "${OLLAMA_PULL_MODEL}"]'),

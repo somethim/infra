@@ -1,0 +1,233 @@
+---
+# The library disk (internal HDD) at /srv/media and the backup disk (external
+# USB HDD) at /srv/backup, each by its filesystem UUID from production.yml.
+# See docs/host.md, "Disks". An empty UUID skips that disk with a message. A
+# configured mountpoint is made immutable while nothing is mounted on it
+# (chattr +i), so with the disk missing nothing can be written to the SSD in
+# its place: the media containers fail to start instead of serving an empty
+# library, and the backup writes nothing.
+- name: Note the disks
+  ansible.builtin.set_fact:
+    host_disks:
+      - { name: media, path: "{{ media_root }}", uuid: "{{ media_disk_uuid | default('') | string | trim | lower }}", required: true }
+      - { name: backup, path: "{{ backup_root }}", uuid: "{{ backup_disk_uuid | default('') | string | trim | lower }}", required: false }
+
+- name: Require filesystem UUIDs as blkid prints them
+  ansible.builtin.assert:
+    that:
+      - item.uuid == '' or item.uuid is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    fail_msg: "production.yml {{ item.name }}_disk_uuid ({{ item.uuid }}) is not an ext4 filesystem UUID; copy UUID=\"…\" from sudo blkid (RUNBOOK.md, \"Disks\")."
+    quiet: true
+  loop: "{{ host_disks }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Say which disks are not configured
+  ansible.builtin.debug:
+    msg: >-
+      production.yml {{ item.name }}_disk_uuid is empty, so nothing is mounted at {{ item.path }}.
+      {{ 'The library stays on the SSD (225 GB) until it is set.' if item.name == 'media' else
+         'The nightly backup writes nothing until it is set.' }} (RUNBOOK.md, "Disks")
+  loop: "{{ host_disks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.uuid == ''
+
+- name: Mount each configured disk by UUID at every boot, without ever holding the boot up
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+{{ item.path }}\s'
+    line: "UUID={{ item.uuid }} {{ item.path }} ext4 {{ disk_mount_options }} 0 2"
+  loop: "{{ host_disks | rejectattr('uuid', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: disk_fstab
+
+- name: Forget a disk that is no longer configured
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+{{ item.path }}\s'
+    state: absent
+  loop: "{{ host_disks | selectattr('uuid', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: disk_fstab_removed
+
+- name: Let systemd read the new fstab
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: disk_fstab is changed or disk_fstab_removed is changed
+
+# Prints state=<…>: mounted, newly-mounted, absent (configured, device not
+# present), unconfigured; exits 3 (another filesystem is mounted there) or 4
+# (files on the SSD under the mountpoint would be hidden).
+- name: Mount each configured disk, keeping its mountpoint unwritable while it is missing
+  ansible.builtin.shell: |
+    set -eu
+    path={{ item.path | quote }}
+    uuid={{ item.uuid | quote }}
+    mkdir -p "$path"
+    if [ -z "$uuid" ]; then
+      if ! mountpoint -q "$path"; then chattr -i "$path"; fi
+      echo state=unconfigured
+      exit 0
+    fi
+    if mountpoint -q "$path"; then
+      got="$(findmnt -n -o UUID --mountpoint "$path")"
+      [ "$got" = "$uuid" ] || { echo "state=other $got"; exit 3; }
+      echo state=mounted
+      exit 0
+    fi
+    find "$path" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+    if [ -n "$(find "$path" -mindepth 1 -print -quit)" ]; then echo state=notempty; exit 4; fi
+    chattr +i "$path"
+    if [ ! -e "/dev/disk/by-uuid/$uuid" ]; then echo state=absent; exit 0; fi
+    mount "$path"
+    echo state=newly-mounted
+  args:
+    executable: /bin/bash
+  loop: "{{ host_disks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: disk_mount
+  changed_when: "'state=newly-mounted' in disk_mount.stdout"
+  failed_when: disk_mount.rc not in [0, 3, 4]
+
+- name: Refuse a mountpoint that holds another filesystem or files of its own
+  ansible.builtin.assert:
+    that:
+      - "'state=other' not in item.stdout"
+      - "'state=notempty' not in item.stdout"
+    fail_msg: >-
+      {{ item.item.path }}:
+      {{ ('another filesystem (' ~ item.stdout.split(' ', 1)[1] | default('?') ~ ') is mounted there, not ' ~ item.item.uuid ~ '; sudo umount ' ~ item.item.path ~ ' and provision again')
+         if 'state=other' in item.stdout else
+         ('holds files on the SSD that the disk would hide; move them away (sudo mv ' ~ item.item.path ~ '/* /var/tmp/), provision, then copy them onto the disk') }}
+      (RUNBOOK.md, "Disks").
+    quiet: true
+  loop: "{{ disk_mount.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Require the configured library disk to be present
+  ansible.builtin.assert:
+    that:
+      - "'state=absent' not in item.stdout or not item.item.required"
+    fail_msg: >-
+      production.yml {{ item.item.name }}_disk_uuid is {{ item.item.uuid }}, but no such filesystem is attached
+      (ls /dev/disk/by-uuid; sudo blkid). Fix the UUID or the cable; nothing was mounted at {{ item.item.path }},
+      which stays unwritable, so the media stack cannot start on an empty library.
+    quiet: true
+  loop: "{{ disk_mount.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Say that the backup disk is not plugged in
+  ansible.builtin.debug:
+    msg: >-
+      The backup disk ({{ item.item.uuid }}) is not attached, so nothing is mounted at {{ item.item.path }} and the
+      nightly backup writes nothing until it is. Plug it in and provision with --tags host (or sudo mount {{ item.item.path }}).
+  loop: "{{ disk_mount.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: "'state=absent' in item.stdout and not item.item.required"
+
+- name: Read back what is mounted where
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, UUID, --mountpoint, "{{ item.item.path }}"]
+  loop: "{{ disk_mount.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  register: disk_mounted
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: "'state=mounted' in item.stdout or 'state=newly-mounted' in item.stdout"
+
+- name: Require each mounted disk to be the one production.yml names
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | lower == item.item.item.uuid
+    fail_msg: "{{ item.item.item.path }} holds the filesystem {{ item.stdout | trim }}, not {{ item.item.item.uuid }}."
+    quiet: true
+  loop: "{{ disk_mounted.results | selectattr('stdout', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item.item.name }}"
+
+- name: Note whether the library and backup folders can be written
+  ansible.builtin.set_fact:
+    media_writable: "{{ (disk_mount.results | selectattr('item.name', 'equalto', 'media') | first).stdout is search('state=(mounted|newly-mounted|unconfigured)') }}"
+    backup_mounted: "{{ (disk_mount.results | selectattr('item.name', 'equalto', 'backup') | first).stdout is search('state=(mounted|newly-mounted)') }}"
+
+# setgid and group-writable: what admin copies in stays in the media group, so
+# the containers (the media account) can read it.
+- name: Create the library folders, owned by the media account
+  ansible.builtin.file:
+    path: "{{ media_root }}/{{ item }}"
+    state: directory
+    owner: "{{ media_uid }}"
+    group: "{{ media_gid }}"
+    mode: "2775"
+  loop: "{{ media_libraries }}"
+  when: media_writable
+
+- name: Keep the backup disk root-only
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ backup_root }}"
+    - "{{ backup_root }}/postgres"
+    - "{{ backup_root }}/apps"
+    - "{{ backup_root }}/media"
+  when: backup_mounted
+
+- name: Read the library folders back
+  ansible.builtin.stat:
+    path: "{{ media_root }}/{{ item }}"
+  loop: "{{ media_libraries }}"
+  register: library_dirs
+  when: media_writable
+
+- name: Require each library folder owned by the media account, setgid and group-writable
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - item.stat.uid == media_uid | int
+      - item.stat.gid == media_gid | int
+      - item.stat.mode == '2775'
+    fail_msg: "{{ item.stat.path }} is not a 2775 directory owned by {{ media_uid }}:{{ media_gid }}."
+    quiet: true
+  loop: "{{ library_dirs.results | selectattr('stat', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Docker starts the media containers only once the library is mounted (or its
+# mount gave up after the 10 s device timeout), never on the bare mountpoint.
+- name: Create Docker's drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Order Docker after the library mount
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/20-infra-media.conf
+    content: |
+      # Managed by Ansible (roles/host/tasks/disks.yml). See docs/host.md, "Disks".
+      [Unit]
+      After=srv-media.mount
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_media_order
+
+- name: Let systemd read the Docker ordering
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: docker_media_order is changed

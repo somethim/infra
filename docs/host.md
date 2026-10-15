@@ -89,8 +89,8 @@ through neither sshd nor the tailnet, and takes `admin`'s password.
 
 ## Firewall
 
-ufw denies inbound by default and allows only **22 and the tailnet-only ports (8080) on
-`tailscale0`** (`ufw_allowed`). There is no web port: the Cloudflare Tunnel is an outbound
+ufw denies inbound by default and allows only **22 and the tailnet-only ports (5000, 8080,
+8096, 13378) on `tailscale0`** (`ufw_allowed`). There is no web port: the Cloudflare Tunnel is an outbound
 connection. Outbound is unrestricted (image pulls,
 Cloudflare, Resend, Tailscale, NTP). The router forwards no port to the host, so even LAN 22
 is unreachable from the internet.
@@ -132,15 +132,47 @@ already, and `command` keeps the repo free of collection dependencies.
 ## Service accounts and their volumes
 
 The hardened stacks never run as root. `roles/host` creates a system account per stack with a
-fixed uid and gid from `production.yml` (`ai`: `ai_uid`/`ai_gid`, `2001`), no login shell, no
-home and a locked password, and writes it to `host.env` (`AI_USER=2001:2001`); the compose
-guard refuses an `ai` service that runs as anything else.
+fixed uid and gid from `production.yml` (`ai`: `ai_uid`/`ai_gid`, `2001`; `media`:
+`media_uid`/`media_gid`, `2000`), no login shell, no home and a locked password, and writes them
+to `host.env` (`AI_USER=2001:2001`, `MEDIA_USER=2000:2000`); the compose guard refuses an `ai`
+or `media` service that runs as anything else. `admin` is in the `media` group, so it can copy
+files into the library.
 
-Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`), external
+Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`,
+`jellyfin-config`, `jellyfin-cache`, `audiobookshelf-config`, `audiobookshelf-metadata`,
+`kavita-config`), external
 to the stacks like `pgdata-v18`, so a release can never create an empty one in its place. Each
 volume's root is handed to its account, mode 0700, on every run; the stacks mount them with
 `nocopy`, because Docker otherwise copies the image's directory, root ownership included, onto
 an empty volume the first time it is mounted.
+
+## Disks
+
+| Disk | Mounted at | `production.yml` | Holds |
+| --- | --- | --- | --- |
+| 225 GB SSD | `/` | — | Ubuntu, Docker's data root (images, every volume: PostgreSQL, app configs, Ollama's models), swap |
+| 1 TB internal HDD | `/srv/media` | `media_disk_uuid` | the library: `shows`, `movies`, `audiobooks`, `podcasts`, `books` |
+| 1 TB external USB HDD | `/srv/backup` | `backup_disk_uuid` | the nightly backup ([operations.md](operations.md#backups)) |
+
+`roles/host/tasks/disks.yml` mounts each HDD by its **filesystem UUID** (never `/dev/sdX`,
+which can change between boots, least of all for USB), ext4, with
+`nofail,x-systemd.device-timeout=10s,noatime,nodev,nosuid,noexec`: a missing disk costs the
+boot at most ten seconds and never drops it into emergency mode, and nothing on either disk
+can be executed or act as a device node. An empty UUID skips that disk with a message (the
+library then lives on the SSD; the backup writes nothing). A UUID that is set but not attached
+stops provisioning for the library disk and only warns for the backup disk, which may well be
+unplugged.
+
+While a configured disk is **not** mounted its mountpoint is an empty directory with the
+immutable attribute (`chattr +i`), so nothing can be written there: the media containers,
+whose library folders then do not exist, fail to start rather than serve or rescan an empty
+library, and the backup cannot fill the SSD. A drop-in orders Docker after
+`srv-media.mount` at boot. Provisioning reads back which filesystem is mounted where, and
+creates the library folders as `media:media`, mode `2775` (setgid, group-writable: what
+`admin` copies in stays in the `media` group), and the backup folders as `root`, `0700`. It
+refuses to mount over a mountpoint that has files of its own (they would vanish under the
+disk) and names the fix. Formatting and finding the UUIDs is in
+[RUNBOOK.md](../RUNBOOK.md#disks).
 
 ## fail2ban
 

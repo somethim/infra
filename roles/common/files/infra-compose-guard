@@ -6,13 +6,15 @@
 
 <model.json> is `docker compose config --no-env-resolution --format json` for
 <stack_dir>/docker-compose.yml; <stack> is database, portfolio, hypernova,
-tunnel or ai; the repositories are the app images /etc/infra/host.env allows for
+tunnel, ai or media; the repositories are the app images /etc/infra/host.env allows for
 that stack (none for the others, whose images must be digest-pinned).
 --tailscale-ip is the host's Tailscale IPv4 (TAILSCALE_IP in host.env): the
 only address a port may be published on, and only by the services TAILNET_PORTS
 names, as "${TAILSCALE_IP}:<port>:<port>". --service-user is the account the
-host made for a hardened stack (ai): every service there runs as it, with a
-mem_limit, cap_drop ALL and no-new-privileges.
+host made for a hardened stack (ai, media): every service there runs as it,
+with a mem_limit, cap_drop ALL and no-new-privileges. Bind mounts: only the
+BIND_MOUNTS library folders under /srv/media, each at its fixed target, read-only
+except Audiobookshelf's audiobooks and podcasts.
 infra-apply runs this on every stack of a bundle before anything changes.
 Prints one summary line on success; prints `docker-compose.yml: <reason>` and
 exits 1 on a refusal. Installed as /usr/local/libexec/infra-compose-guard.
@@ -31,14 +33,21 @@ AUTOHEAL_LABEL = re.compile(r"^autoheal$")
 # Tailscale policy grants them to the owner alone (RUNBOOK.md).
 TAILNET_PORTS = {
     ("ai", "open-webui"): 8080,
+    ("media", "jellyfin"): 8096,
+    ("media", "audiobookshelf"): 13378,
+    ("media", "kavita"): 5000,
 }
 TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
 TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
 # The only services that may reserve a device: the NVIDIA GPU, all of it, nothing else.
-GPU_SERVICES = {("ai", "ollama")}
+GPU_SERVICES = {("ai", "ollama"), ("media", "jellyfin")}
 GPU_DEVICE = {"driver": "nvidia", "count": -1, "capabilities": ["gpu"]}
 # The only bind mounts: (stack, service) -> {host source: (container target, read-only)}.
-BIND_MOUNTS = {}
+BIND_MOUNTS = {
+    ("media", "jellyfin"): {"/srv/media/shows": ("/media/shows", True), "/srv/media/movies": ("/media/movies", True)},
+    ("media", "audiobookshelf"): {"/srv/media/audiobooks": ("/audiobooks", False), "/srv/media/podcasts": ("/podcasts", False)},
+    ("media", "kavita"): {"/srv/media/books": ("/books", True)},
+}
 
 STACKS = {
     "database": {
@@ -85,6 +94,18 @@ STACKS = {
         "labels": AUTOHEAL_LABEL,
         "container_networks": {"ollama": {"ai", "llm"}, "ollama-pull": {"ai"}, "open-webui": {"ai"}},
         "container_env_files": {"open-webui": {"open-webui.env"}},
+        "hardened": True,
+    },
+    # The owner's media, reachable only over the tailnet; no secrets at all.
+    "media": {
+        "networks": {"media"},
+        "volumes": {name: {"name": name, "external": True} for name in
+                    ("jellyfin-config", "jellyfin-cache", "audiobookshelf-config", "audiobookshelf-metadata", "kavita-config")},
+        "containers": {"jellyfin", "audiobookshelf", "kavita"},
+        "env_files": (),
+        "labels": AUTOHEAL_LABEL,
+        "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}},
+        "container_env_files": {},
         "hardened": True,
     },
 }
@@ -346,7 +367,7 @@ def main():
             app_repos.add(arg)
     spec_for = STACKS[stack]
     bundle_env_files = {os.path.join(project, name) for name in spec_for["env_files"]}
-    allowed_env_list = ", ".join(spec_for["env_files"])
+    allowed_env_list = ", ".join(spec_for["env_files"]) or "no env file"
 
     raw_ports = {}
     entries = sorted(os.listdir(project)) if os.path.isdir(project) else []
@@ -433,7 +454,8 @@ def main():
             for entry in spec.get("env_file") or []:
                 path = os.path.normpath(str(entry.get("path") if isinstance(entry, dict) else entry))
                 if path not in mine:
-                    refuse(f"service {name} reads env_file {show(path)}; in the {stack} stack only {', '.join(sorted(container_env_files))} read an env file, each its own")
+                    readers = ", ".join(sorted(container_env_files)) or "no service"
+                    refuse(f"service {name} reads env_file {show(path)}; in the {stack} stack {readers} may read an env file, each its own")
         if spec_for.get("hardened"):
             check_hardened(name, spec, service_user)
         port = check_ports(stack, name, spec, raw_ports, tailscale_ip)

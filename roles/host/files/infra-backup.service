@@ -1,0 +1,16 @@
+[Unit]
+Description=Nightly backup to the external disk (/srv/backup)
+Documentation=file:///usr/local/sbin/infra-backup
+After=docker.service
+Wants=docker.service
+OnFailure=infra-backup-failed.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infra-backup
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+TimeoutStartSec=6h

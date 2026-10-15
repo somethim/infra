@@ -33,6 +33,9 @@ for the account the Ubuntu installer creates; use yours.
 | [11. Day-2 operations](#11-day-2-operations) | from then on |
 | [12. GPU, AI and media](#12-gpu-ai-and-media) | the server, Tailscale, GitHub, your devices |
 
+Restoring anything from the backup disk is in
+[Restoring from the backup disk](#restoring-from-the-backup-disk) (section 11).
+
 Tailscale (4) comes before the first provision (5) because that run joins the server to the
 tailnet and asks for the auth key made in 4.
 
@@ -123,7 +126,8 @@ it cannot do.
 
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
-   (Open WebUI on 8080, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
+   (Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
+   [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
    ```json
@@ -134,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -370,7 +374,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22/tcp and 8080/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -389,7 +393,8 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: bundle accepted: 17 files, manifest checksums match
+infra-apply: compose model accepted: 3 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, ...
+infra-apply: bundle accepted: 19 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -398,20 +403,21 @@ infra-apply: starting portfolio
 infra-apply: starting hypernova
 infra-apply: starting tunnel
 infra-apply: starting ai
+infra-apply: starting media
 infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 are bound to 100.x.y.z alone
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
 
 PostgreSQL initialises the empty `pgdata-v18` volume on this first start, and `provision.sql`
 creates the `prizm` and `portfolio` roles and databases; the apps create their schemas. The
-portfolio can take up to 180 s to report healthy. The `ai` stack needs the GPU and the
-`WEBUI_SECRET_KEY` secret; set both up first ([section 12](#12-gpu-ai-and-media)), since a
-release refuses without them. In the Cloudflare dashboard the tunnel now
+portfolio can take up to 180 s to report healthy. The `ai` and `media` stacks need the GPU,
+the `WEBUI_SECRET_KEY` secret and (for a library off the SSD) the disks; set them up first
+([section 12](#12-gpu-ai-and-media)), since a release refuses without the first two. In the Cloudflare dashboard the tunnel now
 shows **Healthy** with connections.
 
 The smoke step that follows checks the hostnames through Cloudflare. Until section 10 they
@@ -637,6 +643,55 @@ provision with that role's tag, or run `release` for `postgres` (a minor version
 major is a dump and restore, [docs/database.md](docs/database.md#upgrades)) and `cloudflared`
 (`stack/tunnel`).
 
+### Restoring from the backup disk
+
+The external disk holds, under `/srv/backup` (root only): `postgres/<date>.sql.gz` (the newest
+14 nights of `pg_dumpall`), `apps/<date>/<volume>.tar.gz` (the newest 7 nights of the apps'
+own volumes: Jellyfin's config, Audiobookshelf's config and metadata, Kavita's config, Open
+WebUI's data, `portfolio-media`, hypernova's storage) and `media/` (a mirror of
+`audiobooks`, `books` and `podcasts`, as of the last night). Movies, shows and the Ollama models
+are not backed up: re-rip or re-download them. Check last night's run with
+`ssh admin@infra-host journalctl -u infra-backup.service --since yesterday`; a failed one also
+logs "the nightly backup FAILED" at error priority.
+
+**One app's data** (here Jellyfin; the same for `audiobookshelf-config`,
+`audiobookshelf-metadata`, `kavita-config`, `open-webui-data`): stop its container, empty the
+volume, unpack, start. The volume's root stays the service account's; the tar keeps numeric
+owners.
+
+```bash
+ssh -t admin@infra-host
+sudo docker stop jellyfin
+v="$(sudo docker volume inspect --format '{{.Mountpoint}}' jellyfin-config)"
+sudo find "$v" -mindepth 1 -delete
+sudo tar -xzpf /srv/backup/apps/<date>/jellyfin-config.tar.gz -C "$v"
+sudo docker start jellyfin
+```
+
+**The database**, all roles and databases at once, into the running cluster (a dump of the
+whole cluster; restoring it over existing databases fails on objects that exist, so for one
+app drop its database first, or restore into a fresh `pgdata-v18` after a reinstall):
+
+```bash
+sudo docker stop portfolio prizm-provider prizm-web
+gzip -cd /srv/backup/postgres/<date>.sql.gz | sudo docker exec -i postgresql psql -U postgres -d postgres
+sudo docker start portfolio prizm-provider prizm-web
+```
+
+Restore `portfolio-media` from the same night as the dump: the portfolio's `media` table is a
+ledger of that volume ([docs/database.md](docs/database.md#backups)).
+
+**The media mirror**, after replacing the internal disk (format it as in
+[Disks](#disks), put the new UUID in `production.yml`, provision):
+
+```bash
+sudo rsync -a /srv/backup/media/ /srv/media/      # as root, owners, groups and modes come back as they were
+```
+
+**A new server**: install and provision as in sections 3–9 with the same `production.yml`
+(the backup disk's UUID included), release once so every volume exists, then restore each
+app volume and the database as above.
+
 ### More recipes
 
 PostgreSQL access, disk, backups, a major PostgreSQL upgrade, Watchtower and a hung site are
@@ -644,10 +699,59 @@ in [docs/operations.md](docs/operations.md).
 
 ## 12. GPU, AI and media
 
-**Owner action.** Turns on what the RTX 2060 is for: Ollama with Open WebUI for you alone.
-None of it is public: it is reachable only over the tailnet, on the server's Tailscale address,
-and only by the Tailscale accounts the policy names (you). Do the steps in this order; each
-one names how to check it.
+**Owner action.** Turns on what the rest of the hardware is for: Ollama with Open WebUI on the
+RTX 2060, Jellyfin, Audiobookshelf and Kavita on the 1 TB internal HDD, and a nightly backup to
+the 1 TB external USB HDD. None of it is public: it is reachable only over the tailnet, on the
+server's Tailscale address, and only by the Tailscale accounts the policy names (you). Video
+never goes through the Cloudflare Tunnel. Do the steps in this order; each one says how to
+check it.
+
+| Service | Address (on the tailnet) | Port |
+| --- | --- | --- |
+| Open WebUI | `http://infra-host:8080` | 8080 |
+| Jellyfin | `http://infra-host:8096` | 8096 |
+| Audiobookshelf | `http://infra-host:13378` | 13378 |
+| Kavita | `http://infra-host:5000` | 5000 |
+
+### Disks
+
+At the server's console (or `ssh admin@infra-host`), with both HDDs connected. **Formatting
+erases the disk**: check the model, size, serial and transport twice, and never touch the SSD
+that holds Ubuntu (the one with the `ubuntu-vg` partitions).
+
+```bash
+lsblk -o NAME,SIZE,MODEL,SERIAL,TRAN,MOUNTPOINTS
+```
+
+The internal 1 TB HDD shows `TRAN` `sata`, the external one `usb`. Below, `/dev/sdX` is the
+internal disk and `/dev/sdY` the external one; use the names `lsblk` printed. For each of the
+two (here the internal one; the external one the same way with `-L backup`):
+
+```bash
+sudo wipefs -a /dev/sdX                          # removes every old partition table and signature
+printf 'label: gpt\ntype=linux\n' | sudo sfdisk /dev/sdX   # one GPT partition over the whole disk: /dev/sdX1
+sudo mkfs.ext4 -L media /dev/sdX1                # the external one: sudo mkfs.ext4 -L backup /dev/sdY1
+sudo blkid /dev/sdX1 /dev/sdY1                   # UUID="…" of each
+```
+
+Copy the two `UUID="…"` values into `production.yml` and commit them to `master`:
+
+```yaml
+media_disk_uuid: "<UUID of /dev/sdX1>"
+backup_disk_uuid: "<UUID of /dev/sdY1>"
+```
+
+Provisioning (below) mounts them by UUID at `/srv/media` and `/srv/backup`
+(`nofail,x-systemd.device-timeout=10s`, so the server still boots in seconds with the external
+disk unplugged), creates the library folders `shows`, `movies`, `audiobooks`, `podcasts` and
+`books` (owned by the `media` account, setgid, group-writable) and keeps the backup disk
+root-only. While a configured disk is missing its mountpoint stays empty and unwritable, so
+nothing lands on the SSD in its place. Check after provisioning:
+
+```bash
+ssh admin@infra-host findmnt /srv/media /srv/backup        # both, ext4, by UUID
+ssh admin@infra-host ls -l /srv/media                      # the five folders, drwxrwsr-x media media
+```
 
 ### Tailscale grants
 
@@ -656,11 +760,11 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
 
 `tag:infra-ci` gets no new port. Check from the laptop once the release below is done:
-`nc -z -w 5 infra-host 8080` succeeds, and `nc -z -w 5 192.168.1.50 8080` (the LAN address)
+`nc -z -w 5 infra-host 8096` succeeds, and `nc -z -w 5 192.168.1.50 8096` (the LAN address)
 times out.
 
 ### The Open WebUI secret
@@ -674,8 +778,8 @@ know it.
 
 ### Provision, reboot and check the GPU
 
-`production.yml` already has `gpu_enabled: true` and `nvidia_driver_major: 580`. On the server
-(console or `ssh admin@infra-host`), check that Ubuntu offers that branch for the card:
+`production.yml` already has `gpu_enabled: true` and `nvidia_driver_major: 580`. On the server,
+check that Ubuntu offers that branch for the card:
 
 ```bash
 lspci | grep -i nvidia                       # the RTX 2060 (TU106)
@@ -691,16 +795,18 @@ ansible-playbook -u admin --ask-become-pass provision.yml
 
 The `gpu` role installs the driver and the NVIDIA Container Toolkit; `host` writes the
 Tailscale address into `/etc/infra/host.env`, turns on non-local binds, adds the second
-firewall hook, the `ai` and `llm` networks, the `ai` account and its two volumes. A first run
-ends the `gpu` part with "The NVIDIA driver was just installed or updated and is not loaded
-yet … Reboot when it suits you": the driver loads at the next boot. Reboot (the sites are back
-when Docker has restarted the stacks, about a minute), then verify:
+firewall hook, the `ai`, `llm` and `media` networks, the `ai` and `media` accounts (and puts
+`admin` in the `media` group) with their volumes, mounts the disks and installs the nightly
+backup. A first run ends the `gpu` part with "The NVIDIA driver was just installed or updated
+and is not loaded yet … Reboot when it suits you": the driver loads at the next boot. Reboot
+(the sites are back when Docker has restarted the stacks, about a minute), then verify:
 
 ```bash
 ssh -t admin@infra-host sudo reboot
 ansible-playbook -u admin --ask-become-pass provision.yml --tags gpu,host
 ssh admin@infra-host nvidia-smi                        # the RTX 2060, 12288MiB, driver 580.x
 ssh admin@infra-host sudo docker info --format '{{json .Runtimes}}'    # includes "nvidia"
+ssh admin@infra-host systemctl list-timers infra-backup.timer           # next run tonight, 02:30 UTC
 ```
 
 The second run passes "Require nvidia-smi to see the GPU through the loaded driver". With
@@ -709,17 +815,17 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 
 ### Release
 
-Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` stack accepted with
-"no host port but open-webui 100.x.y.z:8080 on the tailnet … the GPU only for ollama", "starting
-ai", and "the tailnet-only ports open-webui:8080 are bound to 100.x.y.z alone". The images are
-large (Open WebUI about 4 GB); the first pull takes a while. `ollama-pull` then downloads
-`qwen2.5:7b` (about 4.7 GB) in the background:
+Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
+accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
+"the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 are bound
+to 100.x.y.z alone". The images are large (Open WebUI about 4 GB); the first pull takes a
+while. `ollama-pull` then downloads `qwen2.5:7b` (about 4.7 GB) in the background:
 
 ```bash
 ssh admin@infra-host sudo docker logs -f ollama-pull      # ends with "success"
 ssh admin@infra-host sudo docker exec ollama nvidia-smi -L   # GPU 0: NVIDIA GeForce RTX 2060 (inside the container)
 ssh admin@infra-host sudo docker exec ollama ollama ps    # after a chat: 100% GPU
-ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # only open-webui 100.x.y.z:8080->8080/tcp
+ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # only the four, each on 100.x.y.z
 ```
 
 hypernova's AI features use the same Ollama over the internal `llm` network from this release
@@ -727,18 +833,56 @@ on.
 
 ### First logins
 
-**Open WebUI**, right after the release, before anyone else could: open
-`http://infra-host:8080` on the laptop (on the tailnet) and **sign up**. The first account
-becomes the admin; use a password from your password manager. Then **Admin Panel → Settings →
-General → Enable New Sign Ups: off**, and save. Any account that signed up before that waits
-as "pending" and can do nothing until you approve it; delete it under **Admin Panel → Users**.
-The model list shows `qwen2.5:7b` once `ollama-pull` has finished.
+Right after the release, before anyone else could, from the laptop (on the tailnet). Use a
+password from your password manager for each.
+
+1. **Open WebUI**, `http://infra-host:8080`: **sign up**; the first account becomes the
+   admin. Then **Admin Panel → Settings → General → Enable New Sign Ups: off**, and save. Any
+   account that signed up before that waits as "pending" and can do nothing until you approve
+   it; delete it under **Admin Panel → Users**. The model list shows `qwen2.5:7b` once
+   `ollama-pull` has finished.
+2. **Jellyfin**, `http://infra-host:8096`: the setup wizard. Create the admin user; add two
+   libraries: **Shows** (content type Shows, folder `/media/shows`) and **Movies** (Movies,
+   `/media/movies`); leave "Allow remote connections" on (the tailnet is "remote" to Jellyfin)
+   and finish. Then **Dashboard → Playback → Transcoding**: Hardware acceleration **NVIDIA
+   NVENC**, enable hardware decoding for H.264, HEVC, VC-1, VP9 (the RTX 2060 has no AV1
+   decoder), and **Allow encoding in HEVC format**; save. A transcoded film shows the
+   `ffmpeg` process in `nvidia-smi` on the server.
+3. **Audiobookshelf**, `http://infra-host:13378`: create the root user. **Settings →
+   Libraries → Add**: **Audiobooks** (media type Books, folder `/audiobooks`) and **Podcasts**
+   (media type Podcasts, folder `/podcasts`).
+4. **Kavita**, `http://infra-host:5000`: create the admin account; **Server settings →
+   Libraries → Add library**: type Book (or Comic/Manga for those), folder `/books`.
+
+Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/audiobooks` and
+`/podcasts` (podcast downloads, covers).
+
+### Copying media in
+
+`admin` is in the `media` group, and the library folders are setgid `media` and
+group-writable, so `admin` copies straight into them over the tailnet and the files stay
+readable by the containers. From the laptop:
+
+```bash
+rsync -rtpvP --chmod=D2775,F664 ~/Videos/x admin@infra-host:/srv/media/movies/
+rsync -rtpvP --chmod=D2775,F664 ~/Shows/Show\ Name admin@infra-host:/srv/media/shows/
+rsync -rtpvP --chmod=D2775,F664 ~/Audiobooks/Author admin@infra-host:/srv/media/audiobooks/
+rsync -rtpvP --chmod=D2775,F664 ~/Books/ admin@infra-host:/srv/media/books/
+```
+
+`-a` would also try to keep the laptop's owner and group, which `admin` cannot set; `-rtp`
+with `--chmod` keeps the times and gives folders `2775` and files `664`. (The first `admin`
+login after provisioning picks up the new group; an open SSH session does not.) Name things
+the way the apps expect: `shows/Show Name (2019)/Season 01/Show Name S01E01.mkv`,
+`movies/Film (2001)/Film (2001).mkv`, `audiobooks/Author/Book/…`. Jellyfin and Kavita notice
+new files on their next scan (or **Scan library** now).
 
 ### Phones and TVs
 
 Install Tailscale on the device (App Store / Play Store; Android TV and Apple TV have it too)
 and sign in with the same account as the laptop, so it is one of `autogroup:admin`'s devices.
-Then use `http://infra-host:8080` (MagicDNS) or the server's `100.x.y.z` address
-(`tailscale ip -4 infra-host` on the laptop). Nothing works from a device that is not on the
-tailnet, by design.
-
+Then use the addresses in the table above, or the server's `100.x.y.z` address (`tailscale ip
+-4 infra-host` on the laptop) where the app wants an IP: the Jellyfin app (server
+`http://infra-host:8096`), the Audiobookshelf app (`http://infra-host:13378`), Kavita in the
+browser or an OPDS reader, and Open WebUI in the browser. Nothing works from a device that is
+not on the tailnet, by design.

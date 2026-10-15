@@ -134,8 +134,8 @@ build "$work/vars.json" "$work/good-again.tgz" || { cat "$work/build.log"; echo 
 cmp -s "$work/good.tgz" "$work/good-again.tgz" || { echo "FAIL build-bundle.sh is not deterministic"; exit 1; }
 echo "ok   bundle: two builds from the same vars are byte-identical"
 if tar -tvzf "$work/good.tgz" | grep -qv '^-'; then tar -tvzf "$work/good.tgz"; echo "FAIL the bundle holds entries other than regular files"; exit 1; fi
-[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 17 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 17 files"; exit 1; }
-echo "ok   bundle: 17 file entries, no directories"
+[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 19 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 19 files"; exit 1; }
+echo "ok   bundle: 19 file entries, no directories"
 unpack "$work/good.tgz" "$work/good"
 grep -qxF "RELEASE_COMMIT=$(git -C "$root" rev-parse HEAD)" "$work/good/release.env" || { echo "FAIL release.env does not name the checked-out commit"; exit 1; }
 grep -qx 'RELEASE_MODE=latest' "$work/good/release.env" || { echo "FAIL a plain build is not a latest release"; exit 1; }
@@ -157,9 +157,9 @@ for secret in "${secrets[@]}"; do
   want="$(owner_of "$secret" | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')"
   [ "$found" = "$want" ] || { echo "FAIL a secret is in '$found', expected only '$want'"; exit 1; }
 done
-for file in portfolio/.env hypernova/.env ai/.env; do
-  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODEL)=' "$work/good/$file"; then
-    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the ai account and the model"; exit 1
+for file in portfolio/.env hypernova/.env ai/.env media/.env; do
+  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODEL|MEDIA_UID|MEDIA_GID)=' "$work/good/$file"; then
+    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts and the model"; exit 1
   fi
 done
 grep -qx 'OLLAMA_MODEL=qwen2.5:7b' "$work/good/ai/.env" || { echo "FAIL ai/.env does not name production.yml's ollama_model"; exit 1; }
@@ -236,24 +236,26 @@ echo "ok   bundle refuses: an unpinned third-party image"
 new_state
 expect_ok "the bundle build-bundle.sh renders from the real templates" "RELEASE OK: [0-9]{8}T[0-9]{6}Z-[0-9a-f]{12} is current, following :latest, auto-updates on$" "$work/good.tgz" release
 first_id="$(current_release)"
-for stack in database portfolio hypernova tunnel ai; do
+for stack in database portfolio hypernova tunnel ai media; do
   grep -q "compose model accepted: .* in the $stack stack, no privileged settings" "$work/out" || { cat "$work/out"; echo "FAIL the checked-in $stack stack did not pass the compose guard"; exit 1; }
 done
 grep -qF "compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for ollama, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU"; exit 1; }
-echo "ok   the five checked-in stacks pass the compose guard"
+grep -qF "compose model accepted: 3 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for jellyfin, no Docker socket" "$work/out" ||
+  { cat "$work/out"; echo "FAIL the media stack summary does not name its tailnet ports, library mounts and GPU"; exit 1; }
+echo "ok   the six checked-in stacks pass the compose guard"
 [ -f "$state/stack/releases/$first_id/.verified" ] || { echo "FAIL the release was not marked verified"; exit 1; }
-for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env manifest.sha256; do
+for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env media/.env manifest.sha256; do
   [ "$(stat -c %a "$state/stack/current/$file")" = 600 ] || { echo "FAIL $file is not 0600 in the release"; exit 1; }
 done
 [ "$(stat -c %a "$state/stack/current/portfolio/docker-compose.yml")" = 644 ] || { echo "FAIL docker-compose.yml is not 0644"; exit 1; }
 [ "$(cat "$state/login.stdin")" = ghp_HarnessToken0123456789 ] || { echo "FAIL docker login did not receive the token on stdin"; exit 1; }
 grep -q '^login ghcr.io --username infra-bot --password-stdin$' "$state/calls" || { echo "FAIL docker login did not use the GHCR username"; exit 1; }
 cmp -s "$state/psql.stdin" "$work/good/database/provision.sql" || { echo "FAIL provision.sql was not fed to psql"; exit 1; }
-order="$(grep -nE '^compose .*/(database|portfolio|hypernova|tunnel|ai) (pull --quiet|up -d.*)$|^exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d postgres$' "$state/calls" | sed -E 's,^[0-9]+:,,; s,^compose .*/(database|portfolio|hypernova|tunnel|ai) ,\1 ,; s,^exec .*,psql,')"
-want_order="$(printf '%s\n' 'database pull --quiet' 'portfolio pull --quiet' 'hypernova pull --quiet' 'tunnel pull --quiet' 'ai pull --quiet' 'database up -d --wait --remove-orphans' psql \
-  'portfolio up -d --remove-orphans' 'hypernova up -d --remove-orphans' 'tunnel up -d --remove-orphans' 'ai up -d --remove-orphans')"
-[ "$order" = "$want_order" ] || { printf '%s\n' "$order"; echo "FAIL the stacks did not start in the order database, provision.sql, portfolio, hypernova, tunnel, ai"; exit 1; }
+order="$(grep -nE '^compose .*/(database|portfolio|hypernova|tunnel|ai|media) (pull --quiet|up -d.*)$|^exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d postgres$' "$state/calls" | sed -E 's,^[0-9]+:,,; s,^compose .*/(database|portfolio|hypernova|tunnel|ai|media) ,\1 ,; s,^exec .*,psql,')"
+want_order="$(printf '%s\n' 'database pull --quiet' 'portfolio pull --quiet' 'hypernova pull --quiet' 'tunnel pull --quiet' 'ai pull --quiet' 'media pull --quiet' 'database up -d --wait --remove-orphans' psql \
+  'portfolio up -d --remove-orphans' 'hypernova up -d --remove-orphans' 'tunnel up -d --remove-orphans' 'ai up -d --remove-orphans' 'media up -d --remove-orphans')"
+[ "$order" = "$want_order" ] || { printf '%s\n' "$order"; echo "FAIL the stacks did not start in the order database, provision.sql, portfolio, hypernova, tunnel, ai, media"; exit 1; }
 grep -qE '^compose --file [^ ]*/stack/current/portfolio/docker-compose.yml' "$state/calls" || { echo "FAIL portfolio did not start from the current link"; exit 1; }
 for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl route www.arbikullakshi.com http://172.18.0.2:80/" \
   "curl route hypernova.arbikullakshi.com http://172.18.0.2:80/" "curl route hypernova.arbikullakshi.com http://172.18.0.2:80/api/health" \
@@ -261,7 +263,7 @@ for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl
   grep -qxF "$want" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not check: $want"; exit 1; }
 done
 [ "$(grep -c '^curl ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
-grep -qF "infra-apply: the tailnet-only ports open-webui:8080 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
+grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
 printf '%s\n' "portfolio=$portfolio_repo@$(d 11)" "prizm-provider=$provider_repo@$(d 21)" "prizm-web=$web_repo@$(d 31)" |
   cmp -s - "$state/stack/current/running-images.env" || { cat "$state/stack/current/running-images.env"; echo "FAIL running-images.env does not record the running digests"; exit 1; }
@@ -353,6 +355,12 @@ expect_refused "Open WebUI bound to every interface" "open-webui publishes .*0\\
 new_state
 printf '{"8080/tcp":[{"HostIp":"%s","HostPort":"8080"}],"9090/tcp":[{"HostIp":"%s","HostPort":"9090"}]}\n' "$tailscale_ip" "$tailscale_ip" >"$state/ports/open-webui"
 expect_refused "Open WebUI with a second binding" "open-webui publishes .*9090.*, expected only" "$work/good.tgz" release
+new_state
+tailnet_binding jellyfin 8096 192.168.1.50
+expect_refused "Jellyfin on the LAN address" "jellyfin publishes .*192\\.168\\.1\\.50.*, expected only $tailscale_ip:8096" "$work/good.tgz" release
+new_state
+rm "$state/ports/kavita"
+expect_refused "Kavita not published at all" "kavita publishes \\{\\}, expected only $tailscale_ip:5000" "$work/good.tgz" release
 echo "ok   verify requires each tailnet-only port bound to the Tailscale address alone"
 
 ### Refused before anything changes
@@ -394,7 +402,7 @@ refused_bundle "a hard link entry" "is not a regular file" "$work/hardlink.tgz"
 
 variant withdir
 manifest "$work/withdir"
-(cd "$work/withdir" && tar --create --gzip --file "$work/withdir.tgz" --owner=0 --group=0 manifest.sha256 release.env ghcr.env database portfolio hypernova tunnel ai)
+(cd "$work/withdir" && tar --create --gzip --file "$work/withdir.tgz" --owner=0 --group=0 manifest.sha256 release.env ghcr.env database portfolio hypernova tunnel ai media)
 refused_bundle "a directory entry" "unexpected entry: database/" "$work/withdir.tgz"
 
 variant duplicate
@@ -550,6 +558,9 @@ expect_refused "a host.env naming a LAN address as the Tailscale address" "TAILS
 new_state
 sed -i 's,^AI_USER=.*,AI_USER=0:0,' "$state/host.env"
 expect_refused "a host.env naming root as the ai account" "AI_USER is not the <uid>:<gid> of the ai account" "$work/good.tgz" release
+new_state
+sed -i '/^MEDIA_USER=/d' "$state/host.env"
+expect_refused "a host.env without the media account" "MEDIA_USER is not the <uid>:<gid> of the media account" "$work/good.tgz" release
 rm "$state/host.env"
 expect_refused "a host that was never provisioned" "host\\.env does not exist; run provisioning" "$work/good.tgz" release
 
@@ -610,7 +621,7 @@ compose_case "Open WebUI on a LAN address by default" ai 'service open-webui pub
 compose_case "a second Open WebUI port" ai 'service open-webui publishes \[".*8080:8080", ".*:8081:8080"\]' "text = text.replace('$owui_port', '$owui_port      - \"\${TAILSCALE_IP}:8081:8080\"\n')"
 compose_case "ports in flow style" ai "service open-webui writes ports in a form other than a list" "text = text.replace('    ports:\n$owui_port', '    ports: [\"\${TAILSCALE_IP}:8080:8080\"]\n')"
 compose_case "Ollama published on the tailnet" ai "service ollama sets ports, which publishes a host port" "text = text.replace('    container_name: ollama\n', '    container_name: ollama\n    ports:\n      - \"\${TAILSCALE_IP}:11434:11434\"\n')"
-compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
 compose_case "Ollama with deploy labels" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('    deploy:\n      resources:', '    deploy:\n      labels:\n        x-extra: \"1\"\n      resources:', 1)"
 compose_case "Ollama reserving more than the GPU" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('capabilities: [gpu]', 'capabilities: [gpu, utility]')"
 compose_case "Ollama as root" ai 'service ollama runs as "0:0"; it must run as 2001:2001' "text = text.replace('    container_name: ollama\n    user: \"\${AI_UID}:\${AI_GID}\"\n', '    container_name: ollama\n    user: \"0:0\"\n')"
@@ -618,7 +629,7 @@ compose_case "Open WebUI without a memory limit" ai "service open-webui sets no 
 compose_case "Open WebUI keeping its capabilities" ai "service open-webui does not drop every capability" "text = text.replace('    container_name: open-webui\n    user: \"\${AI_UID}:\${AI_GID}\"\n    mem_limit: 2g\n    restart: always\n    cap_drop: [ALL]\n', '    container_name: open-webui\n    user: \"\${AI_UID}:\${AI_GID}\"\n    mem_limit: 2g\n    restart: always\n')"
 compose_case "Ollama on the data network" ai 'network data is "data"; the ai stack may only join' "text = text.replace('      - ai\n      - llm\n', '      - ai\n      - llm\n      - data\n', 1).replace('networks:\n  ai:\n', 'networks:\n  data:\n    name: data\n    external: true\n  ai:\n')"
 compose_case "Open WebUI on llm" ai "service open-webui joins llm; open-webui may only join ai" "text = text.replace('    depends_on:\n      - ollama\n    networks:\n      - ai\n', '    depends_on:\n      - ollama\n    networks:\n      - ai\n      - llm\n')"
-compose_case "Ollama reading Open WebUI's secret" ai 'service ollama reads env_file ".*open-webui.env"; in the ai stack only open-webui read' "text = text.replace('    environment:\n      # The models', '    env_file: open-webui.env\n    environment:\n      # The models')"
+compose_case "Ollama reading Open WebUI's secret" ai 'service ollama reads env_file ".*open-webui.env"; in the ai stack open-webui may read an env file' "text = text.replace('    environment:\n      # The models', '    env_file: open-webui.env\n    environment:\n      # The models')"
 compose_case "a bind mount into Ollama" ai 'service ollama has a "bind" mount of "/srv/media"' "text = text.replace('    volumes:\n      - type: volume\n        source: ollama-models\n', '    volumes:\n      - /srv/media:/media:ro\n      - type: volume\n        source: ollama-models\n')"
 compose_case "a Watchtower label on Ollama" ai "service ollama sets the label com.centurylinklabs.watchtower.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - com.centurylinklabs.watchtower.enable=true\n', 1)"
 compose_case "a service named apart from its container" ai 'service pull names its container "ollama-pull"' "text = text.replace('  ollama-pull:\n    image:', '  pull:\n    image:')"
@@ -626,13 +637,29 @@ compose_case "the tailnet port moved to another service name" ai "service webui 
 compose_case "the models volume created by the release" ai 'volume ollama-models is "ollama-models"; the ai stack keeps its data in "ollama-models" \(external\)' "text = text.replace('  ollama-models:\n    name: ollama-models\n    external: true\n', '  ollama-models:\n    name: ollama-models\n')"
 compose_case "hypernova's web app on llm" hypernova "service web joins llm; prizm-web may only join edge" "text = text.replace('    networks:\n      - edge\n    labels:', '    networks:\n      - edge\n      - llm\n    labels:')"
 
+# The media stack: tailnet-only, hardened, only the library folders, the GPU for Jellyfin alone.
+shows_mount='      - type: bind\n        source: /srv/media/shows\n        target: /media/shows\n        read_only: true\n'
+compose_case "Jellyfin on every interface" media 'service jellyfin publishes \["0.0.0.0:8096:8096"\]' "text = text.replace('\${TAILSCALE_IP}:8096:8096', '0.0.0.0:8096:8096')"
+compose_case "Kavita published on a second port" media 'service kavita publishes \[".*:5000:5000", ".*:5001:5001"\]' "text = text.replace('      - \"\${TAILSCALE_IP}:5000:5000\"\n', '      - \"\${TAILSCALE_IP}:5000:5000\"\n      - \"\${TAILSCALE_IP}:5001:5001\"\n')"
+compose_case "the whole disk in Jellyfin" media 'service jellyfin has a "bind" mount of "/srv/media"; a release may only use its named volumes and tmpfs, and /srv/media/movies, /srv/media/shows' "text = text.replace('        source: /srv/media/shows\n', '        source: /srv/media\n')"
+compose_case "Jellyfin writing the library" media 'service jellyfin mounts /srv/media/shows as .*; it may only mount it at /media/shows read-only' "text = text.replace('$shows_mount', '$shows_mount'.replace('        read_only: true\n', ''))"
+compose_case "a library folder in the short syntax" media 'service kavita mounts /srv/media/books as .*"bind": \{\}' "text = text.replace('      - type: bind\n        source: /srv/media/books\n        target: /books\n        read_only: true\n        bind:\n          create_host_path: false\n', '      - /srv/media/books:/books:ro\n')"
+compose_case "a shared mount propagation" media 'service jellyfin mounts /srv/media/movies as' "text = text.replace('        target: /media/movies\n        read_only: true\n        bind:\n          create_host_path: false\n', '        target: /media/movies\n        read_only: true\n        bind:\n          create_host_path: false\n          propagation: rshared\n')"
+compose_case "the podcasts folder in Kavita" media 'service kavita has a "bind" mount of "/srv/media/podcasts"' "text = text.replace('        source: /srv/media/books\n', '        source: /srv/media/podcasts\n')"
+compose_case "the host's /etc in Audiobookshelf" media 'service audiobookshelf has a "bind" mount of "/etc"' "text = text.replace('        source: /srv/media/podcasts\n', '        source: /etc\n')"
+compose_case "Kavita as root" media 'service kavita runs as "0:0"; it must run as 2000:2000' "text = text.replace('    container_name: kavita\n    user: \"\${MEDIA_UID}:\${MEDIA_GID}\"\n', '    container_name: kavita\n    user: \"0:0\"\n')"
+compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
+compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
+compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read no env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
 # The guard on its own, against the resolved models of the checked-in stacks.
-for stack in database portfolio hypernova tunnel ai; do
+for stack in database portfolio hypernova tunnel ai media; do
   repos=()
   case "$stack" in
     portfolio) repos=("$portfolio_repo") ;;
     hypernova) repos=("$provider_repo" "$web_repo") ;;
     ai) repos=(--service-user=2001:2001) ;;
+    media) repos=(--service-user=2000:2000) ;;
   esac
   TAILSCALE_IP="$tailscale_ip" "$REAL_DOCKER" compose --file "$work/good/$stack/docker-compose.yml" --project-directory "$work/good/$stack" config --no-env-resolution --format json >"$work/$stack.json"
   python3 -I "$guard" "$work/$stack.json" "$work/good/$stack" "$stack" "--tailscale-ip=$tailscale_ip" "${repos[@]}" >"$work/guard.out" || { cat "$work/guard.out"; echo "FAIL the guard refuses the checked-in $stack stack"; exit 1; }
@@ -642,6 +669,7 @@ if python3 -I "$guard" "$work/ai.json" "$work/good/ai" ai --service-user=2001:20
 if python3 -I "$guard" "$work/ai.json" "$work/good/ai" ai --tailscale-ip=100.101.102.104 --service-user=2001:2001 >"$work/guard.out"; then echo "FAIL the guard accepted a port bound to another address"; exit 1; fi
 grep -qF "it may publish exactly tcp 8080 on 100.101.102.104" "$work/guard.out" || { cat "$work/guard.out"; echo "FAIL wrong refusal for a port on another address"; exit 1; }
 if python3 -I "$guard" "$work/ai.json" "$work/good/ai" ai --tailscale-ip=192.168.1.50 --service-user=2001:2001 >"$work/guard.out"; then echo "FAIL the guard took a LAN address for the Tailscale one"; exit 1; fi
+if python3 -I "$guard" "$work/media.json" "$work/good/media" media "--tailscale-ip=$tailscale_ip" --service-user=2001:2001 >"$work/guard.out"; then echo "FAIL the guard ran the media stack as the ai account"; exit 1; fi
 if python3 -I "$guard" "$work/hypernova.json" "$work/good/hypernova" hypernova >"$work/guard.out"; then echo "FAIL the guard accepted app images no host.env names"; exit 1; fi
 if python3 -I "$guard" "$work/portfolio.json" "$work/good/portfolio" crm >"$work/guard.out"; then echo "FAIL the guard accepted an unknown stack"; exit 1; fi
 echo "ok   the guard alone passes the checked-in stacks and needs the host's app repositories"
@@ -734,14 +762,14 @@ expect_refused "a container with an unreadable StartedAt" "not ready after 1s: p
 installed_state
 sleep 1
 touch "$state/vanished/c4"
-expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 8 listed containers could not be inspected" "$work/second.tgz" release
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 11 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
 
 installed_state
 sleep 1
-touch "$state/vanished/c1" "$state/vanished/c2" "$state/vanished/c3" "$state/vanished/c4" "$state/vanished/c5" "$state/vanished/c6" "$state/vanished/c7" "$state/vanished/c8"
-expect_refused "every listed container is gone before the inspect" "not ready after 1s: 8 of 8 listed containers could not be inspected" "$work/second.tgz" release
+for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11; do touch "$state/vanished/$c"; done
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 11 of 11 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
 
 installed_state

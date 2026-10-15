@@ -206,7 +206,7 @@ new_state() {
   mkdir -p "$state/stack" "$state/edge" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
     "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip" "$state/ports"
   printf 'name: edge\n' >"$state/edge/docker-compose.yml"
-  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 \
+  printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 MEDIA_USER=2000:2000 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
   # ollama-pull is a one-shot (restart: "no"): verify does not wait for it.
   printf '%s\n' \
@@ -217,11 +217,17 @@ new_state() {
     "c5 /cloudflared running always healthy tunnel" \
     "c6 /ollama running always healthy ai" \
     "c7 /ollama-pull exited no none ai" \
-    "c8 /open-webui running always healthy ai" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui; do
+    "c8 /open-webui running always healthy ai" \
+    "c9 /jellyfin running always healthy media" \
+    "c10 /audiobookshelf running always healthy media" \
+    "c11 /kavita running always healthy media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
+  tailnet_binding jellyfin 8096
+  tailnet_binding audiobookshelf 13378
+  tailnet_binding kavita 5000
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

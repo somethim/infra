@@ -5,7 +5,9 @@ Ubuntu Server 26.04 LTS, with no port open to the internet. The public reaches t
 through a **Cloudflare Tunnel** the server dials out to; SSH works only over **Tailscale**. It
 provisions the host, runs the edge Traefik proxy and the autonomous agents, and releases every
 stack: the shared `database`, two applications, `portfolio` and `hypernova`, the `tunnel`, and
-`ai` (Ollama and Open WebUI on the GPU, for the owner alone, over the tailnet only).
+for the owner alone, over the tailnet only, `ai` (Ollama and Open WebUI on the GPU) and `media`
+(Jellyfin, Audiobookshelf, Kavita). It also mounts the library and backup disks and backs up
+every night.
 
 The app repos (`hypernova`, `portfolio`) are **build-only** — their CI builds images and
 pushes them to GHCR. They never deploy. Watchtower on the server pulls a new `:latest` and
@@ -37,8 +39,8 @@ portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate
 - **Releases** — GitHub → **Actions → "Deploy" → Run workflow** (`release`, `resume`,
   `rollback`, `status`). The runner renders a bundle from the `production` Environment and
   streams it to the `deploy` account, whose one key is forced to `release` or `status`. The
-  host checks the bundle, starts `database`, `portfolio`, `hypernova`, `tunnel` and `ai` in
-  that order, and marks the release verified only when everything is healthy, Traefik routes
+  host checks the bundle, starts `database`, `portfolio`, `hypernova`, `tunnel`, `ai` and
+  `media` in that order, and marks the release verified only when everything is healthy, Traefik routes
   every domain to its app, the tunnel is connected and each tailnet-only port is bound to the
   Tailscale address alone. Run one when a secret (the Cloudflare Tunnel
   token included) or a stack file changes — not for routine image updates.
@@ -62,11 +64,11 @@ ansible.cfg            auto-loaded; points at inventory/hosts, checks host keys
 inventory/             hosts.example only — inventory/hosts is gitignored
 roles/                 common · tailscale · docker · gpu · host · edge · watchtower · autoheal
 roles/common/files/    infra-deploy-gate · infra-apply · infra-compose-guard (the host side of a release)
-stack/                 database · portfolio · hypernova · tunnel · ai (compose files and env templates)
+stack/                 database · portfolio · hypernova · tunnel · ai · media (compose files and env templates)
 tasks/                 placeholder-guards · provision-checks · ssh-route
 ci/                    the release path, verify tasks and access/template rules, tested against fakes
 .github/workflows/     deploy.yml, the Deploy workflow; checks.yml, the deploy lint
-RUNBOOK.md             BIOS to first release, DNS switch-over, releases, rollback, recovery
+RUNBOOK.md             BIOS to first release, DNS switch-over, releases, rollback, recovery, GPU, AI, media, disks, restore
 docs/                  why any of it is the way it is
 ```
 
@@ -78,8 +80,8 @@ docs/                  why any of it is the way it is
 - [architecture.md](docs/architecture.md) — the home server and the tunnel, access paths, stacks and their order, releases, env files, networks, public vs tailnet-only, no public ports
 - [deploying.md](docs/deploying.md) — the Deploy workflow, every secret and variable, what the host checks, provisioning tags, adding a project
 - [database.md](docs/database.md) — the shared PostgreSQL
-- [stacks.md](docs/stacks.md) — what is peculiar about each application, and the `ai` stack (Ollama, Open WebUI, VRAM)
+- [stacks.md](docs/stacks.md) — what is peculiar about each application, and the tailnet-only `ai` and `media` stacks
 - [edge.md](docs/edge.md) — the Cloudflare Tunnel, Traefik, its socket proxy, client IPs, routing conventions
-- [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker, the GPU
+- [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker, the GPU, the disks
 - [agents.md](docs/agents.md) — Watchtower, autoheal, the prune timer, re-pinning images
-- [operations.md](docs/operations.md) — short recipes outside the runbook
+- [operations.md](docs/operations.md) — short recipes outside the runbook, the nightly backup

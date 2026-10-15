@@ -95,14 +95,15 @@ value.
 | `SERVER_USER` | *(optional)* The forced-command account; defaults to `deploy`. The workflow refuses `root` and `admin` |
 | `PORTFOLIO_GOOGLE_CLIENT_ID` | *(optional)* The client ID half of the Google OAuth pair in the secrets table; a variable, not a secret |
 
-The domains, the app image repositories, the ai account's uid and gid and the Ollama model are
-in [`production.yml`](../production.yml), not in the Environment. The tunnel's Public Hostnames are in Cloudflare
+The domains, the app image repositories, the `ai` and `media` accounts' uids and gids, the
+Ollama model and the disks' UUIDs are in [`production.yml`](../production.yml), not in the
+Environment. The tunnel's Public Hostnames are in Cloudflare
 ([edge.md](edge.md#why-the-tunnel-is-a-release-stack)).
 
 ## Where each secret lands
 
 `release.yml` renders one env file per container, so each secret reaches only the container
-that reads it. The bundle holds 17 files; on the host the compose files and `release.env` are
+that reads it. The bundle holds 19 files; on the host the compose files and `release.env` are
 mode 0644, the rest 0600:
 
 | Bundle file | Holds | Read by |
@@ -114,7 +115,7 @@ mode 0644, the rest 0600:
 | `tunnel/tunnel.env` | `TUNNEL_TOKEN`, the Cloudflare Tunnel token | `cloudflared` |
 | `ai/open-webui.env` | `WEBUI_SECRET_KEY`, Open WebUI's session key | `open-webui` |
 | `ghcr.env` | GHCR login | `infra-apply`'s `docker login` |
-| `<stack>/.env` | image references, domains, the ai uid and gid, the Ollama model only | Compose interpolation |
+| `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama model only | Compose interpolation |
 | `release.env`, `manifest.sha256`, `<stack>/docker-compose.yml` | no secrets | `infra-apply` |
 
 See [architecture.md](architecture.md#env-files) for why the `.env` files carry no secrets.
@@ -125,10 +126,10 @@ See [architecture.md](architecture.md#env-files) for why the `.env` files carry 
 anything changes ("…; the running release is untouched") unless all of this holds:
 
 1. It runs as root, `/etc/infra/host.env` names the three app image repositories, the host's
-   Tailscale IPv4 (`TAILSCALE_IP`, in `100.64.0.0/10`) and the ai account (`AI_USER`, never
-   root), no other release or status holds the lock, and `/opt/edge/docker-compose.yml` (Traefik, written by
+   Tailscale IPv4 (`TAILSCALE_IP`, in `100.64.0.0/10`) and the `ai` and `media` accounts
+   (`AI_USER`, `MEDIA_USER`, never root), no other release or status holds the lock, and `/opt/edge/docker-compose.yml` (Traefik, written by
    provisioning) exists.
-2. The bundle is at most 1 MiB, a gzip tar of exactly the 17 expected names, regular files
+2. The bundle is at most 1 MiB, a gzip tar of exactly the 19 expected names, regular files
    only, each at most 256 KiB.
 3. `manifest.sha256` lists exactly those files, and every checksum matches.
 4. Every env file is `KEY=value` lines only; `ghcr.env` sets exactly `GHCR_USERNAME` and
@@ -141,19 +142,23 @@ anything changes ("…; the running release is untouched") unless all of this ho
    [`infra-compose-guard`](../roles/common/files/infra-compose-guard): the stack's own project
    name, container names, volumes and existing networks only (and, where it says so, per
    container: only hypernova's provider joins `llm`); no privileged settings, added
-   capabilities, devices, host namespaces, bind mounts or Docker socket; no host port but the
-   tailnet-only ones (`open-webui` 8080), each written exactly `"${TAILSCALE_IP}:<port>:<port>"`
-   and resolved to the address `host.env` names; a GPU reservation only for `ollama`, and only
-   the whole NVIDIA GPU; only the stack's own env file (in `ai`, only `open-webui` reads one);
-   in `ai`, every service runs as `AI_USER` with a `mem_limit`, `cap_drop: [ALL]` and
-   `no-new-privileges`; third-party images pinned by digest; no routing or agent labels on the
-   database, and only `autoheal` on the tunnel and `ai`.
+   capabilities, devices, host namespaces or Docker socket; no host port but the tailnet-only
+   ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000), each
+   written exactly `"${TAILSCALE_IP}:<port>:<port>"` and resolved to the address `host.env`
+   names; no bind mount but the media library folders, each in its own container at its fixed
+   path, read-only except Audiobookshelf's audiobooks and podcasts, `create_host_path: false`;
+   a GPU reservation only for `ollama` and `jellyfin`, and only the whole NVIDIA GPU; only the
+   stack's own env file (in `ai`, only `open-webui` reads one; `media` reads none); in `ai` and
+   `media`, every service is named after its container and runs as `AI_USER` or `MEDIA_USER`
+   with a `mem_limit`, `cap_drop: [ALL]` and `no-new-privileges`; third-party images pinned by
+   digest; no routing or agent labels on the database, and only `autoheal` on the tunnel, `ai`
+   and `media`.
 7. `docker login ghcr.io` with `ghcr.env`, and a pull of every image.
 
 Then it installs the bundle as `/opt/infra/releases/<UTC time>-<sha12>`, starts `database`
 with `--wait`, runs `provision.sql` over the local socket, points `current` at the new release
-(and `previous` at the last verified one), starts `portfolio`, `hypernova`, `tunnel` and `ai`
-(Compose gets `TAILSCALE_IP` from `host.env` for every call), and verifies:
+(and `previous` at the last verified one), starts `portfolio`, `hypernova`, `tunnel`, `ai` and
+`media` (Compose gets `TAILSCALE_IP` from `host.env` for every call), and verifies:
 every container running and healthy within 10 minutes, each up for at least 30 s without
 a restart (so a container without a healthcheck, such as `prizm-web`, that crash-loops is not
 taken for running), judged only on a poll that listed every stack and inspected every listed
@@ -188,7 +193,7 @@ a tag of its own:
 | `tailscale` | the tailnet join and its checks |
 | `docker` | the pinned Engine, `daemon.json` (with the `nvidia` runtime when `gpu_enabled`), the prune timer |
 | `gpu` | the NVIDIA server driver of `nvidia_driver_major`, the Container Toolkit, the read-back (`nvidia-smi`, `docker info`) |
-| `host` | `/etc/infra/host.env` (with the Tailscale IPv4), non-local binds, the `INFRA-PUBLIC` firewall and its tailnet hook, swap, no sleep, the `edge`, `data`, `ai` and `llm` networks, the `pgdata-v18` volume, the `ai` account and its volumes, the published-port read-back |
+| `host` | `/etc/infra/host.env` (with the Tailscale IPv4), non-local binds, the `INFRA-PUBLIC` firewall and its tailnet hook, swap, no sleep, the `edge`, `data`, `ai`, `llm` and `media` networks, the `pgdata-v18` volume, the `ai` and `media` accounts and their volumes, the disks at `/srv/media` and `/srv/backup`, the nightly backup timer, the published-port read-back |
 | `edge` / `watchtower` / `autoheal` | that compose project and its verify tasks (Traefik: no published port) |
 
 No tags runs everything, in that order.

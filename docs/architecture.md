@@ -19,7 +19,8 @@ them knows how to reach the server.
 │  (stack/tunnel)        (roles/edge)        (stack/portfolio, stack/hypernova)     (stack/database)│
 │                                                                                                   │
 │  Watchtower ── sees a new :latest digest in GHCR → pull + recreate the app container              │
-│  sshd :22 ◀── tailscale0 only;  open-webui :8080 ◀── the Tailscale address only (stack/ai)        │
+│  sshd :22 ◀── tailscale0 only;  Open WebUI, Jellyfin, Audiobookshelf, Kavita ◀── the Tailscale    │
+│  address only (stack/ai, stack/media);  library on /srv/media (HDD), backups on /srv/backup (USB)  │
 └──────────────────────────────────────▲────────────────────────────────────────────────────────────┘
                                        │ Tailscale (SSH, tcp 22)
           ┌────────────────────────────┴───────────────────────────────┐
@@ -65,7 +66,8 @@ boundary. A rollback pins an app to a digest, which pauses that for the pinned a
 
 ## Stacks and their order
 
-A stack is a directory under `stack/` — `database`, `portfolio`, `hypernova`, `tunnel`, `ai` —
+A stack is a directory under `stack/` — `database`, `portfolio`, `hypernova`, `tunnel`, `ai`,
+`media` —
 holding a `docker-compose.yml` and the env templates `release.yml` renders. Each is its own
 Compose project with fixed project, container and volume names, so a release recreates
 containers in place and never moves data. On a fresh host the first release creates the
@@ -75,12 +77,12 @@ apps initialise them; nothing ever deletes one.
 `infra-apply` brings them up **in this order**:
 
 ```
-database (--wait) → provision.sql → portfolio → hypernova → tunnel → ai
+database (--wait) → provision.sql → portfolio → hypernova → tunnel → ai → media
 ```
 
 The tunnel goes after the apps so that by the time Cloudflare can send requests, the apps
-behind Traefik are starting; its own failure cannot hold back the apps. `ai`, which nothing
-public depends on, comes last: the sites are up before its large images start.
+behind Traefik are starting; its own failure cannot hold back the apps. `ai` and `media`,
+which nothing public depends on, come last: the sites are up before their large images start.
 
 The order is load-bearing, and the reason is a limitation of Compose: `depends_on` is scoped
 to a single project, so nothing outside the `database` stack can declare a dependency on
@@ -130,11 +132,12 @@ refuses any env line that is not `KEY=value`.
 | `data` | `roles/host` | PostgreSQL, plus every container that talks to it |
 | `ai` | `roles/host` | Ollama, `ollama-pull`, Open WebUI (a plain bridge: Ollama downloads models, Open WebUI publishes its tailnet port) |
 | `llm` | `roles/host`, `--internal` | Ollama and hypernova's `prizm-provider`, nothing else; no route out |
+| `media` | `roles/host` | Jellyfin, Audiobookshelf, Kavita (metadata lookups, podcast downloads, their tailnet ports) |
 | `edge-socket`, `watchtower-socket`, `autoheal-socket` | their compose projects, `internal: true` | one agent and its socket proxy each |
 
 The stacks declare these networks `external: true`, and the compose guard refuses a release
-that adds or creates any other network, or (for `hypernova` and `ai`) puts a container on a
-network that is not its own. They are created by provisioning so they exist before any stack
+that adds or creates any other network, or puts a container on a network that is not its own
+(`hypernova`, `ai`, `media`). They are created by provisioning so they exist before any stack
 or the edge proxy starts.
 
 ## Public and tailnet-only
@@ -147,6 +150,9 @@ Two audiences, two ways in, and nothing else:
 | hypernova (`hypernova.arbikullakshi.com`) | anyone | Cloudflare → tunnel → Traefik | the public hostname |
 | SSH | the owner (`admin`), the Deploy workflow (`deploy`) | Tailscale, tcp 22 | `infra-host` |
 | Open WebUI (`stack/ai`) | the owner | Tailscale, tcp 8080 | `http://infra-host:8080` |
+| Jellyfin (`stack/media`) | the owner | Tailscale, tcp 8096 | `http://infra-host:8096` |
+| Audiobookshelf (`stack/media`) | the owner | Tailscale, tcp 13378 | `http://infra-host:13378` |
+| Kavita (`stack/media`) | the owner | Tailscale, tcp 5000 | `http://infra-host:5000` |
 | Ollama, PostgreSQL, Traefik | containers only | Docker networks (`llm`, `data`, `edge`) | none on the host |
 
 A tailnet-only service publishes its port on the host's **Tailscale IPv4 alone**
@@ -157,7 +163,8 @@ compose guard's and `ci/check_templates.py`'s `TAILNET_PORTS`, `infra-apply`'s a
 `roles/host`'s `tailnet_ports`, and `ufw_allowed` (on `tailscale0` only). On the tailnet, the
 Tailscale policy grants these ports to the owner (`autogroup:admin`) alone
 ([RUNBOOK.md](../RUNBOOK.md#4-tailscale)). Plain HTTP is fine there: WireGuard encrypts every
-packet between the owner's devices and the server.
+packet between the owner's devices and the server. Video in particular never goes through
+the tunnel: Cloudflare's terms rule it out, and it would be slower than the tailnet anyway.
 
 ## No public ports
 

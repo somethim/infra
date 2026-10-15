@@ -1,0 +1,14 @@
+# Managed by Ansible (roles/host/tasks/backup.yml). See docs/operations.md, "Backups".
+[Unit]
+Description=Nightly backup to the external disk
+
+[Timer]
+# UTC, before the {{ reboot_time }} unattended-upgrades reboot window and the
+# Sunday 03:00 image prune; the jitter stays within the hour.
+OnCalendar=*-*-* {{ backup_time }}:00
+RandomizedDelaySec=15m
+# A night missed while the server was off runs at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,5 @@
 ---
-# The accounts the ai (and media) containers run as, and the volumes they own.
+# The accounts the ai and media containers run as, and the volumes they own.
 # See docs/host.md, "Service accounts and their volumes".
 - name: Create the service account groups with their fixed gids
   ansible.builtin.group:
@@ -24,6 +24,14 @@
   loop: "{{ service_accounts }}"
   loop_control:
     label: "{{ item.name }} {{ item.uid }}"
+
+# admin copies files into the library (RUNBOOK.md, "Copying media in"); the
+# library folders are setgid media and group-writable.
+- name: Put the admin user in the media group
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: media
+    append: true
 
 - name: Look for the service volumes
   ansible.builtin.command:

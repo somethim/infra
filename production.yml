@@ -22,7 +22,7 @@ reboot_time: "04:00"
 # Toolkit, and roles/docker adds the nvidia runtime. Confirm the branch on the
 # host with `ubuntu-drivers list --gpgpu` (RUNBOOK.md, "GPU, AI and media").
 # false: provisioning skips the GPU (a host without the card), and a release
-# refuses, since the ai stack reserves it.
+# refuses, since Ollama and Jellyfin reserve it.
 gpu_enabled: true
 nvidia_driver_major: 580
 
@@ -32,6 +32,19 @@ nvidia_driver_major: 580
 ai_uid: 2001
 ai_gid: 2001
 ollama_model: qwen2.5:7b
+
+# The media stack (Jellyfin, Audiobookshelf, Kavita) runs as this account,
+# which roles/host creates and which owns the library; admin is in its group.
+media_uid: 2000
+media_gid: 2000
+# Filesystem UUIDs (sudo blkid, RUNBOOK.md, "Disks"): the internal 1 TB HDD
+# mounted at /srv/media, and the external 1 TB USB HDD at /srv/backup. Empty:
+# not mounted (provisioning says so); the library then lives on the SSD and
+# the nightly backup writes nothing.
+media_disk_uuid: ""
+backup_disk_uuid: ""
+# UTC, at least an hour before reboot_time (provisioning checks).
+backup_time: "02:30"
 
 swap_size: 2G
 # Docker-published ports the LAN-facing interface may reach. None: the public

@@ -1,0 +1,172 @@
+#!/bin/bash
+# The nightly backup to the external USB disk, mounted at /srv/backup
+# (roles/host, infra-backup.timer). Writes nothing at all unless /srv/backup is
+# a mountpoint: with the disk unplugged or not configured it logs a warning and
+# exits 0, so a backup never fills the SSD. Then, as root, umask 077:
+#
+#   postgres/<date>.sql.gz   pg_dumpall of the shared PostgreSQL, 0600; the newest 14 are kept
+#   apps/<date>/<volume>.tar.gz   the apps' own data volumes (below), the newest 7 days kept;
+#                            Jellyfin, Audiobookshelf, Kavita and Open WebUI are stopped
+#                            while theirs are copied (SQLite must not change mid-copy)
+#   media/<name>/            rsync --delete mirror of /srv/media/{audiobooks,books,podcasts}
+#
+# Every step runs even when an earlier one failed; the script exits 1 if any
+# did, which starts infra-backup-failed.service (an error line in the journal).
+# Never touches the ollama-models volume (models download again) or Jellyfin's
+# cache and transcodes. Restoring: RUNBOOK.md, "Restoring from the backup disk".
+set -euo pipefail
+umask 077
+
+readonly backup_root="${INFRA_BACKUP_ROOT:-/srv/backup}"
+readonly media_root="${INFRA_BACKUP_MEDIA_ROOT:-/srv/media}"
+readonly stamp="${INFRA_BACKUP_DATE:-$(date -u +%F)}"
+readonly keep_dumps=14
+readonly keep_apps=7
+readonly stop_seconds=60
+# <volume> [<path inside it to leave out>...]
+readonly app_volumes=(
+  "jellyfin-config ./log ./cache ./transcodes ./data/transcodes"
+  "audiobookshelf-config"
+  "audiobookshelf-metadata ./cache ./logs ./streams"
+  "kavita-config ./cache ./temp ./logs"
+  "open-webui-data ./cache"
+  "portfolio-media"
+  "hypernova_prizm-storage"
+)
+readonly app_containers=(jellyfin audiobookshelf kavita open-webui)
+readonly mirrored=(audiobooks books podcasts)
+
+failures=0
+stopped=()
+
+log() {
+  printf 'infra-backup: %s\n' "$*"
+}
+
+failed() {
+  printf 'infra-backup: FAILED: %s\n' "$*" >&2
+  failures=$((failures + 1))
+}
+
+private_dir() {
+  mkdir -p "$1"
+  chmod 0700 "$1"
+}
+
+# keep_newest <dir> <regex> <count>: delete all but the newest <count> entries
+# whose names match (the names are dates, so they sort by age).
+keep_newest() {
+  local dir="$1" pattern="$2" count="$3" name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rm -rf -- "${dir:?}/$name"
+    log "removed the old backup $dir/$name"
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -E "$pattern" | LC_ALL=C sort | head -n "-$count")
+}
+
+start_stopped() {
+  local name
+  for name in "${stopped[@]}"; do
+    docker start "$name" >/dev/null 2>&1 || failed "$name could not be started again; sudo docker start $name"
+  done
+  stopped=()
+}
+
+backup_postgres() {
+  local dir="$backup_root/postgres" partial
+  private_dir "$dir"
+  partial="$dir/.$stamp.sql.gz.partial"
+  if docker exec postgresql pg_dumpall -U postgres | gzip -c >"$partial" &&
+    [ "$(gzip -cd "$partial" | head -c 64 | wc -c)" -gt 0 ]; then
+    chmod 0600 "$partial"
+    mv -f "$partial" "$dir/$stamp.sql.gz"
+    log "PostgreSQL dumped to $dir/$stamp.sql.gz"
+  else
+    rm -f "$partial"
+    failed "pg_dumpall of the postgresql container failed; the earlier dumps are untouched"
+  fi
+  keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.sql\.gz$' "$keep_dumps"
+}
+
+backup_apps() {
+  local dir="$backup_root/apps" partial name spec volume path before="$failures"
+  local -a excludes
+  private_dir "$dir"
+  partial="$dir/.$stamp.partial"
+  rm -rf "$partial"
+  private_dir "$partial"
+  for name in "${app_containers[@]}"; do
+    if [ "$(docker container inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)" = true ]; then
+      if docker stop --time "$stop_seconds" "$name" >/dev/null 2>&1; then
+        stopped+=("$name")
+      else
+        failed "$name could not be stopped; its data is copied while it runs"
+      fi
+    fi
+  done
+  for spec in "${app_volumes[@]}"; do
+    volume="${spec%% *}"
+    read -r -a excludes <<<"${spec#"$volume"}"
+    if ! path="$(docker volume inspect --format '{{.Mountpoint}}' "$volume" 2>/dev/null)" || [ ! -d "$path" ]; then
+      log "the volume $volume does not exist yet; skipped"
+      continue
+    fi
+    if tar --create --gzip --numeric-owner --file "$partial/$volume.tar.gz" -C "$path" "${excludes[@]/#/--exclude=}" .; then
+      log "copied the volume $volume"
+    else
+      failed "tar of the volume $volume failed"
+    fi
+  done
+  start_stopped
+  if [ "$failures" -eq "$before" ]; then
+    rm -rf "${dir:?}/$stamp"
+    mv "$partial" "$dir/$stamp"
+    log "app data saved in $dir/$stamp"
+  else
+    rm -rf "$partial"
+  fi
+  keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$keep_apps"
+}
+
+mirror_media() {
+  local name source target
+  private_dir "$backup_root/media"
+  for name in "${mirrored[@]}"; do
+    source="$media_root/$name"
+    target="$backup_root/media/$name"
+    if [ ! -d "$source" ]; then
+      failed "$source does not exist (is the media disk mounted?); its mirror is untouched"
+      continue
+    fi
+    mkdir -p "$target"
+    # An empty library over a full mirror is almost always a missing disk, not a deletion.
+    if [ -z "$(find "$source" -mindepth 1 -print -quit)" ] && [ -n "$(find "$target" -mindepth 1 -print -quit)" ]; then
+      failed "$source is empty but its mirror is not; not mirroring an empty library over it (delete $target by hand if the library really is empty)"
+      continue
+    fi
+    if rsync --archive --delete --numeric-ids "$source/" "$target/"; then
+      log "mirrored $source"
+    else
+      failed "rsync of $source failed"
+    fi
+  done
+}
+
+if ! mountpoint -q "$backup_root"; then
+  log "WARNING: $backup_root is not a mountpoint (the backup disk is unplugged, or backup_disk_uuid is not set): nothing was written"
+  exit 0
+fi
+exec 9>"$backup_root/.lock"
+flock -n 9 || { failed "another backup is running"; exit 1; }
+trap start_stopped EXIT
+chmod 0700 "$backup_root"
+
+backup_postgres
+backup_apps
+mirror_media
+
+if [ "$failures" -gt 0 ]; then
+  printf 'infra-backup: FAILED: %s step(s) failed; see the lines above\n' "$failures" >&2
+  exit 1
+fi
+log "backup OK: $stamp"

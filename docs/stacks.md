@@ -118,7 +118,7 @@ fails harmlessly for anything root owns, and a read-only root would add little.
 **Memory and VRAM.** `mem_limit`: `ollama` 8 GiB (the model sits in VRAM; RAM covers what
 does not fit and the runner), `open-webui` 2 GiB (its embedding model runs on the CPU),
 `ollama-pull` 128 MiB. The RTX 2060 has 12 GB of VRAM, shared with Jellyfin's transcodes in
-the `media` stack: `qwen2.5:7b` (Q4) takes about 5–6 GB with its context, each NVENC/NVDEC
+the [`media`](#media) stack: `qwen2.5:7b` (Q4) takes about 5–6 GB with its context, each NVENC/NVDEC
 transcode a few hundred MB. Ollama keeps **one** model loaded (`OLLAMA_MAX_LOADED_MODELS=1`,
 one request at a time) and unloads it after 10 minutes idle (`OLLAMA_KEEP_ALIVE=10m`), so a
 bigger model or a second one cannot crowd the card out for long. A 14B model (~9 GB) still
@@ -134,3 +134,51 @@ turns unhealthy.
 **GPU.** `ollama` reserves the GPU (`deploy.resources.reservations.devices`, driver `nvidia`,
 `count: all`, `capabilities: [gpu]`); the guard allows that for `ollama` and Jellyfin only.
 `gpu_enabled: false` makes the release refuse to render, since the stack could not start.
+
+## media
+
+Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), for
+the owner alone. Like `ai`, nothing here is public: no `edge`, no Traefik label, never behind
+the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
+the tailnet is faster: a phone or TV on Tailscale talks to the server directly (or through a
+relay when it must), WireGuard-encrypted.
+
+| Container | Port, on the Tailscale address only | Library (bind mount) | Its data (volume, SSD) |
+| --- | --- | --- | --- |
+| `jellyfin` | 8096 | `/srv/media/shows` → `/media/shows`, `/srv/media/movies` → `/media/movies`, read-only | `jellyfin-config` (`/config`), `jellyfin-cache` (`/cache`, with the transcodes) |
+| `audiobookshelf` | 13378 (`PORT=13378`) | `/srv/media/audiobooks` → `/audiobooks`, `/srv/media/podcasts` → `/podcasts`, read-write | `audiobookshelf-config`, `audiobookshelf-metadata` |
+| `kavita` | 5000 | `/srv/media/books` → `/books`, read-only | `kavita-config` (`/kavita/config`) |
+
+**The library** is on the internal 1 TB HDD at `/srv/media` ([host.md](host.md#disks)); the
+apps' own databases, artwork and caches are in volumes on the SSD. Each container mounts only
+its own folders, at fixed paths, `bind.create_host_path: false`, and the compose guard allows
+no other bind mount in any stack: not `/srv/media` as a whole, not a folder at another path,
+not read-write where it says read-only. Audiobookshelf writes because it downloads podcast
+episodes and may store covers next to the books. With the media disk missing the folders do
+not exist (the mountpoint stays empty and immutable), so the containers fail to start instead
+of serving, or scanning away, an empty library; Docker also starts only after the disk's mount
+unit at boot.
+
+**Hardening.** Every container runs as the `media` account (`media_uid:media_gid`,
+`2000:2000`), which owns the library folders; `cap_drop: [ALL]`, `no-new-privileges`, a
+`mem_limit`; the guard refuses the stack otherwise. Jellyfin and Audiobookshelf run with a
+read-only root filesystem and a tmpfs `/tmp`. Kavita does not: its entrypoint copies a default
+`appsettings.json` from the image's `/tmp/config` on first start, which a tmpfs `/tmp` would
+hide; as a non-root user it cannot write anything root owns in the image anyway. The stack has
+no secret and reads no env file; `media/.env` holds only the uid and gid.
+
+**GPU.** Jellyfin reserves the GPU like Ollama (the guard allows exactly these two) for
+NVENC/NVDEC transcodes; turn it on in Jellyfin's **Dashboard → Playback → Transcoding**
+([RUNBOOK.md](../RUNBOOK.md#first-logins)). The 12 GB are shared with Ollama
+([ai](#ai)): a transcode takes a few hundred MB, so a 7B model and two or three streams fit
+together. Consumer drivers allow a handful of concurrent NVENC sessions, plenty for one home.
+
+**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB.
+With `ollama` at 8 GiB and the rest, the stacks fit a 16 GB machine with the swap file as a
+buffer; give Ollama less if the server has less RAM.
+
+**Updates and backups.** Pinned images, no Watchtower label, as in `ai`: Jellyfin migrates its
+database irreversibly on a major upgrade. Re-pin, read the release notes, make sure last
+night's backup ran, then release. The nightly backup copies each app's volumes (not
+Jellyfin's cache) and mirrors `audiobooks`, `books` and `podcasts`; films and series are not
+copied (they would not fit, and can be re-ripped) ([operations.md](operations.md#backups)).

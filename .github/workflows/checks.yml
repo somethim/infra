@@ -54,7 +54,7 @@ jobs:
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  ${RUNNER_TEMP}/shellcheck.tar.xz" | sha256sum --check --strict
           tar -xJf "${RUNNER_TEMP}/shellcheck.tar.xz" -C "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/shellcheck-v0.11.0/shellcheck" build-bundle.sh release-images.sh ci/*.sh \
-            roles/common/files/infra-deploy-gate roles/common/files/infra-apply roles/host/files/infra-firewall
+            roles/common/files/infra-deploy-gate roles/common/files/infra-apply roles/host/files/infra-firewall roles/host/files/infra-backup
 
       - name: Install the Docker Compose the host runs
         run: |
@@ -70,6 +70,9 @@ jobs:
 
       - name: Rollback resolution
         run: bash ci/rollback-scripts.sh
+
+      - name: Nightly backup script
+        run: bash ci/backup-scripts.sh
 
       - name: Edge, Watchtower, autoheal, Docker, GPU and host verify tasks
         run: bash ci/verify-tasks.sh
@@ -102,7 +105,7 @@ jobs:
             -e "deploy_key_file=${RUNNER_TEMP}/deploy_key.pub" -e "bundle_dir=${RUNNER_TEMP}/bundle" </dev/null >"${RUNNER_TEMP}/render.log" 2>&1 ||
             { cat "${RUNNER_TEMP}/render.log"; echo "::error::release.yml refused to render ci/sample-extra-vars.json"; exit 1; }
           # TAILSCALE_IP comes from /etc/infra/host.env on the host (infra-apply exports it).
-          for stack in database portfolio hypernova tunnel ai; do
+          for stack in database portfolio hypernova tunnel ai media; do
             out="$(TAILSCALE_IP=100.64.0.7 docker compose --file "stack/${stack}/docker-compose.yml" --project-directory "${RUNNER_TEMP}/bundle/${stack}" config --quiet 2>&1)" ||
               { echo "$out"; exit 1; }
             if grep -q 'variable is not set' <<<"$out"; then

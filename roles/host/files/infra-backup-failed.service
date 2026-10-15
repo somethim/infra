@@ -1,0 +1,6 @@
+[Unit]
+Description=Report a failed nightly backup in the journal
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority daemon.err --tag infra-backup "the nightly backup FAILED; journalctl -u infra-backup.service shows why"

@@ -61,6 +61,7 @@
       TAILNET_INTERFACE={{ tailnet_interface }}
       TAILSCALE_IP={{ tailscale_ipv4 }}
       AI_USER={{ ai_uid }}:{{ ai_gid }}
+      MEDIA_USER={{ media_uid }}:{{ media_gid }}
       PORTFOLIO_IMAGE_REPO={{ portfolio_image_repo }}
       HYPERNOVA_PROVIDER_IMAGE_REPO={{ hypernova_provider_image_repo }}
       HYPERNOVA_WEB_IMAGE_REPO={{ hypernova_web_image_repo }}
@@ -115,7 +116,8 @@
 
 # Moved here from roles/edge so they exist before any stack or the edge starts.
 # ai carries Ollama's model downloads and Open WebUI's published port; llm is
-# internal (no route out) and joins only Ollama and hypernova's provider.
+# internal (no route out) and joins only Ollama and hypernova's provider; media
+# carries the media apps' metadata lookups, podcast downloads and their ports.
 - name: Create shared Docker networks
   ansible.builtin.shell: "docker network inspect {{ item.name }} >/dev/null 2>&1 || docker network create {{ '--internal ' if item.internal else '' }}{{ item.name }}"
   loop:
@@ -123,6 +125,7 @@
     - { name: data, internal: false }
     - { name: ai, internal: false }
     - { name: llm, internal: true }
+    - { name: media, internal: false }
   loop_control:
     label: "{{ item.name }}"
   register: network_create
@@ -161,6 +164,12 @@
 
 - name: Create the service accounts and their volumes
   ansible.builtin.import_tasks: accounts.yml
+
+- name: Mount the library and backup disks
+  ansible.builtin.import_tasks: disks.yml
+
+- name: Back up to the backup disk every night
+  ansible.builtin.import_tasks: backup.yml
 
 - name: Verify the Docker firewall, swap and power settings
   ansible.builtin.import_tasks: verify.yml

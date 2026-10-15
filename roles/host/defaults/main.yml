@@ -9,12 +9,29 @@ tailnet_interface: tailscale0
 # starts it; verify.yml reads the bindings back from Docker.
 tailnet_ports:
   - { container: open-webui, port: 8080 }
+  - { container: jellyfin, port: 8096 }
+  - { container: audiobookshelf, port: 13378 }
+  - { container: kavita, port: 5000 }
 
 # Accounts the hardened stacks run as (no login, no home), and the external
 # volumes they own: provisioning creates each volume once and hands its root to
 # the account (0700), so the containers never need root to write their data.
 service_accounts:
   - { name: ai, uid: "{{ ai_uid }}", gid: "{{ ai_gid }}" }
+  - { name: media, uid: "{{ media_uid }}", gid: "{{ media_gid }}" }
 service_volumes:
   - { name: ollama-models, account: ai }
   - { name: open-webui-data, account: ai }
+  - { name: jellyfin-config, account: media }
+  - { name: jellyfin-cache, account: media }
+  - { name: audiobookshelf-config, account: media }
+  - { name: audiobookshelf-metadata, account: media }
+  - { name: kavita-config, account: media }
+
+# The disks, by filesystem UUID (production.yml): the internal HDD with the
+# library, and the external USB HDD the nightly backup writes to. Mounted with
+# nofail and a 10 s device timeout, so a missing disk never holds up the boot.
+media_root: /srv/media
+backup_root: /srv/backup
+media_libraries: [shows, movies, audiobooks, podcasts, books]
+disk_mount_options: nofail,x-systemd.device-timeout=10s,noatime,nodev,nosuid,noexec

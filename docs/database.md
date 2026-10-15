@@ -144,7 +144,8 @@ a new major changes all three, plus the test fixtures in `ci/release-scripts.sh`
 
 ## Backups
 
-Nothing backs the database up automatically. The portfolio's `media` table is a ledger of
-what is on the `portfolio-media` volume, so the database and that volume must be backed up
-and restored **together**; a mismatch surfaces as broken images on a working site rather than
+The nightly backup (`infra-backup`) dumps the whole cluster with `pg_dumpall` to the external
+disk and copies `portfolio-media` the same night. The portfolio's `media` table is a ledger of
+what is on the `portfolio-media` volume, so the database and that volume must be restored
+**together**, from the same night; a mismatch surfaces as broken images on a working site rather than
 as an error. See [operations.md](operations.md#backups).

@@ -106,7 +106,8 @@ scenario() {
   printf '%s\n' '-N DOCKER-USER' "$hook" "$tailnet_hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
   echo 2147483648 >"$work/state/swap"
   echo 1 >"$work/state/nonlocal_bind"
-  printf '%s\n' "open-webui $ts_ip:8080->8080/tcp" "ollama " "ollama-pull " "edge-traefik " "postgresql " >"$work/state/docker.ps"
+  printf '%s\n' "open-webui $ts_ip:8080->8080/tcp" "ollama " "ollama-pull " "edge-traefik " "postgresql " \
+    "jellyfin $ts_ip:8096->8096/tcp" "audiobookshelf $ts_ip:13378->13378/tcp" "kavita $ts_ip:5000->5000/tcp" >"$work/state/docker.ps"
 }
 run() {
   local role="$1"
@@ -231,7 +232,11 @@ echo "ok   pass: gpu: a driver installed in this run asks for a reboot instead o
 ### host
 
 scenario
-expect_pass "host: INFRA-PUBLIC hooked first and for the tailnet, 2 GiB swap, sleep masked, one tailnet port" host
+expect_pass "host: INFRA-PUBLIC hooked first and for the tailnet, 2 GiB swap, sleep masked, the four tailnet ports" host
+
+scenario
+printf '%s\n' "kavita $ts_ip:8096->8096/tcp" >"$work/state/docker.ps"
+expect_fail "host: a tailnet port on the wrong container" "kavita 100.101.102.103:8096->8096/tcp" host
 
 scenario
 printf '%s\n' '-N DOCKER-USER' "$hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"

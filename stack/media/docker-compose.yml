@@ -1,0 +1,171 @@
+# Jellyfin, Audiobookshelf and Kavita, for the owner over the tailnet only.
+# See docs/stacks.md. Each publishes one port on the host's Tailscale address
+# and nowhere else (TAILSCALE_IP comes from /etc/infra/host.env, which
+# infra-apply exports); never through the tunnel or Traefik (Cloudflare's terms
+# rule out serving video through it, and nothing here is for the public). The
+# library is on the media disk (/srv/media), bind-mounted per folder: read-only,
+# except the audiobooks and podcasts Audiobookshelf manages. Every container
+# runs as the media account (.env, from production.yml), with no capability
+# and no new privileges. No Watchtower label: the images are pinned and move
+# only with a reviewed re-pin and a release. No secrets, so no env file.
+name: media
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:12.2.20261005-225228@sha256:357724bf0ae27a672c7cbaa899db2d9abeb13dbd8657ccce750258a4c059d037
+    container_name: jellyfin
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 3g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # NVENC/NVDEC for transcodes (the image asks for these too).
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    ports:
+      - "${TAILSCALE_IP}:8096:8096"
+    volumes:
+      - type: volume
+        source: jellyfin-config
+        target: /config
+        volume:
+          nocopy: true
+      # Its cache and transcodes: never backed up.
+      - type: volume
+        source: jellyfin-cache
+        target: /cache
+        volume:
+          nocopy: true
+      - type: bind
+        source: /srv/media/shows
+        target: /media/shows
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/media/movies
+        target: /media/movies
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - media
+    labels:
+      - autoheal=true
+
+  audiobookshelf:
+    image: ghcr.io/advplyr/audiobookshelf:2.37.1@sha256:581d68b2a6fc7ebf58d81c878a9f387cbbc0d88ac9d37b298b9cee10168af85b
+    container_name: audiobookshelf
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 1g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # Its default, 80, needs a capability; the published port is 13378.
+      PORT: "13378"
+    ports:
+      - "${TAILSCALE_IP}:13378:13378"
+    volumes:
+      - type: volume
+        source: audiobookshelf-config
+        target: /config
+        volume:
+          nocopy: true
+      - type: volume
+        source: audiobookshelf-metadata
+        target: /metadata
+        volume:
+          nocopy: true
+      # Read-write: Audiobookshelf downloads podcast episodes and may write
+      # covers and metadata next to the books.
+      - type: bind
+        source: /srv/media/audiobooks
+        target: /audiobooks
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/media/podcasts
+        target: /podcasts
+        bind:
+          create_host_path: false
+    networks:
+      - media
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:13378/healthcheck').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - autoheal=true
+
+  kavita:
+    image: jvmilazz0/kavita:0.9.1@sha256:31181a32f0dda73cae68721867028a7253d57881b58bea5754cd9e578e75421a
+    container_name: kavita
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 1g
+    restart: always
+    # Not read_only: its entrypoint seeds the config from the image's /tmp/config.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${TAILSCALE_IP}:5000:5000"
+    volumes:
+      - type: volume
+        source: kavita-config
+        target: /kavita/config
+        volume:
+          nocopy: true
+      - type: bind
+        source: /srv/media/books
+        target: /books
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - media
+    labels:
+      - autoheal=true
+
+networks:
+  media:
+    name: media
+    external: true
+
+volumes:
+  jellyfin-config:
+    name: jellyfin-config
+    external: true
+  jellyfin-cache:
+    name: jellyfin-cache
+    external: true
+  audiobookshelf-config:
+    name: audiobookshelf-config
+    external: true
+  audiobookshelf-metadata:
+    name: audiobookshelf-metadata
+    external: true
+  kavita-config:
+    name: kavita-config
+    external: true
