@@ -258,18 +258,26 @@ server until then.
 With `cf`:
 
 ```bash
-# 1. Create the remotely managed tunnel "infra-host" and print its token
-<CF COMMANDS: see coordinator>
+# 1. Create the remotely managed tunnel and store its token in 1Password; the token is never printed
+#    (done 2026-10-15: tunnel "home-server", id 1dfdb06e-04a8-4a4b-942b-ede6c46015de)
+OUT=$(cf tunnels create --name home-server --config-source cloudflare 2>/dev/null)
+TUNNEL_ID=$(jq -r '.id' <<<"$OUT"); TUNNEL_TOKEN=$(jq -r '.token' <<<"$OUT"); unset OUT
+op item create --category password --vault Personal --title "Cloudflare tunnel token (home-server)" \
+  "password=$TUNNEL_TOKEN" "tunnel id[text]=$TUNNEL_ID" >/dev/null; unset TUNNEL_TOKEN
 
-# 2. Set the tunnel's ingress to the three hostnames above -> http://edge-traefik:80, then http_status:404
-<CF COMMANDS: see coordinator>
+# 2. Set the tunnel's ingress
+cf tunnels config update "$TUNNEL_ID" --body '{"config":{"ingress":[
+ {"hostname":"arbikullakshi.com","service":"http://edge-traefik:80"},
+ {"hostname":"www.arbikullakshi.com","service":"http://edge-traefik:80"},
+ {"hostname":"hypernova.arbikullakshi.com","service":"http://edge-traefik:80"},
+ {"service":"http_status:404"}]}}' >/dev/null && echo ok
 
-# 3. Turn on "Always Use HTTPS" for the zone arbikullakshi.com (Cloudflare, not Traefik, redirects HTTP to HTTPS)
-<CF COMMANDS: see coordinator>
+# 3. "Always Use HTTPS" (already on for arbikullakshi.com; this only checks it)
+cf zones settings get always_use_https -z arbikullakshi.com | jq -r .value
 ```
 
 Or in the dashboard: **Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared**,
-name it `infra-host`, then on the "Install and run a connector" page pick **Docker** and copy
+name it `home-server`, then on the "Install and run a connector" page pick **Docker** and copy
 the token: the long string after `--token` in the command shown (it starts with `eyJ`). Do
 not run that command anywhere; the release runs cloudflared. Then **Next → Public
 Hostnames**: add the three rows of the table above (Subdomain empty / `www` / `hypernova`,
@@ -413,18 +421,21 @@ touches the old Hetzner server. Nothing is copied from it: the new server starte
    `<tunnel id>.cfargotunnel.com`:
 
    ```bash
-   # 1. Delete the A/AAAA records of the three hostnames
-   <CF COMMANDS: see coordinator>
+   # (done 2026-10-15) 1. Delete the old records (ids from `cf dns records list -z $Z`)
+   Z=b548cd8d33527abe0bc4f3fc106096d1
+   cf dns records delete <record id> -z $Z --force
 
-   # 2. Route the three hostnames to the tunnel infra-host (proxied CNAME -> <tunnel id>.cfargotunnel.com)
-   <CF COMMANDS: see coordinator>
+   # 2. Route the three hostnames to the tunnel
+   for n in arbikullakshi.com www hypernova; do
+     cf dns records create -z $Z --body "{\"type\":\"CNAME\",\"name\":\"$n\",\"content\":\"$TUNNEL_ID.cfargotunnel.com\",\"proxied\":true}" >/dev/null && echo "ok $n"
+   done
 
-   # 3. Show the zone's records for the three names: each one proxied CNAME to the tunnel, no A/AAAA left
-   <CF COMMANDS: see coordinator>
+   # 3. Check: each name is a proxied CNAME to the tunnel, no A/AAAA left
+   cf dns records list -z $Z | jq -r '.[] | select(.type=="A" or .type=="AAAA" or .type=="CNAME") | "\(.type) \(.name) \(.content) proxied=\(.proxied)"'
    ```
 
    In the dashboard: **DNS → Records**, delete the three names' `A`/`AAAA` records; then in
-   **Zero Trust → Networks → Tunnels → infra-host → Public Hostnames**, re-save each
+   **Zero Trust → Networks → Tunnels → home-server → Public Hostnames**, re-save each
    hostname (adding a public hostname creates its proxied CNAME). Leave the zone's other
    records (mail: `MX`, `TXT`, Resend's DKIM) alone.
 2. **Check from outside**, for example from a phone off Wi-Fi or the laptop (Cloudflare's
@@ -540,8 +551,8 @@ most values:
 - **Database passwords**: `provision.sql` re-sets each role's password in the same release
   that renders the new DSN, so the two cannot drift. `POSTGRES_SUPERUSER_PASSWORD` is re-set
   the same way. Generate with `openssl rand -hex 24`.
-- **`CF_TUNNEL_TOKEN`**: in the dashboard, **Zero Trust → Networks → Tunnels → infra-host →
-  Refresh token** (or with `cf`: `<CF COMMANDS: see coordinator>`), store the new token,
+- **`CF_TUNNEL_TOKEN`**: in the dashboard, **Zero Trust → Networks → Tunnels → home-server →
+  Refresh token** (or delete the tunnel and repeat section 6 steps 1–2 under the same name, then section 10 step 2 for the new id), store the new token,
   then run `release`: it recreates `cloudflared` with the new token, and the old token stops
   working. The sites are unreachable from the token refresh until the release's tunnel check
   passes, about a minute.
