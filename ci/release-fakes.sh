@@ -206,6 +206,12 @@ new_state() {
   mkdir -p "$state/stack" "$state/edge" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
     "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip" "$state/ports"
   printf 'name: edge\n' >"$state/edge/docker-compose.yml"
+  # infra-apply points DOCKER_CONFIG at $state/docker, which hides a Compose plugin installed in
+  # ~/.docker/cli-plugins (CI installs the host's pinned version there). Link it in so every case
+  # resolves compose files with the same Compose the job pinned, not the runner's own.
+  if [ -d "${HOME}/.docker/cli-plugins" ]; then
+    ln -s "${HOME}/.docker/cli-plugins" "$state/docker/cli-plugins"
+  fi
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 MEDIA_USER=2000:2000 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
   # ollama-pull is a one-shot (restart: "no"): verify does not wait for it.
