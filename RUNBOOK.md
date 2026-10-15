@@ -1,87 +1,128 @@
 # Runbook
 
-The owner's steps for the one Hetzner host: moving the live server to the provision/release
-model, cleaning up crm, and operating releases afterwards. [`README.md`](README.md) and
+The owner's steps for the one production server: a dedicated PC at home, on the home LAN
+behind a consumer router, with a dynamic public IP. Nothing on it is reachable from the
+internet. The public reaches the sites only through a **Cloudflare Tunnel** that the server
+dials out to; SSH works only over **Tailscale**. [`README.md`](README.md) and
 [`docs/`](docs/README.md) explain how the pieces work; this file only says what to do, in
 order. Every step that needs your accounts or your hands is marked **Owner action**.
 
-Plan for one quiet hour for sections 6 and 7. The sites are down for about a minute twice:
-once if the first provision upgrades Docker (6.1), and once when the first release recreates
-the app containers (6.6).
+The server starts empty: there is no data to carry over. The first release creates the
+database and the app volumes empty, and the apps initialise them.
 
-The values below are the ones in [`production.yml`](production.yml): the tailnet name
+The values below are the ones in [`production.yml`](production.yml) and
+[`roles/common/defaults/main.yml`](roles/common/defaults/main.yml): the tailnet name
 `infra-host`, the tags `tag:infra-server` and `tag:infra-ci`, the accounts `admin` and
-`deploy` ([`roles/common/defaults/main.yml`](roles/common/defaults/main.yml)). If you change
-one, change that file first (through `master`) and use your value throughout.
+`deploy`, the domains `arbikullakshi.com`, `www.arbikullakshi.com` and
+`hypernova.arbikullakshi.com`. If you change one, change that file first (through `master`)
+and use your value throughout. `192.168.1.50` stands for the server's LAN address and `setup`
+for the account the Ubuntu installer creates; use yours.
+
+| Section | Where you are |
+| --- | --- |
+| [1. What you need](#1-what-you-need) | anywhere |
+| [2. BIOS](#2-bios) | at the server, keyboard and monitor |
+| [3. Install Ubuntu Server](#3-install-ubuntu-server) | at the server |
+| [4. Tailscale](#4-tailscale) | Tailscale admin console |
+| [5. First provision over the LAN](#5-first-provision-over-the-lan) | your laptop, on the home LAN |
+| [6. Cloudflare Tunnel](#6-cloudflare-tunnel) | Cloudflare (`cf` or the dashboard) |
+| [7. The production Environment](#7-the-production-environment) | GitHub (`gh`) |
+| [8. Second provision over the tailnet](#8-second-provision-over-the-tailnet) | your laptop |
+| [9. First release](#9-first-release) | GitHub Actions |
+| [10. DNS switch-over and decommissioning the old server](#10-dns-switch-over-and-decommissioning-the-old-server) | Cloudflare, then the Hetzner console |
+| [11. Day-2 operations](#11-day-2-operations) | from then on |
+
+Tailscale (4) comes before the first provision (5) because that run joins the server to the
+tailnet and asks for the auth key made in 4.
 
 ## 1. What you need
 
 **Owner action.**
 
-- Admin access to the Tailscale tailnet, and your own machine on it with MagicDNS on, so
-  `infra-host` resolves.
-- The Hetzner Cloud console for the server, with the **root password tested in its web
-  console**. That console does not go through sshd or the tailnet; it is the backstop for
-  every lockout below.
-- On your machine: `gh` (logged in to `somethim/infra`), `ansible-core`, `ssh-keygen`,
-  `ssh-keyscan`, `nc`, and a checkout of `master`.
-- Your own SSH public key in `/root/.ssh/authorized_keys` on the server **as a plain line**
-  (`ssh-ed25519 AAAA… you@machine`, no `command=` or other options, installed with
-  `ssh-copy-id`). The first provision copies root's keys to `admin` once, and refuses to run
-  while any line there has options or is the CI deploy key.
-- The Deploy workflow logs in as `deploy`. Leave the `SERVER_USER` variable unset (or set it to
-  `deploy`); the workflow refuses `root` and `admin`. `SERVER_SSH_HOST` is set in 6.3.
+- The server: a dedicated PC with wired Ethernet to the router (Wi-Fi works but is not
+  recommended for a server), a USB stick of at least 4 GB, and a keyboard and monitor. The
+  keyboard and monitor are the backstop for every lockout below
+  ([Locked out](#locked-out)): the local console goes through neither sshd nor the tailnet.
+- Your laptop, on the same LAN for section 5, with: `ansible-core`, `ssh`, `ssh-copy-id`,
+  `ssh-keygen`, `ssh-keyscan`, `nc`, `openssl`, `gh` (logged in to `somethim/infra`), `cf`
+  (logged in to the Cloudflare account that holds `arbikullakshi.com`), and a checkout of
+  `master`. The laptop must also be on the tailnet with MagicDNS on, so `infra-host`
+  resolves.
+- Admin access to the Tailscale tailnet, the Cloudflare account and the GitHub repository.
+- The router's admin page, to give the server a fixed DHCP lease. The router forwards **no**
+  port to the server; remove any forward that points at it.
 
-## 2. Confirm the host's facts
+## 2. BIOS
 
-**Owner action**, in the Hetzner web console (not over SSH, so the host key you write down is
-the one the server really has):
+**Owner action**, at the server. Enter the firmware setup (usually `Del`, `F2` or `F10` at
+power-on). Names differ per vendor:
 
-| Command | Expect |
-| --- | --- |
-| `lsb_release -cs` | the same as `ubuntu_release` in `production.yml` (`noble` today) |
-| `docker version --format '{{.Server.Version}}'` | the major (the number before the first dot) equal to `docker_engine_major` (`29` today) |
-| `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` | `256 SHA256:… root@… (ED25519)`: **write the `SHA256:` fingerprint down** |
-| `docker volume ls` | lists `pgdata-v18`, `portfolio-media`, `hypernova_prizm-storage` and `edge_edge-acme` |
-| `docker inspect postgresql --format '{{range .Mounts}}{{.Name}} {{end}}'` | `pgdata-v18` |
+1. **Restore on AC power loss** (also "AC Back", "After Power Failure", "Power On After
+   Power Fail"): **Power On** (or **Last State**). The server then comes back by itself after
+   a power cut; nothing else can switch it on remotely.
+2. Boot order: the USB stick first for the install, the internal disk first afterwards.
+3. Optional: turn off any "ErP"/"EuP" deep power-saving mode, which on some boards disables
+   power-on after power loss; leave Secure Boot as it is (Ubuntu boots with it).
 
-If the release or the major differ, edit `production.yml` (through `master`) before anything
-else: provisioning stops with "Confirm the host's facts" when they do not match, and the
-Docker apt pin (written before the first `apt upgrade`) would otherwise move the Engine to
-another major. If a volume is missing, stop
-here and find out why before any release: the release uses these exact names and would
-otherwise start an app on an empty volume.
+Provisioning makes sure the running system never sleeps (all sleep targets masked, lid and
+sleep keys ignored, [docs/host.md](docs/host.md#power)); the firmware setting is the one part
+it cannot do.
 
-## 3. New CI deploy key
+## 3. Install Ubuntu Server
 
-**Owner action.** The release path has its own key, used only by the Deploy workflow and only
-for the `deploy` user. Make it on your machine:
+**Owner action.**
 
-```bash
-ssh-keygen -t ed25519 -N '' -C infra-deploy -f ~/.ssh/infra-deploy
-```
+1. On the laptop, download Ubuntu Server 26.04 LTS (amd64) from
+   <https://ubuntu.com/download/server> together with its `SHA256SUMS`, check it, and write it
+   to the USB stick (replace `/dev/sdX` with the stick, `lsblk` shows it; everything on it is
+   erased):
 
-Replace the contents of [`roles/common/files/deploy_key.pub`](roles/common/files/deploy_key.pub)
-(today the placeholder `REPLACE_ME_BEFORE_DEPLOYING`) with the one line of
-`~/.ssh/infra-deploy.pub`, commit it and merge it to `master`. Provisioning and the release
-render both refuse to run while the placeholder is there. Then store the private half:
+   ```bash
+   sha256sum --check --ignore-missing SHA256SUMS
+   sudo dd if=ubuntu-26.04-live-server-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+   ```
 
-```bash
-gh secret set SSH_PRIVATE_KEY --env production < ~/.ssh/infra-deploy
-```
+2. Boot the server from the stick and choose, in the installer:
+   - **Type of install**: Ubuntu Server (not minimized).
+   - **Network**: the wired interface on DHCP. Note its MAC address and the address it gets.
+   - **Storage**: use the entire disk, with LVM. On the summary screen, edit `ubuntu-lv` and
+     set its size to the maximum: the installer leaves most of a large disk unallocated
+     otherwise.
+   - **Profile**: your name; server name `infra-host`; username **`setup`** (anything but
+     `admin`, `deploy` or `root`: provisioning creates `admin` and `deploy` itself and removes
+     this account once `admin` works); a strong password, kept in your password manager until
+     section 8.
+   - **Ubuntu Pro**: skip.
+   - **SSH**: **Install OpenSSH server**: yes. Allow password authentication over SSH: yes (it
+     is only for `ssh-copy-id` in section 5; provisioning turns it off). Importing your key
+     from GitHub here works too, and replaces the `ssh-copy-id` step.
+   - **Featured server snaps**: none. In particular **not** `docker`: provisioning installs
+     Docker from Docker's own apt repository, pinned.
+3. Reboot, remove the stick, and log in at the console as `setup`. **Confirm the host's
+   facts** `production.yml` relies on, and write the fingerprint down; you compare against it
+   twice:
 
-(Create the Environment first if `gh` says it does not exist, step 5.) Provisioning installs
-the public half for `deploy` only, as one root-owned line
-`restrict,command="/usr/local/sbin/infra-deploy-gate" ssh-ed25519 AAAA… infra-deploy`, and
-checks that neither root nor `admin` trusts it. The old CI key, which root trusts today, is
-`legacy_ci_deploy_key` in `production.yml`; the first provision removes it from root.
+   | Command | Expect |
+   | --- | --- |
+   | `lsb_release -cs` | `resolute`, the `ubuntu_release` in `production.yml` |
+   | `command -v docker` | nothing (no Docker yet); provisioning installs major `docker_engine_major` (`29`) |
+   | `ip -4 -brief address` | the LAN address of the wired interface |
+   | `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` | `256 SHA256:… root@infra-host (ED25519)`: **write the `SHA256:` fingerprint down** |
+
+   If the release differs, edit `production.yml` (through `master`) before anything else:
+   provisioning stops with "Confirm the host's facts" when it does not match.
+4. In the router's admin page, give the server's MAC address a **fixed DHCP lease**
+   (sometimes "address reservation" or "static lease") on the address it has now, so the
+   address in section 5 stays valid. Reboot the server once and check `ip -4 -brief address`
+   shows the same address.
 
 ## 4. Tailscale
 
-**Owner action**, in the Tailscale admin console.
+**Owner action**, in the Tailscale admin console (<https://login.tailscale.com/admin>).
 
-1. **Access controls**: merge into the policy, and give nothing else access to
-   `tag:infra-server`:
+1. **Access controls**: merge these into the policy file, and give nothing else access to
+   `tag:infra-server`. Admins (you) and the CI runners reach the server on tcp 22 only;
+   OpenSSH, not Tailscale SSH, is the login:
 
    ```json
    {
@@ -96,280 +137,333 @@ checks that neither root nor `admin` trusts it. The old CI key, which root trust
    }
    ```
 
+   If the policy still has the default allow-all rule (`{"src": ["*"], "dst": ["*"], "ip":
+   ["*"]}` in `grants`, or the older `acls` equivalent), narrow it so it does not cover
+   `tag:infra-server`, or every device on the tailnet can reach the server.
 2. **Settings → Keys → Generate auth key**: one-off (not reusable), **pre-approved**, not
-   ephemeral, tag `tag:infra-server`, expiry 1 day. Keep it for 6.1; the first provision asks
-   for it without showing or storing it.
+   ephemeral, tag `tag:infra-server`, expiry 1 day. Keep it for section 5; the first
+   provision asks for it without showing or storing it. A tagged node's key does not expire,
+   so the server stays on the tailnet.
 3. **Settings → OAuth clients → Generate OAuth client**: scope **Auth Keys: write**, tag
-   `tag:infra-ci` only. The client ID is a variable, the secret a secret:
-
-   ```bash
-   gh variable set TS_OAUTH_CLIENT_ID --env production --body '<client id>'
-   gh secret set TS_OAUTH_SECRET --env production
-   ```
-
-   The Deploy workflow joins the tailnet with them for each run as an ephemeral
-   `tag:infra-ci` node.
+   `tag:infra-ci` only. Keep the client ID and secret for section 7. The Deploy workflow
+   joins the tailnet with them, for each run, as an ephemeral `tag:infra-ci` node.
 
 Provisioning joins the server as `infra-host` with `--ssh=false --accept-dns=false
---accept-routes=false` (OpenSSH stays the login), and on every run checks that it is on the
-tailnet as `infra-host` with exactly `tag:infra-server`. A stop there with "Check the auth
-key's tag and the policy's tagOwners" means the key was made without the tag, or the policy
-does not let you own it.
+--accept-routes=false`, and on every run checks that it is on the tailnet as `infra-host`
+with exactly `tag:infra-server`. A stop there with "Check the auth key's tag and the
+policy's tagOwners" means the key was made without the tag, or the policy does not let you
+own it.
 
-## 5. The production Environment
+## 5. First provision over the LAN
 
-**Owner action**, on GitHub (`somethim/infra` → Settings → Environments).
+**Owner action**, on your laptop, on the home LAN.
 
-1. Create the Environment `production`. Optionally restrict it to the `master` branch and add
-   yourself as a required reviewer; the workflow refuses any other branch either way.
-2. Set every secret and variable in [docs/deploying.md](docs/deploying.md#secrets-and-variables).
-   Secrets go in with `gh secret set <NAME> --env production` (it reads the value from the
-   prompt or stdin); variables with `gh variable set <NAME> --env production --body <value>`.
-   `SSH_KNOWN_HOSTS` and `SERVER_SSH_HOST` come from 6.3.
-3. Check the values you carry over from the old repository secrets (GitHub never shows a
-   stored value: take them from your password manager, or make new ones) against the formats
-   the release render asserts, on the runner, before anything reaches the host:
-   - `POSTGRES_SUPERUSER_PASSWORD`, `PRIZM_DB_PASSWORD`, `PORTFOLIO_DB_PASSWORD`: at least 32
-     letters and digits only (`[A-Za-z0-9]{32,}`), and all three different. Rotate any that is
-     not (`openssl rand -hex 24`): the first release re-sets each role's password and renders
-     the matching DSN in the same run, so the new value takes effect everywhere at once.
-   - `PORTFOLIO_TOTP_ENCRYPTION_KEY`: base64 of exactly 32 bytes (44 characters ending in `=`).
-     Carry the existing value over unchanged; a new one makes every enrolled TOTP secret
-     unreadable.
-   - No value may hold `$`, `"`, `'`, `` ` ``, `\`, `#`, a line break, or a leading or trailing
-     space, which the Compose env file would rewrite. Pick a new value for any that does.
-     `PORTFOLIO_ADMIN_PASSWORD` is only used when the operator account does not exist yet;
-     storing a new value never changes an existing account, so change the password in the
-     portfolio's `/admin` as well.
+1. **The CI deploy key.** The release path has its own key, used only by the Deploy workflow
+   and only for the `deploy` user. Its public half is already committed in
+   [`roles/common/files/deploy_key.pub`](roles/common/files/deploy_key.pub) (`… infra-deploy`)
+   and the private half is `~/.ssh/infra-deploy` on your laptop. If you no longer have that
+   private key (or the file is still the placeholder), make a **new CI deploy key** and commit
+   its public line to `master` before going on:
 
-A missing or malformed value stops the release with "Missing or invalid deploy secrets" or
-"`<name>` holds a $, quote, …" (both cite "Rotating a secret").
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C infra-deploy -f ~/.ssh/infra-deploy
+   cp ~/.ssh/infra-deploy.pub roles/common/files/deploy_key.pub   # then commit and merge to master
+   ```
 
-## 6. Cut-over
+   Provisioning installs the public half for `deploy` only, as one root-owned line
+   `restrict,command="/usr/local/sbin/infra-deploy-gate" ssh-ed25519 AAAA… infra-deploy`, and
+   refuses to run if `setup` or `admin` trusts it.
+2. **Trust the server's host key**, compared with the fingerprint from section 3:
 
-The order is lockout-safe: public SSH stays open until a provisioning run has come in over the
-tailnet, root login stays open (keys only) until `admin` is proven, and the Hetzner Cloud
-Firewall rule goes last. **Do not run Deploy before 6.6**: the old workflow that ran the
-playbook as root is gone from `master`, and the new one cannot reach the host until 6.3.
+   ```bash
+   ssh-keyscan -t ed25519 192.168.1.50 | ssh-keygen -lf -     # must print section 3's SHA256: fingerprint
+   ssh-keyscan -t ed25519 192.168.1.50 >> ~/.ssh/known_hosts
+   ```
 
-### 6.1 First provision, as root over the public address
+3. **Install your key** for `setup` (skip if the installer imported it from GitHub). Use your
+   own key, as a plain line, never the CI deploy key:
 
-**Owner action.** Host keys are checked (`ansible.cfg`), so first trust the server's key under
-its public IPv4, compared against the fingerprint from step 2:
+   ```bash
+   ssh-copy-id -i ~/.ssh/id_ed25519.pub setup@192.168.1.50
+   ssh setup@192.168.1.50 true                                 # exits 0 without a password prompt
+   ```
+
+4. **Point the inventory at the LAN address** for this run only (the play needs exactly one
+   host in `[server]`, so an inline `-i '192.168.1.50,'` does not work):
+
+   ```bash
+   cp inventory/hosts.example inventory/hosts
+   sed -i 's/^infra-host ansible_host=.*/infra-host ansible_host=192.168.1.50/' inventory/hosts
+   ansible-playbook -u setup --ask-become-pass provision.yml
+   ```
+
+   `BECOME password` is `setup`'s password. Enter the Tailscale auth key from section 4 at the
+   prompt `Tailscale auth key for infra-host`.
+
+Expect, in order: the checks pass (logged in as `setup`, Ubuntu `resolute`, no Docker yet);
+packages are upgraded and `unattended-upgrades` and `chrony` installed; ufw admits 22 on
+`tailscale0` **and still 22 on the LAN**, nothing else; `admin` is created with your keys
+(copied once from `setup`) and sudo that asks for a password; `deploy` is created with the
+forced command and the release scripts; fail2ban, patching, NTP and the journald cap are
+set; the server joins the tailnet; Docker 29 comes from the pinned apt repository;
+`/etc/infra/host.env`, the `INFRA-PUBLIC` firewall chain (no public port), swap, the sleep
+masks, the `edge` and `data` networks and the empty `pgdata-v18` volume are in place;
+Traefik (no published port), Watchtower and autoheal start; last, password and
+keyboard-interactive login are turned off and root login stays off. The run ends with:
+
+```
+setup stays until the first run as admin removes it.
+Set the admin sudo password: ssh -t setup@192.168.1.50 sudo passwd admin
+Then set ansible_host=infra-host in inventory/hosts and run: ansible-playbook -u admin --ask-become-pass provision.yml (RUNBOOK.md, "Second provision over the tailnet").
+This run did not reach infra-host over the tailnet, so ufw keeps 22/tcp open on the LAN. ...
+```
+
+5. **Set the admin sudo password** (it asks for `setup`'s password first, then the new one
+   twice). Keep it in your password manager; every later provision asks for it:
+
+   ```bash
+   ssh -t setup@192.168.1.50 sudo passwd admin
+   ```
+
+6. **Record the host key under the tailnet name**, for your laptop and for the Deploy
+   workflow (which checks it strictly from `SSH_KNOWN_HOSTS`):
+
+   ```bash
+   ssh-keyscan -t ed25519 infra-host | ssh-keygen -lf -       # must print section 3's SHA256: fingerprint
+   ssh-keyscan -t ed25519 infra-host > /tmp/kh && cat /tmp/kh >> ~/.ssh/known_hosts
+   ssh admin@infra-host true                                   # exits 0, no prompt: the tailnet path works
+   ```
+
+   Keep `/tmp/kh` for section 7. A stop at "setup's authorized_keys … must hold only your own
+   public keys" means a line there has options or is the CI key: fix the file and run again.
+
+## 6. Cloudflare Tunnel
+
+**Owner action.** One remotely managed tunnel, named `infra-host`, carries all three
+hostnames to Traefik. "Remotely managed" means its routes (Public Hostnames) live in
+Cloudflare, and the server only needs the tunnel's token, which the release renders into
+`tunnel/tunnel.env` for the `cloudflared` container. The tunnel must route:
+
+| Public hostname | Service |
+| --- | --- |
+| `arbikullakshi.com` | `http://edge-traefik:80` |
+| `www.arbikullakshi.com` | `http://edge-traefik:80` |
+| `hypernova.arbikullakshi.com` | `http://edge-traefik:80` |
+
+and nothing else (no catch-all other than the default `http_status:404`). Leave every origin
+option at its default: Traefik routes by the original `Host` header, which cloudflared passes
+through. The DNS records come in section 10, not here: the hostnames still point at the old
+server until then.
+
+With `cf`:
 
 ```bash
-ssh-keyscan -t ed25519 <IPv4> | ssh-keygen -lf -     # must print step 2's SHA256: fingerprint
-ssh-keygen -F <IPv4> || ssh-keyscan -t ed25519 <IPv4> >> ~/.ssh/known_hosts
+# 1. Create the remotely managed tunnel "infra-host" and print its token
+<CF COMMANDS: see coordinator>
+
+# 2. Set the tunnel's ingress to the three hostnames above -> http://edge-traefik:80, then http_status:404
+<CF COMMANDS: see coordinator>
+
+# 3. Turn on "Always Use HTTPS" for the zone arbikullakshi.com (Cloudflare, not Traefik, redirects HTTP to HTTPS)
+<CF COMMANDS: see coordinator>
 ```
 
-The play targets the inventory group `server`, and provisioning requires exactly one host in
-it, so an inline `-i '<IPv4>,'` inventory does not work. Point the inventory at the public
-address for this run only:
+Or in the dashboard: **Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared**,
+name it `infra-host`, then on the "Install and run a connector" page pick **Docker** and copy
+the token: the long string after `--token` in the command shown (it starts with `eyJ`). Do
+not run that command anywhere; the release runs cloudflared. Then **Next → Public
+Hostnames**: add the three rows of the table above (Subdomain empty / `www` / `hypernova`,
+domain `arbikullakshi.com`, Service type `HTTP`, URL `edge-traefik:80`). If the dashboard
+refuses a hostname because a DNS record with that name exists, do section 10's first step
+(delete the old records) at that point, at the cost of a slightly longer gap. Then **SSL/TLS
+→ Edge Certificates → Always Use HTTPS: On**.
+
+Keep the token for section 7 (the `CF_TUNNEL_TOKEN` secret). It is a credential: anyone with
+it can run a connector that serves your hostnames. If it leaks, rotate it
+([Rotating a secret](#rotating-a-secret)).
+
+## 7. The production Environment
+
+**Owner action**, on your laptop, with `gh` in the checkout. Create the Environment first
+(Settings → Environments → New environment → `production`; optionally restrict it to the
+`master` branch and add yourself as a required reviewer). Every value is new: generate them
+here. Every value must be free of `$`, `"`, `'`, `` ` ``, `\`, `#`, line breaks and leading
+or trailing spaces; the generated ones are.
 
 ```bash
-cp inventory/hosts.example inventory/hosts
-# edit inventory/hosts: under [server], set   infra-host ansible_host=<IPv4>
-ansible-playbook -u root provision.yml
-```
-
-Enter the Tailscale auth key from step 4 at the prompt (`Tailscale auth key for infra-host`).
-Expect, in this order (the order of `provision.yml`): the checks pass; ufw admits 22 on
-`tailscale0`, 80 and 443, **and still 22 on the public address**; the retired CI key is removed
-from root's `authorized_keys`; `admin` is created with your keys (copied once from root) and
-sudo that asks for a password; `deploy` is created with the forced command and the release
-scripts; fail2ban, patching and the journald cap are set; the server joins the tailnet; Docker
-comes from the pinned apt repository (the pin is written before the first `apt upgrade`, so the
-Engine stays on `docker_engine_major`; an update within that major restarts every container once);
-`/etc/infra/host.env`, the `INFRA-PUBLIC` firewall chain and swap are in place; Traefik,
-Watchtower and autoheal are replaced by the pinned, socket-proxied ones (same project names,
-same `edge_edge-acme` certificates); last, password and keyboard-interactive login are off and
-root login is `prohibit-password` (keys only). The run ends with:
-
-```
-Root can still log in with a key until provisioning runs as admin.
-Set the admin sudo password over the tailnet first: ssh -t root@infra-host passwd admin
-Then set ansible_host=infra-host in inventory/hosts and run: ansible-playbook -u admin --ask-become-pass provision.yml (RUNBOOK.md, "Cut-over").
-This run did not reach infra-host over the tailnet, so ufw keeps 22/tcp open on its public address. ...
-```
-
-The app stacks and crm keep running untouched. A stop at "Root's authorized_keys … must hold
-only your own public keys" means a line there has options or is the new CI key: fix the file
-as root and run again.
-
-### 6.2 Set the admin sudo password, over the tailnet
-
-**Owner action.** This proves the tailnet path and your key before anything closes. The first
-connection to `infra-host` shows its key fingerprint: answer `yes` only if it equals step 2's.
-
-```bash
-ssh -t root@infra-host passwd admin
-```
-
-Keep the password in your password manager; every later provision asks for it
-(`--ask-become-pass`). The admin run in 6.4 refuses to start closing root login until this
-password is set.
-
-### 6.3 Record the host key
-
-**Owner action.** The Deploy workflow checks the host key strictly, from the `SSH_KNOWN_HOSTS`
-secret, under the tailnet name in `SERVER_SSH_HOST`:
-
-```bash
-ssh-keyscan -t ed25519 infra-host | ssh-keygen -lf -    # must print step 2's SHA256: fingerprint
-ssh-keyscan -t ed25519 infra-host > /tmp/kh && gh secret set SSH_KNOWN_HOSTS --env production < /tmp/kh && cat /tmp/kh >> ~/.ssh/known_hosts && rm /tmp/kh
+# Access: the CI deploy key, the host key from section 5, the Tailscale OAuth client from section 4
+gh secret set SSH_PRIVATE_KEY --env production < ~/.ssh/infra-deploy
+gh secret set SSH_KNOWN_HOSTS --env production < /tmp/kh && rm /tmp/kh
 gh variable set SERVER_SSH_HOST --env production --body infra-host
-ssh admin@infra-host true                               # exits 0, no prompt
+gh variable set TS_OAUTH_CLIENT_ID --env production --body '<client id>'
+gh secret set TS_OAUTH_SECRET --env production                     # paste the OAuth client secret
+
+# The Cloudflare Tunnel token from section 6
+gh secret set CF_TUNNEL_TOKEN --env production                     # paste the token (eyJ...)
+
+# GHCR: an account and a classic token with read:packages that can read
+# ghcr.io/somethim/portfolio and the ghcr.io/hypernova3643725 images
+gh variable set GHCR_USERNAME --env production --body '<github user>'
+gh secret set GHCR_TOKEN --env production                          # paste the token
+
+# Database: three different passwords, 48 hex characters each; nobody needs to know them
+for name in POSTGRES_SUPERUSER_PASSWORD PRIZM_DB_PASSWORD PORTFOLIO_DB_PASSWORD; do
+  gh secret set "$name" --env production --body "$(openssl rand -hex 24)"
+done
+
+# Apps: generated secrets
+gh secret set PORTFOLIO_TOTP_ENCRYPTION_KEY --env production --body "$(openssl rand -base64 32)"
+gh secret set HYPERNOVA_SESSION_SECRET --env production --body "$(openssl rand -hex 24)"
+
+# Apps: the two operator passwords you will log in with; store each in your password manager first
+portfolio_admin="$(openssl rand -hex 16)"; echo "portfolio admin: $portfolio_admin"
+gh secret set PORTFOLIO_ADMIN_PASSWORD --env production --body "$portfolio_admin"
+hypernova_admin="$(openssl rand -hex 16)"; echo "hypernova admin: $hypernova_admin"
+gh secret set HYPERNOVA_ADMIN_PASSWORD --env production --body "$hypernova_admin"
+unset portfolio_admin hypernova_admin
+
+# Optional: outgoing mail and the Google Calendar integration
+gh secret set PORTFOLIO_RESEND_API_KEY --env production            # paste the Resend API key
+gh variable set PORTFOLIO_GOOGLE_CLIENT_ID --env production --body '<client id>.apps.googleusercontent.com'
+gh secret set PORTFOLIO_GOOGLE_CLIENT_SECRET --env production      # paste the client secret
 ```
 
-The secret's line must start with `infra-host`, the name `SERVER_SSH_HOST` holds; otherwise
-the workflow stops with "SSH_KNOWN_HOSTS has no key for infra-host". If the server is ever
-rebuilt, it gets a new host key: repeat step 2's fingerprint and this section.
+Leave the `SERVER_USER` variable unset (the workflow uses `deploy` and refuses `root` and
+`admin`). Delete what the old server used and nothing reads any more:
 
-### 6.4 Second provision, as admin over the tailnet
+```bash
+gh secret delete SERVER_HOST --env production      # "not found" is fine
+gh secret list --env production; gh variable list --env production
+```
 
-**Owner action.** Point the inventory back at the tailnet name and run as `admin`:
+The full list, with the format each value must have, is in
+[docs/deploying.md](docs/deploying.md#secrets-and-variables). A missing or malformed value
+stops the release on the runner, before the host is touched, with "Missing or invalid deploy
+secrets" or "`<name>` holds a $, quote, …".
+
+## 8. Second provision over the tailnet
+
+**Owner action.** Point the inventory at the tailnet name and run as `admin`; every later
+provision runs exactly like this:
 
 ```bash
 cp inventory/hosts.example inventory/hosts      # [server] infra-host ansible_host=infra-host
 ansible-playbook -u admin --ask-become-pass provision.yml
 ```
 
-Expect: "Close SSH on the public address once runs come in over the tailnet" reports
-`changed` (ufw's public 22 rule is deleted), sshd applies `PermitRootLogin no`, a cloud
-image's `ubuntu` account and `/etc/sudoers.d/90-cloud-init-users` are removed if present, and
-no "public address" message at the end. Every later provision runs exactly like this.
-
-### 6.5 Close SSH on the public address
-
-**Owner action.** From your machine:
+`BECOME password` is the admin password from section 5. Expect: "Close SSH on the LAN once
+runs come in over the tailnet" reports `changed` (ufw's LAN 22 rule is deleted), the `setup`
+account and its home directory are removed ("Remove the installer's account …"), and no "LAN"
+message at the end. Then, from the laptop:
 
 ```bash
-nc -z -w 5 <IPv4> 22                 # times out (exit 1)
-ssh admin@infra-host sudo ufw status  # Status: active; 22/tcp on tailscale0, 80/tcp, 443/tcp
+nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
+ssh admin@infra-host sudo ufw status            # Status: active; 22/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
-If a Hetzner Cloud Firewall is attached to the server, delete its tcp 22 rule now, last. The
-web console still takes root's password if the tailnet is ever unreachable (section 10).
+From now on the keyboard and monitor take the admin password if the tailnet is unreachable
+([Locked out](#locked-out)).
 
-### 6.6 First release
+## 9. First release
 
 **Owner action.** GitHub → **Actions → Deploy → Run workflow**, "Use workflow from" `master`,
-action `release`, every other input at its default. Expect in the "Release on the server" step:
+action `release`, every other input at its default. Expect in the "Release on the server"
+step:
 
 ```
 infra-apply: compose model accepted: 1 service(s) in the database stack, ...
 infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
-infra-apply: bundle accepted: 12 files, manifest checksums match
+infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
+infra-apply: bundle accepted: 14 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
 infra-apply: database roles, passwords and grants are in place
 infra-apply: starting portfolio
 infra-apply: starting hypernova
+infra-apply: starting tunnel
 infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
-infra-apply: Traefik routes arbikullakshi.com/ www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/ and keeps them behind the cloudflare-only allowlist
+infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
+infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
 
-and a green smoke step through Cloudflare (`OK 200 …` for `https://arbikullakshi.com/api/health`,
-`https://hypernova.arbikullakshi.com/` and its `/api/health`, `OK 301 …` for `www.`, and, when
-`SERVER_HOST` is set, `OK the origin refuses direct requests (403)`).
-`postgresql`, `portfolio`, `prizm-provider` and `prizm-web` are recreated in place (same names,
-same volumes) from the release in `/opt/infra/releases/<id>`, which `/opt/infra/current`
-points at. The portfolio can take up to 180 s to report healthy.
+PostgreSQL initialises the empty `pgdata-v18` volume on this first start, and `provision.sql`
+creates the `prizm` and `portfolio` roles and databases; the apps create their schemas. The
+portfolio can take up to 180 s to report healthy. In the Cloudflare dashboard the tunnel now
+shows **Healthy** with connections.
 
-### 6.7 Remove the old stack directories
+The smoke step that follows checks the hostnames through Cloudflare. Until section 10 they
+still resolve to the old server, so a green smoke step here proves nothing about this one; a
+red one only means the old server is down. Section 10 ends with a second `release` whose
+smoke step proves the new path.
 
-**Owner action.** Check that the apps now run from the release directory:
+## 10. DNS switch-over and decommissioning the old server
 
-```bash
-ssh admin@infra-host
-sudo docker inspect portfolio --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
-```
+**Owner action.** This is the only moment the sites change hands, and the only section that
+touches the old Hetzner server. Nothing is copied from it: the new server started empty.
 
-It must start with `/opt/infra/` (portfolio and hypernova are started from
-`/opt/infra/current/<stack>`, the database from `/opt/infra/releases/<id>/database`), not
-`/opt/portfolio`. Then delete the old directories, whose `.env` files still hold every secret
-in plain text:
-
-```bash
-sudo rm -rf /opt/database /opt/portfolio /opt/hypernova
-```
-
-Keep `/opt/edge`, `/opt/watchtower` and `/opt/autoheal` (provisioning owns them) and `/opt/crm`
-(section 7).
-
-### 6.8 Delete the old secrets
-
-**Owner action.** On `somethim/infra` → Settings → Secrets and variables → Actions, delete the
-old **repository** secrets: every `CRM_*`, `SSH_PRIVATE_KEY` (the retired key), `SERVER_USER`,
-`SERVER_HOST`, `GHCR_USERNAME`, `GHCR_TOKEN`, and the database and app secrets now in the
-`production` Environment. `SERVER_HOST` is still read, as an optional Environment secret for
-the smoke step's direct-origin check: set it there (`gh secret set SERVER_HOST --env
-production`) if you want that check. In the Tailscale console, revoke the auth key from step 4
-if it is still listed.
-
-## 7. crm cleanup
-
-One-shot, destructive, and only after 6.6 is green. It is a runbook step rather than a
-playbook on purpose: it runs once, and you read each output before the next command. All
-commands run as `admin` over the tailnet (`ssh admin@infra-host`), with `sudo`.
-
-1. **Optional final dump.** The new desktop crm starts fresh, so this is insurance only:
+1. **Replace the old records with the tunnel's.** Delete the `A` and `AAAA` records of
+   `arbikullakshi.com`, `www.arbikullakshi.com` and `hypernova.arbikullakshi.com` (they point
+   at the Hetzner server), then create, for each of the three names, a proxied `CNAME` to
+   `<tunnel id>.cfargotunnel.com`:
 
    ```bash
-   sudo docker exec postgresql pg_dump -U postgres -Fc crm > ~/crm-final.dump
+   # 1. Delete the A/AAAA records of the three hostnames
+   <CF COMMANDS: see coordinator>
+
+   # 2. Route the three hostnames to the tunnel infra-host (proxied CNAME -> <tunnel id>.cfargotunnel.com)
+   <CF COMMANDS: see coordinator>
+
+   # 3. Show the zone's records for the three names: each one proxied CNAME to the tunnel, no A/AAAA left
+   <CF COMMANDS: see coordinator>
    ```
 
-   Copy it off the host (`scp admin@infra-host:crm-final.dump .`), then delete it there.
-2. **Stop the stack**, keeping its volumes for now:
+   In the dashboard: **DNS → Records**, delete the three names' `A`/`AAAA` records; then in
+   **Zero Trust → Networks → Tunnels → infra-host → Public Hostnames**, re-save each
+   hostname (adding a public hostname creates its proxied CNAME). Leave the zone's other
+   records (mail: `MX`, `TXT`, Resend's DKIM) alone.
+2. **Check from outside**, for example from a phone off Wi-Fi or the laptop (Cloudflare's
+   proxy answers at once; there is no TTL to wait out for proxied records):
 
    ```bash
-   cd /opt/crm && sudo docker compose down
-   sudo docker ps -a --filter label=com.docker.compose.project=crm     # header line only
+   curl -sS -o /dev/null -w '%{http_code}\n' https://arbikullakshi.com/api/health            # 200
+   curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://www.arbikullakshi.com/ # 301 https://arbikullakshi.com/
+   curl -sS -o /dev/null -w '%{http_code}\n' https://hypernova.arbikullakshi.com/api/health  # 200
+   curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' http://arbikullakshi.com/      # 301 https://arbikullakshi.com/
    ```
 
-3. **Drop the database and the role:**
+   A `530` (error 1033) means the tunnel has no connector or no Public Hostname for that
+   name; a `502` that cloudflared cannot reach `edge-traefik:80`; a `404` that Traefik has no
+   router for that host.
+3. **Run `release` again** (Actions → Deploy, action `release`). Its smoke step now goes
+   through the tunnel: `OK 200` for `https://arbikullakshi.com/api/health`,
+   `https://hypernova.arbikullakshi.com/` and its `/api/health`, `OK 301` for `www.` and for
+   `http://arbikullakshi.com/api/health`.
+4. **Set up the portfolio again**: sign in at `https://arbikullakshi.com/admin` with
+   `PORTFOLIO_ADMIN_PASSWORD`, enrol TOTP and passkeys afresh, and reconnect Google Calendar
+   if you use it. Sign in to hypernova with `HYPERNOVA_ADMIN_PASSWORD`.
+5. **Decommission the old server**, in the Hetzner Cloud console (<https://console.hetzner.cloud>),
+   only after step 3 is green. There is nothing to snapshot (no data moves):
+   - the project's **Servers** → the old server → **Delete** (this also deletes its primary
+     IPs unless they are protected; delete any that remain under **Primary IPs**);
+   - **Volumes**: delete any volume that was attached to it;
+   - **Firewalls**, **Floating IPs**, **Networks** and **Snapshots/Backups** that belonged to
+     it: delete them;
+   - then check the project's **Usage** shows nothing billable, and cancel the project if it is
+     empty.
+6. **Clean up the rest of the old setup**: in the Tailscale console, remove the old server's
+   node if it is still listed and revoke any unused auth key; in GitHub, delete any old
+   repository-level secrets (Settings → Secrets and variables → Actions) that the
+   `production` Environment now holds.
 
-   ```bash
-   sudo docker exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c 'DROP DATABASE IF EXISTS crm WITH (FORCE)'
-   for db in postgres prizm portfolio; do
-     sudo docker exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d "$db" -c 'REASSIGN OWNED BY crm TO postgres; DROP OWNED BY crm'
-   done
-   sudo docker exec -i postgresql psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c 'DROP ROLE IF EXISTS crm'
-   sudo docker exec postgresql psql -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='crm'"   # prints nothing
-   ```
+## 11. Day-2 operations
 
-   Then open `https://arbikullakshi.com` and `https://hypernova.arbikullakshi.com`: both still
-   answer.
-4. **Volumes and network:**
-
-   ```bash
-   sudo docker volume ls --filter label=com.docker.compose.project=crm   # crm_crm-storage, crm_crm-typesense, crm_crm-redis
-   sudo docker volume rm crm_crm-storage crm_crm-typesense crm_crm-redis
-   sudo docker network rm crm            # "not found" is fine: compose down removed it
-   sudo docker inspect postgresql --format '{{range .Mounts}}{{.Name}} {{end}}'   # must print pgdata-v18
-   sudo docker volume rm crm-pgdata-v18  # only after the line above printed pgdata-v18; "no such volume" is fine
-   ```
-
-5. **Images and files:**
-
-   ```bash
-   sudo docker image ls --filter 'reference=ghcr.io/somethim/crm-*'
-   sudo docker image rm ghcr.io/somethim/crm-provider:latest ghcr.io/somethim/crm-web:latest
-   sudo docker image rm redis:7-alpine typesense/typesense:28.0   # refused if something still uses them; then keep them
-   sudo rm -rf /opt/crm
-   ```
-
-6. **Done when** no crm container, volume, network, image, role or database remains:
-   `sudo docker ps -a`, `sudo docker volume ls`, `sudo docker network ls` and
-   `sudo docker image ls` show nothing crm, step 3's query prints nothing, and Traefik serves no
-   crm router (the DNS records are already deleted). **Owner action.**
-
-## 8. Releases, status, rollback, resume
+### Releases, status, rollback, resume
 
 All four are **Actions → Deploy → Run workflow** from `master`, with the `action` input. The
 `portfolio`, `hypernova_provider`, `hypernova_web` and `dry_run` inputs apply only to
@@ -429,15 +523,16 @@ the fix is published.
   secrets from `master` again. Revert the `stack/database` or secret change on `master` (or fix
   the secret in the `production` Environment) and run `release`.
 - "release `<id>` is current but not verified; … (the last verified release was `<id>`:
-  `<summary>`)": an app stack did not start or the release did not verify; the new release is
-  `current`, and `previous` still names the last verified one. Read the failure line above it
-  (which container was not healthy, which route answered what). Run `rollback` only when an app
-  image is the cause: it changes nothing but the three app image references. A broken `stack/`
-  file, env template or secret comes back with a rollback (it is rendered from `master` again),
-  so revert that change on `master` and run `release`. The release kept in
-  `/opt/infra/releases/` cannot be re-applied.
+  `<summary>`)": an app stack or the tunnel did not start, or the release did not verify; the
+  new release is `current`, and `previous` still names the last verified one. Read the failure
+  line above it (which container was not healthy, which route answered what, whether
+  cloudflared reached Cloudflare). Run `rollback` only when an app image is the cause: it
+  changes nothing but the three app image references. A broken `stack/` file, env template or
+  secret (a revoked `CF_TUNNEL_TOKEN` among them) comes back with a rollback (it is rendered
+  from `master` again), so fix that on `master` or in the Environment and run `release`. The
+  release kept in `/opt/infra/releases/` cannot be re-applied.
 
-## 9. Rotating a secret
+### Rotating a secret
 
 Change it in the `production` Environment, then run `release`. That is the whole procedure for
 most values:
@@ -445,6 +540,11 @@ most values:
 - **Database passwords**: `provision.sql` re-sets each role's password in the same release
   that renders the new DSN, so the two cannot drift. `POSTGRES_SUPERUSER_PASSWORD` is re-set
   the same way. Generate with `openssl rand -hex 24`.
+- **`CF_TUNNEL_TOKEN`**: in the dashboard, **Zero Trust → Networks → Tunnels → infra-host →
+  Refresh token** (or with `cf`: `<CF COMMANDS: see coordinator>`), store the new token,
+  then run `release`: it recreates `cloudflared` with the new token, and the old token stops
+  working. The sites are unreachable from the token refresh until the release's tunnel check
+  passes, about a minute.
 - **`PORTFOLIO_ADMIN_PASSWORD`** is used only when the portfolio's operator account does not
   exist yet; changing it does not change an existing account. Change that password in
   `/admin`, then store the same value here.
@@ -452,62 +552,70 @@ most values:
   TOTP secret permanently unreadable; re-enrolment is the only recovery.
 - **`GHCR_TOKEN`**: a release logs in again, which also refreshes the credentials Watchtower
   reads from `/root/.docker`.
-- **`SSH_PRIVATE_KEY`** (the CI deploy key): make a new pair as in step 3, commit the public
+- **`SSH_PRIVATE_KEY`** (the CI deploy key): make a new pair as in section 5, commit the public
   half, provision (it replaces `deploy`'s one line), then set the secret.
-- **`TS_OAUTH_SECRET`**: generate a new OAuth client as in step 4 and replace both values.
+- **`TS_OAUTH_SECRET`**: generate a new OAuth client as in section 4 and replace both values.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
 
-## 10. Locked out
+### Provisioning again
 
-The way in that does not depend on sshd, keys or the tailnet is the **Hetzner Cloud web
-console**, logging in as root with the root password. From there:
+```bash
+ansible-playbook -u admin --ask-become-pass provision.yml                 # everything
+ansible-playbook -u admin --ask-become-pass provision.yml --tags edge     # one role
+```
+
+Run it when a role changes on `master`. It never touches the app stacks or their data.
+
+### Locked out
+
+The way in that depends on neither sshd, keys nor the tailnet is the **server's own keyboard
+and monitor**: log in as `admin` with its password. From there:
 
 - **The tailnet is down or the server left it**: `tailscale status`. If it is logged out,
-  `tailscale up --auth-key=<new one-off key, tag:infra-server> --hostname=infra-host
+  `sudo tailscale up --auth-key=<new one-off key, tag:infra-server> --hostname=infra-host
   --advertise-tags=tag:infra-server --ssh=false --accept-dns=false --accept-routes=false`
-  (make the key as in step 4).
-- **fail2ban banned you** (only possible from outside the tailnet; the tailnet range is
-  ignored): `fail2ban-client set sshd unbanip <your IP>`.
+  (make the key as in section 4).
+- **fail2ban banned you** (only possible from outside the tailnet, so only while LAN 22 is
+  open; the tailnet range is never banned): `sudo fail2ban-client set sshd unbanip <your IP>`.
 - **sshd refuses logins or will not start**: check
-  `/etc/ssh/sshd_config.d/10-hardening.conf` and `sshd -t`. Provisioning validates the file with
-  `sshd -t` before installing it and reloads (never restarts) sshd, so a provision should not
-  cause this; another drop-in in `/etc/ssh/sshd_config.d/` that overrides it would (provisioning
-  stops with "Locked out" when `sshd -T` does not apply its policy).
-- **You need public SSH for one run**: `ufw allow 22/tcp` in the console, run provisioning over
-  the public address as in 6.1 but as `admin`, then once more over the tailnet, which deletes
-  the rule again.
+  `/etc/ssh/sshd_config.d/10-hardening.conf` and `sudo sshd -t`. Provisioning validates the
+  file with `sshd -t` before installing it and reloads (never restarts) sshd, so a provision
+  should not cause this; another drop-in in `/etc/ssh/sshd_config.d/` that overrides it would
+  (provisioning stops with "Locked out" when `sshd -T` does not apply its policy).
+- **You need SSH over the LAN for one run**: `sudo ufw allow 22/tcp` at the console, run
+  provisioning with `ansible_host=<LAN address>` as `admin`, then once more over the tailnet,
+  which deletes the rule again.
+- **The server does not come back after a power cut**: the firmware setting of section 2 is
+  off, or the board's deep power-saving mode overrides it. Press the power button, then fix it
+  in the firmware.
 
-## 11. Re-pinning third-party images
+### The sites are down but the server is up
 
-Every non-app image is pinned `<image>:<tag>@sha256:<digest>`, one version per repository
-across `stack/` and `roles/*/files/`, and the bundle build refuses anything else. To move one
-(a Watchtower that the Engine calls "too old", a Traefik or PostgreSQL patch release), follow
-[docs/agents.md](docs/agents.md#re-pinning-third-party-images), then provision with that
-role's tag, or run `release` for `postgres` (a minor version only; a major is a dump and
-restore, [docs/database.md](docs/database.md#upgrades)).
+```bash
+ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Status}}'
+ssh admin@infra-host sudo docker logs --tail 50 cloudflared
+```
 
-### Optional Authenticated Origin Pulls
+`cloudflared` restarts on its own (`restart: always`, and autoheal when it reports
+unhealthy). Logs saying the token is invalid mean the tunnel was deleted or its token
+refreshed: store the current token as `CF_TUNNEL_TOKEN` and run `release`. A home internet
+outage takes the sites down until the line is back; cloudflared reconnects by itself, and a
+change of the home's public IP needs nothing at all.
 
-Off by default. With it on, Traefik refuses any TLS client without Cloudflare's origin-pull
-certificate, so the origin answers nothing but Cloudflare.
+### Re-pinning third-party images
 
-1. **Owner action**: enable Authenticated Origin Pulls in the Cloudflare dashboard (SSL/TLS →
-   Origin Server) first, and download Cloudflare's origin-pull CA as `origin-pull-ca.pem`.
-   Turning it on at the origin first would cut off Cloudflare.
-2. Provision the host role (it writes `ORIGIN_PULL=1` to `/etc/infra/host.env`, which the
-   release's route check reads) and the edge role together:
+Every non-app image (PostgreSQL, Traefik, cloudflared, the socket proxies, Watchtower,
+autoheal) is pinned `<image>:<tag>@sha256:<digest>`, one version per repository across
+`stack/` and `roles/*/files/`, and the bundle build refuses anything else. To move one (a
+Watchtower that the Engine calls "too old", a Traefik, cloudflared or PostgreSQL patch
+release), follow [docs/agents.md](docs/agents.md#re-pinning-third-party-images), then
+provision with that role's tag, or run `release` for `postgres` (a minor version only; a
+major is a dump and restore, [docs/database.md](docs/database.md#upgrades)) and `cloudflared`
+(`stack/tunnel`).
 
-   ```bash
-   ansible-playbook -u admin --ask-become-pass provision.yml --tags host,edge \
-     -e edge_origin_pull_enabled=true -e "edge_origin_pull_ca=$(cat origin-pull-ca.pem)"
-   ```
+### More recipes
 
-3. Run `release`. Its route check on the host now accepts the TLS refusal (curl gets no
-   client certificate) and says "origin pull on: route presence not proven locally for …";
-   the smoke step proves the routes through Cloudflare, and its direct-origin check accepts
-   "does not answer direct requests".
-
-The setting lives only in those `-e` flags. A later provision without them turns it off again
-(the sites keep working); pass the same flags on every provision while it should stay on.
+PostgreSQL access, disk, backups, a major PostgreSQL upgrade, Watchtower and a hung site are
+in [docs/operations.md](docs/operations.md).

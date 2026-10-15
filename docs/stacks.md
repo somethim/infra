@@ -15,7 +15,7 @@ says `hypernova`. Its secrets are in `provider.env`; `prizm-web` has none, and s
 once the provider reports healthy.
 
 Its only image tag is `:latest`, so a rollback names a digest (see
-[RUNBOOK.md](../RUNBOOK.md#8-releases-status-rollback-resume)).
+[RUNBOOK.md](../RUNBOOK.md#releases-status-rollback-resume)).
 
 ## portfolio
 
@@ -48,11 +48,12 @@ sudo docker exec portfolio /app/portfolio-seed
 and every enrolled credential stops working — there is no migration path, only
 re-enrolment. It is also the base for links in outgoing mail.
 
-**`CLIENT_IP_SOURCE=Cloudflare`** reads Cloudflare's authenticated `CF-Connecting-IP`
-header instead of selecting an address from `X-Forwarded-For`. The public request reaches
-Traefik through Cloudflare, so the rightmost forwarded address is a Cloudflare edge (and
-was incorrectly reported as the visitor). This also keys the rate limiter by the actual
-visitor instead of the edge proxy.
+**`CLIENT_IP_SOURCE=Cloudflare`** reads Cloudflare's `CF-Connecting-IP` header instead of
+selecting an address from `X-Forwarded-For`. Every public request reaches Traefik through the
+Cloudflare Tunnel, where Cloudflare's edge sets that header to the visitor's address and
+overwrites any value a client sent; nothing else can reach Traefik, so the header cannot be
+forged ([edge.md](edge.md#client-addresses-and-forwarded-headers)). This keys the rate limiter
+by the actual visitor instead of the proxy.
 
 **Mail is optional.** Without `RESEND_API_KEY` the site still runs: contact messages and
 comments are recorded and only the notifications are skipped and logged. The `From`
@@ -76,5 +77,4 @@ rollback can name a commit.
 
 `legacy.arbikullakshi.com` served a preserved Next.js portfolio from a second tag of the
 same GHCR package. It was retired in August 2026: the DNS record, the container, the
-image and the stack entry are all gone. Its certificate remains in `acme.json` and is
-inert — Traefik does not renew what no router references.
+image and the stack entry are all gone.

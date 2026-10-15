@@ -24,9 +24,9 @@ The cluster lives on **`pgdata-v18`**, declared `external: true`.
 
 External means Compose will use the volume but never create or delete it, so a
 `docker compose down -v` in the database stack is harmless. Provisioning (`roles/host`)
-creates the volume only when it is missing and never deletes it, and the compose guard
-refuses a release whose database stack names any other volume, so a release cannot start
-PostgreSQL on an empty one.
+creates the volume, empty, only when it is missing and never deletes it; the first release
+on a fresh host initialises it. The compose guard refuses a release whose database stack
+names any other volume, so a release cannot swap an empty volume in for the existing one.
 
 The name carries the major version because a major upgrade cannot be done in place; see
 [Upgrades](#upgrades).
@@ -44,8 +44,8 @@ The cluster's administrator is **`postgres`**, and it belongs to no application.
 administrator out of every application means retiring an application never means dropping
 the account that administers everyone else's databases.
 
-On a rebuilt host, `POSTGRES_USER=postgres` in the compose file makes initdb create it as the
-bootstrap superuser. On the existing volume initdb has long since run and those variables
+On a fresh volume (the home server started with one), `POSTGRES_USER=postgres` in the compose
+file makes initdb create it as the bootstrap superuser. Once initdb has run, those variables
 are ignored; `provision.sql` re-asserts `postgres` as `SUPERUSER LOGIN` with the password
 from `POSTGRES_SUPERUSER_PASSWORD` on every release instead.
 
@@ -57,13 +57,11 @@ host.
 
 ### `migration_admin`
 
-`migration_admin` is this cluster's **bootstrap superuser** (OID 10) — the PostgreSQL 18
-volume was initialised under it during the 17 → 18 upgrade, so it owns the system catalogs
-in every database and owns the `postgres` maintenance database.
-
-It looks like an upgrade leftover and is not one: **do not drop it.** It cannot log in, so
-it is not an access path. A host rebuilt from scratch will not have it — initdb creates
-`postgres` as the bootstrap superuser instead.
+`migration_admin` was the bootstrap superuser (OID 10) of the previous server's volume,
+initialised under it during a 17 → 18 upgrade. The home server started from an empty volume,
+so initdb made `postgres` the bootstrap superuser and `migration_admin` does not exist.
+`provision.sql` never demotes whichever role has OID 10. Whatever its name, never drop the
+bootstrap superuser of a cluster: it owns the system catalogs.
 
 ## Roles and databases
 
@@ -116,8 +114,8 @@ DETAIL:  The bootstrap superuser must have the SUPERUSER attribute.
 ```
 
 Unguarded, that error would abort the release on any cluster whose volume an application
-initialised. Here the bootstrap role is `migration_admin`, so both application roles are
-demotable.
+initialised. Here the bootstrap role is `postgres` (initdb on an empty volume), so both
+application roles are demotable.
 
 ## Connecting to it
 
