@@ -13,6 +13,7 @@ tailnet_ports:
   - { container: audiobookshelf, port: 13378 }
   - { container: kavita, port: 5000 }
   - { container: home, port: 80 }
+  - { container: home-tls, port: 443 }
 
 # Accounts the hardened stacks run as (no login, no home), and the external
 # volumes they own: provisioning creates each volume once and hands its root to
@@ -28,6 +29,7 @@ service_volumes:
   - { name: audiobookshelf-config, account: media }
   - { name: audiobookshelf-metadata, account: media }
   - { name: kavita-config, account: media }
+  - { name: home-tls-acme, account: media }
 
 # The disks, by filesystem UUID (production.yml): the internal HDD with the
 # library, and the external USB HDD the nightly backup writes to. Mounted with

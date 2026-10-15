@@ -116,13 +116,15 @@ cat >"$work/vars.json" <<JSON
   "hypernova_admin_password": "harness-hypernova-admin",
   "cf_tunnel_token": "eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ",
   "webui_secret_key": "HarnessWebuiSecret0123456789abcdefABCDEF",
+  "home_tls_cf_dns_token": "HarnessHomeTlsDnsToken0123456789abcdefABCDEF",
   "deploy_key_file": "$work/deploy_key.pub"
 }
 JSON
 secrets=(ghp_HarnessToken0123456789 HarnessPgSuperuser0123456789abcdefA HarnessPrizmDb0123456789abcdefABCDEF
   HarnessPortfolioDb0123456789abcdefAB SGFybmVzc1RvdHBLZXkwMTIzNDU2Nzg5YWJjZGVmQUI= harness-portfolio-admin
   re_HarnessResendKey HarnessGoogleSecret HarnessHypernovaSession0123456789 harness-hypernova-admin
-  eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ HarnessWebuiSecret0123456789abcdefABCDEF)
+  eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ HarnessWebuiSecret0123456789abcdefABCDEF
+  HarnessHomeTlsDnsToken0123456789abcdefABCDEF)
 
 build() {
   "$root/build-bundle.sh" "$@" >"$work/build.log" 2>&1
@@ -134,8 +136,8 @@ build "$work/vars.json" "$work/good-again.tgz" || { cat "$work/build.log"; echo 
 cmp -s "$work/good.tgz" "$work/good-again.tgz" || { echo "FAIL build-bundle.sh is not deterministic"; exit 1; }
 echo "ok   bundle: two builds from the same vars are byte-identical"
 if tar -tvzf "$work/good.tgz" | grep -qv '^-'; then tar -tvzf "$work/good.tgz"; echo "FAIL the bundle holds entries other than regular files"; exit 1; fi
-[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 19 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 19 files"; exit 1; }
-echo "ok   bundle: 19 file entries, no directories"
+[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 20 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 20 files"; exit 1; }
+echo "ok   bundle: 20 file entries, no directories"
 unpack "$work/good.tgz" "$work/good"
 grep -qxF "RELEASE_COMMIT=$(git -C "$root" rev-parse HEAD)" "$work/good/release.env" || { echo "FAIL release.env does not name the checked-out commit"; exit 1; }
 grep -qx 'RELEASE_MODE=latest' "$work/good/release.env" || { echo "FAIL a plain build is not a latest release"; exit 1; }
@@ -149,6 +151,7 @@ owner_of() {
     harness-hypernova-admin | HarnessHypernovaSession*) echo hypernova/provider.env ;;
     eyJHarnessTunnelToken*) echo tunnel/tunnel.env ;;
     HarnessWebuiSecret*) echo ai/open-webui.env ;;
+    HarnessHomeTlsDns*) echo media/home-tls.env ;;
     *) echo portfolio/portfolio.env ;;
   esac
 }
@@ -158,8 +161,8 @@ for secret in "${secrets[@]}"; do
   [ "$found" = "$want" ] || { echo "FAIL a secret is in '$found', expected only '$want'"; exit 1; }
 done
 for file in portfolio/.env hypernova/.env ai/.env media/.env; do
-  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODEL|MEDIA_UID|MEDIA_GID)=' "$work/good/$file"; then
-    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts and the model"; exit 1
+  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODEL|MEDIA_UID|MEDIA_GID|HOME_DOMAIN|ACME_EMAIL)=' "$work/good/$file"; then
+    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts, the model and the ACME contact"; exit 1
   fi
 done
 grep -qx 'OLLAMA_MODEL=qwen2.5:7b' "$work/good/ai/.env" || { echo "FAIL ai/.env does not name production.yml's ollama_model"; exit 1; }
@@ -215,6 +218,8 @@ render_refused "no tunnel token" 'del(.cf_tunnel_token)'
 render_refused "a tunnel token that is not one Cloudflare issues" '.cf_tunnel_token = "not-a-tunnel-token"'
 render_refused "no Open WebUI key" 'del(.webui_secret_key)'
 render_refused "a short Open WebUI key" '.webui_secret_key = "short"'
+render_refused "no Cloudflare DNS token for home-tls" 'del(.home_tls_cf_dns_token)'
+render_refused "a Cloudflare DNS token that is too short" '.home_tls_cf_dns_token = "short"'
 printf 'REPLACE_ME_BEFORE_DEPLOYING\n' >"$work/placeholder.pub"
 render_refused "the placeholder deploy key" ".deploy_key_file = \"$work/placeholder.pub\""
 
@@ -241,11 +246,11 @@ for stack in database portfolio hypernova tunnel ai media; do
 done
 grep -qF "compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for ollama, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU"; exit 1; }
-grep -qF "compose model accepted: 4 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, home $tailscale_ip:80, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for jellyfin, no Docker socket" "$work/out" ||
+grep -qF "compose model accepted: 5 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, home $tailscale_ip:80, home-tls $tailscale_ip:443, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for jellyfin, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the media stack summary does not name its tailnet ports, library mounts and GPU"; exit 1; }
 echo "ok   the six checked-in stacks pass the compose guard"
 [ -f "$state/stack/releases/$first_id/.verified" ] || { echo "FAIL the release was not marked verified"; exit 1; }
-for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env media/.env manifest.sha256; do
+for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env media/.env media/home-tls.env manifest.sha256; do
   [ "$(stat -c %a "$state/stack/current/$file")" = 600 ] || { echo "FAIL $file is not 0600 in the release"; exit 1; }
 done
 [ "$(stat -c %a "$state/stack/current/portfolio/docker-compose.yml")" = 644 ] || { echo "FAIL docker-compose.yml is not 0644"; exit 1; }
@@ -264,7 +269,9 @@ for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl
 done
 [ "$(grep -c '^curl \(route\|ready\) ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
 [ "$(grep -c '^curl public ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL the public check asked other than the four routes and the http redirect"; exit 1; }
-grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
+grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
+grep -qxF "curl tls home.arbikullakshi.com:443:$tailscale_ip https://home.arbikullakshi.com/" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not ask home-tls by name on the tailnet address"; exit 1; }
+grep -qF "infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on $tailscale_ip" "$work/out" || { cat "$work/out"; echo "FAIL verify did not report home-tls's certificate"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
 printf '%s\n' "portfolio=$portfolio_repo@$(d 11)" "prizm-provider=$provider_repo@$(d 21)" "prizm-web=$web_repo@$(d 31)" |
   cmp -s - "$state/stack/current/running-images.env" || { cat "$state/stack/current/running-images.env"; echo "FAIL running-images.env does not record the running digests"; exit 1; }
@@ -362,6 +369,18 @@ new_state
 printf '200' >"$state/curl.public.http.arbikullakshi.com"
 expect_refused "plain http served instead of redirected to https" "http://arbikullakshi\.com/api/health answered 200 through Cloudflare, expected \^30\[18\]\\\$; the release" "$work/good.tgz" release
 echo "ok   the public check requires each route's status through Cloudflare, after the host verified the release"
+
+new_state
+printf '000' >"$state/curl.tls.home.arbikullakshi.com"
+echo 60 >"$state/curl.tls.home.arbikullakshi.com.rc"
+expect_refused "home-tls without a trusted certificate" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 000, expected 200 with a trusted certificate \\(000: no certificate yet: HOME_TLS_CF_DNS_TOKEN" "$work/good.tgz" release
+[ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose links page has no certificate was marked verified"; exit 1; }
+grep -q '^curl public ' "$state/calls" && { echo "FAIL the public hosts were asked before home-tls had its certificate"; exit 1; }
+
+new_state
+printf '502' >"$state/curl.tls.home.arbikullakshi.com"
+expect_refused "home-tls that cannot reach the links page" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 502" "$work/good.tgz" release
+echo "ok   verify requires https://home.arbikullakshi.com/ with a trusted certificate on the Tailscale address"
 
 new_state
 tailnet_binding open-webui 8080 0.0.0.0
@@ -480,6 +499,11 @@ variant badwebui
 printf 'WEBUI_SECRET_KEY=HarnessWebuiSecret0123456789abcdefABCDEF\nOPENAI_API_KEY=x\n' >"$work/badwebui/ai/open-webui.env"
 repack badwebui
 refused_bundle "open-webui.env with an extra key" "ai/open-webui\\.env must set exactly WEBUI_SECRET_KEY" "$work/badwebui.tgz"
+
+variant badhometls
+printf 'CF_DNS_API_TOKEN=HarnessHomeTlsDnsToken0123456789abcdefABCDEF\nCF_API_EMAIL=x\n' >"$work/badhometls/media/home-tls.env"
+repack badhometls
+refused_bundle "home-tls.env with an extra key" "media/home-tls\\.env must set exactly CF_DNS_API_TOKEN" "$work/badhometls.tgz"
 
 release_env_case() {
   local name="$1" want="$2" body="$3"
@@ -666,7 +690,8 @@ compose_case "Kavita as root" media 'service kavita runs as "0:0"; it must run a
 compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
 compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
 compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
-compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read no env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
+compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read home-tls.env' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
+compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack home-tls may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
 # The guard on its own, against the resolved models of the checked-in stacks.
 for stack in database portfolio hypernova tunnel ai media; do
   repos=()
@@ -777,14 +802,14 @@ expect_refused "a container with an unreadable StartedAt" "not ready after 1s: p
 installed_state
 sleep 1
 touch "$state/vanished/c4"
-expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 12 listed containers could not be inspected" "$work/second.tgz" release
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 13 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
 
 installed_state
 sleep 1
-for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12; do touch "$state/vanished/$c"; done
-expect_refused "every listed container is gone before the inspect" "not ready after 1s: 12 of 12 listed containers could not be inspected" "$work/second.tgz" release
+for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13; do touch "$state/vanished/$c"; done
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 13 of 13 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
 
 installed_state

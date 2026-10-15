@@ -37,6 +37,7 @@ TAILNET_PORTS = {
     ("media", "audiobookshelf"): 13378,
     ("media", "kavita"): 5000,
     ("media", "home"): 80,
+    ("media", "home-tls"): 443,
 }
 TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
 TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
@@ -97,16 +98,19 @@ STACKS = {
         "container_env_files": {"open-webui": {"open-webui.env"}},
         "hardened": True,
     },
-    # The owner's media, reachable only over the tailnet; no secrets at all.
+    # The owner's media, reachable only over the tailnet. One secret: the
+    # Cloudflare DNS token home-tls alone reads for its certificate.
     "media": {
         "networks": {"media"},
         "volumes": {name: {"name": name, "external": True} for name in
-                    ("jellyfin-config", "jellyfin-cache", "audiobookshelf-config", "audiobookshelf-metadata", "kavita-config")},
-        "containers": {"jellyfin", "audiobookshelf", "kavita", "home"},
-        "env_files": (),
+                    ("jellyfin-config", "jellyfin-cache", "audiobookshelf-config", "audiobookshelf-metadata", "kavita-config",
+                     "home-tls-acme")},
+        "containers": {"jellyfin", "audiobookshelf", "kavita", "home", "home-tls"},
+        "env_files": ("home-tls.env",),
         "labels": AUTOHEAL_LABEL,
-        "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}, "home": {"media"}},
-        "container_env_files": {},
+        "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}, "home": {"media"},
+                               "home-tls": {"media"}},
+        "container_env_files": {"home-tls": {"home-tls.env"}},
         "hardened": True,
     },
 }

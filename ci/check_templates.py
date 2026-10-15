@@ -62,6 +62,7 @@ SECRET_PREFIX_FILES = {
     "ghcr_": {"ghcr.env"},
     "cf_": {"tunnel/tunnel.env"},
     "webui_": {"ai/open-webui.env"},
+    "home_tls_": {"media/home-tls.env"},
 }
 # Set at apply time from /etc/infra/host.env (infra-apply exports them), never by a bundle file.
 HOST_VARIABLES = {"TAILSCALE_IP"}
@@ -72,6 +73,7 @@ TAILNET_PORTS = {
     ("media", "audiobookshelf"): 13378,
     ("media", "kavita"): 5000,
     ("media", "home"): 80,
+    ("media", "home-tls"): 443,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}

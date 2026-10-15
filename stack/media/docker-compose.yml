@@ -2,13 +2,16 @@
 # for the owner over the tailnet only.
 # See docs/stacks.md. Each publishes one port on the host's Tailscale address
 # and nowhere else (TAILSCALE_IP comes from /etc/infra/host.env, which
-# infra-apply exports); never through the tunnel or Traefik (Cloudflare's terms
-# rule out serving video through it, and nothing here is for the public). The
+# infra-apply exports); never through the tunnel or the edge Traefik
+# (Cloudflare's terms rule out serving video through it, and nothing here is
+# for the public; home-tls, the links page's https front, is its own Traefik on
+# the tailnet address). The
 # library is on the media disk (/srv/media), bind-mounted per folder: read-only,
 # except the audiobooks and podcasts Audiobookshelf manages. Every container
 # runs as the media account (.env, from production.yml), with no capability
 # and no new privileges. No Watchtower label: the images are pinned and move
-# only with a reviewed re-pin and a release. No secrets, so no env file.
+# only with a reviewed re-pin and a release. One secret: home-tls.env, the
+# Cloudflare DNS token home-tls alone reads for its certificate.
 name: media
 
 services:
@@ -174,8 +177,9 @@ services:
     ports:
       - "${TAILSCALE_IP}:80:80"
     environment:
-      # Links are built from the address the page was opened on (infra-host, the
-      # Tailscale IP or a DNS name for it); the hrefs are the fallback.
+      # The tiles always link to http://infra-host:<port>: under
+      # home.arbikullakshi.com the apex's HSTS (includeSubDomains) would turn a
+      # link built from the page's own name into https, which the apps do not serve.
       HOME_HTML: |
         <!doctype html>
         <html lang="en">
@@ -225,11 +229,6 @@ services:
           <b>Kavita</b><span>Books</span>
         </a>
         </main>
-        <script>
-        document.querySelectorAll("a[data-port]").forEach(function (a) {
-          a.href = location.protocol + "//" + location.hostname + ":" + a.getAttribute("data-port") + "/";
-        });
-        </script>
         </body>
         </html>
     networks:
@@ -240,6 +239,99 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+    labels:
+      - autoheal=true
+
+  # https://home.arbikullakshi.com: the apex sends HSTS with includeSubDomains,
+  # so browsers only open home. over https. A second Traefik (the edge image)
+  # terminates TLS on the Tailscale address and proxies to home:80 over the
+  # media network. Its certificate comes from Let's Encrypt by DNS-01 through
+  # Cloudflare's API (home-tls.env: a token that may edit only this zone's DNS),
+  # so nothing on the internet has to reach the host. No Docker socket: the
+  # static and dynamic configuration are written to tmpfs from the variables
+  # below at start. Port 443 needs no capability (as for home's 80).
+  home-tls:
+    image: traefik:v3.7.13@sha256:24841fe2de7304c149343d877d2923b4c8800a38ba015dea9174c23b20e344a0
+    container_name: home-tls
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 128m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: home-tls.env
+    command:
+      - sh
+      - -c
+      - printf '%s' "$$HOME_TLS_STATIC" >/tmp/traefik.yml && printf '%s' "$$HOME_TLS_DYNAMIC" >/tmp/dynamic.yml && exec traefik --configfile=/tmp/traefik.yml
+    ports:
+      - "${TAILSCALE_IP}:443:443"
+    environment:
+      GOMEMLIMIT: 96MiB
+      HOME_TLS_STATIC: |
+        global:
+          checkNewVersion: false
+          sendAnonymousUsage: false
+        log:
+          level: INFO
+        entryPoints:
+          websecure:
+            address: ":443"
+            http:
+              # Drop headers that alias one Traefik sets (X_Forwarded_For).
+              aliasHeadersStrategy: delete
+          ping:
+            address: "127.0.0.1:8082"
+            http:
+              aliasHeadersStrategy: delete
+        ping:
+          entryPoint: ping
+        providers:
+          file:
+            filename: /tmp/dynamic.yml
+        certificatesResolvers:
+          letsencrypt:
+            acme:
+              email: "${ACME_EMAIL}"
+              storage: /acme/acme.json
+              dnsChallenge:
+                provider: cloudflare
+                resolvers:
+                  - "1.1.1.1:53"
+                  - "8.8.8.8:53"
+      HOME_TLS_DYNAMIC: |
+        http:
+          routers:
+            home:
+              rule: "Host(`${HOME_DOMAIN}`)"
+              entryPoints: [websecure]
+              service: home
+              tls:
+                certResolver: letsencrypt
+          services:
+            home:
+              loadBalancer:
+                servers:
+                  - url: "http://home:80"
+    volumes:
+      # The ACME account and certificate (acme.json, 0600), so a restart does
+      # not ask Let's Encrypt again. Not backed up: a lost one is reissued.
+      - type: volume
+        source: home-tls-acme
+        target: /acme
+        volume:
+          nocopy: true
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     labels:
       - autoheal=true
 
@@ -263,4 +355,7 @@ volumes:
     external: true
   kavita-config:
     name: kavita-config
+    external: true
+  home-tls-acme:
+    name: home-tls-acme
     external: true

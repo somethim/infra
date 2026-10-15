@@ -485,7 +485,7 @@ def self_test() -> None:
         ("5", "a tailnet port the guard does not know", edit("roles/host/defaults/main.yml", "  - { container: open-webui, port: 8080 }\n", "  - { container: open-webui, port: 8080 }\n  - { container: ollama, port: 11434 }\n"),
          "roles/common/files/infra-compose-guard TAILNET_PORTS lists"),
         ("5", "infra-apply checking another port", edit("roles/common/files/infra-apply", '"open-webui 8080" "jellyfin 8096"', '"open-webui 8081" "jellyfin 8096"'),
-         "roles/common/files/infra-apply tailnet_ports lists [('audiobookshelf', 13378), ('home', 80), ('jellyfin', 8096), ('kavita', 5000), ('open-webui', 8081)]"),
+         "roles/common/files/infra-apply tailnet_ports lists [('audiobookshelf', 13378), ('home', 80), ('home-tls', 443), ('jellyfin', 8096), ('kavita', 5000), ('open-webui', 8081)]"),
         ("5", "a published port admitted on the LAN", edit("production.yml", "public_ports: []", "public_ports: [443]"), "public_ports must be []"),
         ("5", "LAN 22 deleted on a run outside the tailnet", edit("roles/common/tasks/firewall.yml", "  when: not ssh_outside_tailnet\n", ""), "'ufw delete allow 22/tcp' must run exactly once"),
         ("5", "a second definition of the SSH route", append("roles/common/tasks/firewall.yml", "\n- name: Guess the route\n  ansible.builtin.set_fact:\n    ssh_outside_tailnet: false\n"),

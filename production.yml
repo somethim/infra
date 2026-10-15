@@ -55,6 +55,11 @@ public_ports: []
 apex_domain: arbikullakshi.com
 www_domain: www.arbikullakshi.com
 hypernova_domain: hypernova.arbikullakshi.com
+# The tailnet-only links page's https name: an unproxied A record to the
+# server's Tailscale address (RUNBOOK.md, "The links page"), and the contact
+# Let's Encrypt has for its certificate.
+home_domain: home.arbikullakshi.com
+acme_email: contact@arbikullakshi.com
 
 portfolio_image_repo: ghcr.io/somethim/portfolio
 hypernova_provider_image_repo: ghcr.io/hypernova3643725/hypernova-provider

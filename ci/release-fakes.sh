@@ -147,24 +147,33 @@ SH
 # gets state/curl.<host> (default 301 for www., else 200); the tunnel check
 # (no Host header) asks cloudflared's /ready and gets state/curl.ready
 # (default 200); the public check (a URL by name, no Host header) gets
-# state/curl.public.<scheme>.<host> (default 301 for www. and plain http, else 200). state/curl.<key>.rc sets the exit status.
+# state/curl.public.<scheme>.<host> (default 301 for www. and plain http, else 200);
+# home-tls's certificate check (--resolve <name>:443:<tailnet ip>) gets
+# state/curl.tls.<host> (default 200). state/curl.<key>.rc sets the exit status.
 cat >"$work/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 host=""
 url=""
+resolve=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -H)
       case "$2" in "Host: "*) host="${2#Host: }" ;; esac
       shift 2
       ;;
+    --resolve) resolve="$2"; shift 2 ;;
     -o | -w | --max-time) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
-if [ -z "$host" ] && [[ "$url" =~ ^(https?)://([a-z][a-z0-9.-]*)(/.*)?$ ]]; then
+if [ -n "$resolve" ] && [[ "$url" =~ ^https://([a-z][a-z0-9.-]*)/ ]]; then
+  # home-tls's certificate check: https by name, pinned to the Tailscale address.
+  key="tls.${BASH_REMATCH[1]}"
+  default=200
+  printf 'curl tls %s %s\n' "$resolve" "$url" >>"$FAKE_STATE/calls"
+elif [ -z "$host" ] && [[ "$url" =~ ^(https?)://([a-z][a-z0-9.-]*)(/.*)?$ ]]; then
   # The public check: a visitor's request by name, through Cloudflare.
   key="public.${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
   default=200
@@ -234,8 +243,9 @@ new_state() {
     "c9 /jellyfin running always healthy media" \
     "c10 /audiobookshelf running always healthy media" \
     "c11 /kavita running always healthy media" \
-    "c12 /home running always healthy media" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita home; do
+    "c12 /home running always healthy media" \
+    "c13 /home-tls running always healthy media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita home home-tls; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
@@ -243,6 +253,7 @@ new_state() {
   tailnet_binding audiobookshelf 13378
   tailnet_binding kavita 5000
   tailnet_binding home 80
+  tailnet_binding home-tls 443
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11
@@ -265,7 +276,7 @@ run_apply() {
   PATH="$work/bin:$PATH" FAKE_STATE="$state" \
     INFRA_APPLY_STACK_DIR="$state/stack" INFRA_APPLY_EDGE_DIR="$state/edge" INFRA_APPLY_DOCKER_CONFIG="$state/docker" \
     INFRA_APPLY_HOST_FILE="$state/host.env" INFRA_APPLY_GUARD="$guard" \
-    INFRA_APPLY_WAIT_SECONDS="${apply_wait_seconds:-1}" INFRA_APPLY_ROUTE_WAIT_SECONDS=1 INFRA_APPLY_PUBLIC_WAIT_SECONDS=1 INFRA_APPLY_POLL_SECONDS=0.2 \
+    INFRA_APPLY_WAIT_SECONDS="${apply_wait_seconds:-1}" INFRA_APPLY_ROUTE_WAIT_SECONDS=1 INFRA_APPLY_PUBLIC_WAIT_SECONDS=1 INFRA_APPLY_HOME_TLS_WAIT_SECONDS=1 INFRA_APPLY_POLL_SECONDS=0.2 \
     "$apply" "$@" <"$input" >"$work/out" 2>&1
 }
 

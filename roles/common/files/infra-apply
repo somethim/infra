@@ -30,6 +30,9 @@ readonly guard="${INFRA_APPLY_GUARD:-/usr/local/libexec/infra-compose-guard}"
 readonly wait_seconds="${INFRA_APPLY_WAIT_SECONDS:-600}"
 readonly route_wait_seconds="${INFRA_APPLY_ROUTE_WAIT_SECONDS:-60}"
 readonly poll_seconds="${INFRA_APPLY_POLL_SECONDS:-5}"
+# How long verify waits for home-tls to hold a Let's Encrypt certificate
+# (DNS-01 through Cloudflare takes a minute or two on the first start).
+readonly home_tls_wait_seconds="${INFRA_APPLY_HOME_TLS_WAIT_SECONDS:-300}"
 # How long the public check waits for Cloudflare to serve the new release.
 readonly public_wait_seconds="${INFRA_APPLY_PUBLIC_WAIT_SECONDS:-300}"
 # A container counts as ready only once it has run this long without a
@@ -48,15 +51,15 @@ readonly bundle_files=(
   hypernova/docker-compose.yml hypernova/.env hypernova/provider.env
   tunnel/docker-compose.yml tunnel/tunnel.env
   ai/docker-compose.yml ai/.env ai/open-webui.env
-  media/docker-compose.yml media/.env
+  media/docker-compose.yml media/.env media/home-tls.env
 )
 readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env media/.env)
+  ai/.env ai/open-webui.env media/.env media/home-tls.env)
 readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env media/.env manifest.sha256)
+  ai/.env ai/open-webui.env media/.env media/home-tls.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
-readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80")
+readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443")
 readonly tailscale_ip_pattern='^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
 readonly service_user_pattern='^[1-9][0-9]*:[1-9][0-9]*$'
 # Traefik and cloudflared, by container name, on the shared edge network.
@@ -241,6 +244,9 @@ validate_env_files() {
   fi
   if ! grep -qE '^WEBUI_SECRET_KEY=[A-Za-z0-9]{32,}$' "$dir/ai/open-webui.env" || [ "$(grep -c . "$dir/ai/open-webui.env")" -ne 1 ]; then
     untouched "ai/open-webui.env must set exactly WEBUI_SECRET_KEY"
+  fi
+  if ! grep -qE '^CF_DNS_API_TOKEN=[A-Za-z0-9_-]{40,}$' "$dir/media/home-tls.env" || [ "$(grep -c . "$dir/media/home-tls.env")" -ne 1 ]; then
+    untouched "media/home-tls.env must set exactly CF_DNS_API_TOKEN"
   fi
 }
 
@@ -563,6 +569,26 @@ check_public() {
   log "Cloudflare serves ${checked[*]}"
 }
 
+# home-tls answers https for the links page's name on the Tailscale address
+# with a certificate curl trusts: Let's Encrypt has issued it through
+# Cloudflare's DNS. Asked by name, pinned to the tailnet address, the way a
+# tailnet browser reaches it.
+check_home_tls() {
+  local release="$1" domain code deadline
+  domain="$(sed -n 's/^HOME_DOMAIN=//p' "$release/media/.env")"
+  [[ "$domain" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected HOME_DOMAIN $(printf '%q' "$domain") in media/.env"
+  deadline=$((SECONDS + home_tls_wait_seconds))
+  while :; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$domain:443:$tailscale_ip" "https://$domain/" || true)"
+    [ "${code:-000}" != 200 ] || break
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      fail "https://$domain/ on $tailscale_ip answered ${code:-000}, expected 200 with a trusted certificate (000: no certificate yet: HOME_TLS_CF_DNS_TOKEN must be a Cloudflare API token with Zone DNS Edit on the zone, and docker logs home-tls shows Let's Encrypt's answer; 404 or 502: home-tls cannot route to home:80)"
+    fi
+    sleep "$poll_seconds"
+  done
+  log "https://$domain/ serves the links page with a trusted certificate on $tailscale_ip"
+}
+
 # Each tailnet-only port is bound to the Tailscale address and nothing else, as
 # Docker applied it (the guard checked the compose model before the start).
 check_tailnet_ports() {
@@ -661,6 +687,7 @@ verify_release() {
   check_routes "$stack_dir/current"
   check_tunnel
   check_tailnet_ports
+  check_home_tls "$stack_dir/current"
   check_socket_clients
   record_running_images "$id"
   touch "$releases_dir/$id/.verified"

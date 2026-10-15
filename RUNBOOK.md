@@ -126,7 +126,7 @@ it cannot do.
 
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
-   (the links page 80, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
+   (the links page 80 and 443, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
    [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
@@ -138,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -334,6 +334,7 @@ done
 gh secret set PORTFOLIO_TOTP_ENCRYPTION_KEY --env production --body "$(openssl rand -base64 32)"
 gh secret set HYPERNOVA_SESSION_SECRET --env production --body "$(openssl rand -hex 24)"
 gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
+# HOME_TLS_CF_DNS_TOKEN: a Cloudflare API token, created as in "The links page" (section 12)
 
 # Apps: the two operator passwords you will log in with; store each in your password manager first
 portfolio_admin="$(openssl rand -hex 16)"; echo "portfolio admin: $portfolio_admin"
@@ -378,7 +379,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -397,8 +398,8 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: compose model accepted: 4 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, home 100.x.y.z:80, ...
-infra-apply: bundle accepted: 19 files, manifest checksums match
+infra-apply: compose model accepted: 5 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
+infra-apply: bundle accepted: 20 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -412,7 +413,8 @@ infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 are bound to 100.x.y.z alone
+infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on 100.x.y.z
 infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
@@ -584,6 +586,9 @@ most values:
 - **`SSH_PRIVATE_KEY`** (the CI deploy key): make a new pair as in section 5, commit the public
   half, provision (it replaces `deploy`'s one line), then set the secret.
 - **`TS_OAUTH_SECRET`**: generate a new OAuth client as in section 4 and replace both values.
+- **`HOME_TLS_CF_DNS_TOKEN`**: create a new token as in [The links page](#the-links-page), set
+  it, `release`, then delete the old token (Cloudflare dashboard, My Profile → API Tokens).
+  The certificate already issued keeps working; only renewals use the token.
 - **`WEBUI_SECRET_KEY`**: `openssl rand -hex 32`, then `release`. It only signs Open WebUI's
   sessions, so everyone is signed out and nothing else changes.
 
@@ -764,7 +769,7 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
 
 `tag:infra-ci` gets no new port. Check from the laptop once the release below is done:
@@ -821,7 +826,7 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
-"the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80
+"the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443
 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB); the first pull takes a
 while. `ollama-pull` then downloads `qwen2.5:7b` (about 4.7 GB) in the background:
 
@@ -863,24 +868,59 @@ Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/aud
 
 ### The links page
 
-`http://infra-host/` on any device on the tailnet shows the four services as four tiles (two by
-two, on a phone too), so nobody has to remember a port; bookmark it or add it to the home
-screen. It is the `home` container in the media stack (busybox `httpd`, the page is in
-`stack/media/docker-compose.yml`), on port 80 of the Tailscale address only, like the others.
-A tailnet whose policy predates the page needs `tcp:80` added to the admins' grant to
-`tag:infra-server` ([Tailscale grants](#tailscale-grants)); until then the page times out.
-The tiles link to the address the page was opened on, so it also works by IP
-(`http://100.x.y.z/`) or by a name of your own. Optional, a name that is easier to type:
-a DNS-only record (grey cloud, not proxied) `home.arbikullakshi.com` → the server's Tailscale
-address. Off the tailnet that address leads nowhere, so the record reveals nothing usable:
+`https://home.arbikullakshi.com/` (or `http://infra-host/`) on any device on the tailnet shows
+the four services as four tiles (two by two, on a phone too), so nobody has to remember a
+port; bookmark it or add it to the home screen. The tiles always open `http://infra-host:<port>`.
+
+Two containers in the media stack serve it, each on the Tailscale address only, like the
+others:
+
+- `home` (busybox `httpd`, the page is in `stack/media/docker-compose.yml`) on port 80, for
+  `http://infra-host/`.
+- `home-tls` (Traefik, the edge image) on port 443, for `https://home.arbikullakshi.com/`. The
+  apex sends HSTS with `includeSubDomains`, so a browser that has seen arbikullakshi.com only
+  ever opens `home.` over https. `home-tls` gets a Let's Encrypt certificate by the DNS-01
+  challenge through Cloudflare's API, so nothing on the internet has to reach the server, and
+  keeps it in the `home-tls-acme` volume (not backed up: a lost one is simply reissued).
+
+`home.arbikullakshi.com` is a DNS-only record (grey cloud, not proxied) to the server's
+Tailscale address. Off the tailnet that address leads nowhere, so the record reveals nothing
+usable:
 
 ```bash
 Z=b548cd8d33527abe0bc4f3fc106096d1
 cf dns records create -z $Z --body '{"type":"A","name":"home","content":"100.126.107.95","proxied":false,"comment":"tailnet-only links page"}'
 ```
 
-Then `http://home.arbikullakshi.com/` works on every tailnet device. Use `http://`: there is
-no certificate for that name, and Tailscale already encrypts the connection end to end.
+**The certificate's token.** `home-tls` needs a Cloudflare API token that may read the zone and
+edit its DNS records, on arbikullakshi.com only, stored as the `HOME_TLS_CF_DNS_TOKEN` secret.
+Create it, keep it in 1Password and set the secret without it ever showing on screen:
+
+```bash
+policies='[{"effect":"allow","resources":{"com.cloudflare.api.account.zone.b548cd8d33527abe0bc4f3fc106096d1":"*"},"permission_groups":[{"id":"4755a26eedb94da69e1066d98aa820be"},{"id":"c8fed203ed3043cba015a93ad1616f1f"}]}]'
+tok="$(cf user tokens create -q --name 'infra home-tls (arbikullakshi.com DNS edit)' --policies "$policies" | sed -n '/^{/,$p' | jq -r .value)"
+[ -n "$tok" ] && [ "$tok" != null ] && op item create --category password --vault Personal --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
+  printf %s "$tok" | gh secret set HOME_TLS_CF_DNS_TOKEN --env production -R somethim/infra && echo "token stored and set"
+unset tok
+```
+
+(The two permission groups are **DNS Write** and **Zone Read**.) If `cf` may not create tokens
+with its login, use the dashboard instead: **My Profile → API Tokens → Create Token → Edit zone
+DNS** template, add the permission **Zone · Zone · Read**, **Zone Resources: Include · Specific
+zone · arbikullakshi.com**, create, then store and set it from the clipboard:
+
+```bash
+read -rsp 'token: ' tok; echo
+op item create --category password --vault Personal --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
+  printf %s "$tok" | gh secret set HOME_TLS_CF_DNS_TOKEN --env production -R somethim/infra; unset tok
+```
+
+A tailnet whose policy predates the page needs `tcp:80` and `tcp:443` added to the admins' grant
+to `tag:infra-server` ([Tailscale grants](#tailscale-grants)); until then the page times out.
+Provisioning opens 443 in ufw and creates the `home-tls-acme` volume, so provision once before
+the release that brings `home-tls`. The release then waits up to 5 minutes for the
+certificate ("serves the links page with a trusted certificate"); a refused token shows in
+`ssh admin@infra-host sudo docker logs home-tls`.
 
 ### Copying media in
 

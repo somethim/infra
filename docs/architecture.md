@@ -149,7 +149,7 @@ Two audiences, two ways in, and nothing else:
 | portfolio (`arbikullakshi.com`, `www.`) | anyone | Cloudflare → tunnel → Traefik | the public hostnames |
 | hypernova (`hypernova.arbikullakshi.com`) | anyone | Cloudflare → tunnel → Traefik | the public hostname |
 | SSH | the owner (`admin`), the Deploy workflow (`deploy`) | Tailscale, tcp 22 | `infra-host` |
-| Links page (`stack/media`, `home`) | the owner | Tailscale, tcp 80 | `http://infra-host/` |
+| Links page (`stack/media`, `home`, `home-tls`) | the owner | Tailscale, tcp 80 and 443 | `http://infra-host/`, `https://home.arbikullakshi.com/` |
 | Open WebUI (`stack/ai`) | the owner | Tailscale, tcp 8080 | `http://infra-host:8080` |
 | Jellyfin (`stack/media`) | the owner | Tailscale, tcp 8096 | `http://infra-host:8096` |
 | Audiobookshelf (`stack/media`) | the owner | Tailscale, tcp 13378 | `http://infra-host:13378` |
