@@ -262,7 +262,8 @@ for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl
   "curl ready http://172.18.0.9:2000/ready"; do
   grep -qxF "$want" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not check: $want"; exit 1; }
 done
-[ "$(grep -c '^curl ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
+[ "$(grep -c '^curl \(route\|ready\) ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
+[ "$(grep -c '^curl public ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL the public check asked other than the four routes and the http redirect"; exit 1; }
 grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
 printf '%s\n' "portfolio=$portfolio_repo@$(d 11)" "prizm-provider=$provider_repo@$(d 21)" "prizm-web=$web_repo@$(d 31)" |
@@ -347,6 +348,20 @@ new_state
 printf '200' >"$state/curl.www.arbikullakshi.com"
 expect_refused "www served instead of redirected to the apex" "Traefik answered 200 for www\\.arbikullakshi\\.com/, expected \\^30\\[18\\]\\$" "$work/good.tgz" release
 echo "ok   verify requires each route's own status through Traefik and a connected tunnel"
+
+new_state
+expect_ok "the public check asks every route by name through Cloudflare" "Cloudflare serves https://arbikullakshi\.com/api/health https://www\.arbikullakshi\.com/ https://hypernova\.arbikullakshi\.com/ https://hypernova\.arbikullakshi\.com/api/health http://arbikullakshi\.com/api/health$" "$work/good.tgz" release
+
+new_state
+printf '403' >"$state/curl.public.https.arbikullakshi.com"
+expect_refused "Cloudflare blocks a public route" "https://arbikullakshi\.com/api/health answered 403 through Cloudflare, expected .*the release itself is current and verified on the host" "$work/good.tgz" release
+[ -e "$state/stack/current/.verified" ] || { echo "FAIL a release that passed on the host was not marked verified when only Cloudflare failed"; exit 1; }
+if grep -q "A rollback cannot fix\|Run the Deploy workflow with action rollback" "$work/out"; then cat "$work/out"; echo "FAIL a Cloudflare-side failure suggested a rollback"; exit 1; fi
+
+new_state
+printf '200' >"$state/curl.public.http.arbikullakshi.com"
+expect_refused "plain http served instead of redirected to https" "http://arbikullakshi\.com/api/health answered 200 through Cloudflare, expected \^30\[18\]\\\$; the release" "$work/good.tgz" release
+echo "ok   the public check requires each route's status through Cloudflare, after the host verified the release"
 
 new_state
 tailnet_binding open-webui 8080 0.0.0.0

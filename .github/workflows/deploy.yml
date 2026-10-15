@@ -240,36 +240,6 @@ jobs:
           # shellcheck disable=SC2086 # SSH_OPTIONS is a word list
           ssh $SSH_OPTIONS "${DEPLOY_USER}@${SERVER_SSH_HOST}" release <"${RUNNER_TEMP}/bundle.tgz"
 
-      # The host has no public address and no open port: Cloudflare, through
-      # the tunnel, is the only way in, so this is the whole public check.
-      - name: Smoke-test the public hosts through Cloudflare
-        if: inputs.action != 'status' && !(inputs.action == 'rollback' && inputs.dry_run)
-        run: |
-          set -euo pipefail
-          apex="$(sed -n 's/^apex_domain: *//p' production.yml)"
-          www="$(sed -n 's/^www_domain: *//p' production.yml)"
-          hypernova="$(sed -n 's/^hypernova_domain: *//p' production.yml)"
-          if [ -z "$apex" ] || [ -z "$www" ] || [ -z "$hypernova" ]; then
-            echo "::error::apex_domain, www_domain or hypernova_domain not found in production.yml"; exit 1
-          fi
-
-          # expect <url> <pattern for "code redirect_url">, retried for 5 minutes.
-          expect() {
-            local url="$1" want="$2" got=""
-            for _ in $(seq 1 30); do
-              got="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 20 "$url" || true)"
-              if [[ "$got" =~ $want ]]; then echo "OK ${got} ${url}"; return 0; fi
-              sleep 10
-            done
-            echo "::error::${url} answered '${got}' through Cloudflare after 5 minutes, expected ${want} (530 or error 1033: the tunnel is down or has no Public Hostname for this host; 502: the tunnel cannot reach http://edge-traefik:80; 404: Traefik has no router; 000: no DNS record or the record is not proxied)."
-            return 1
-          }
-          expect "https://${apex}/api/health" '^2[0-9][0-9] '
-          expect "https://${www}/" "^301 https://${apex//./\\.}/"
-          expect "https://${hypernova}/" '^2[0-9][0-9] '
-          expect "https://${hypernova}/api/health" '^2[0-9][0-9] '
-          expect "http://${apex}/api/health" "^30[18] https://${apex//./\\.}/api/health"
-
       - name: Remove the secrets from the runner
         if: always()
         run: |

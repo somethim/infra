@@ -424,10 +424,10 @@ the `WEBUI_SECRET_KEY` secret and (for a library off the SSD) the disks; set the
 ([section 12](#12-gpu-ai-and-media)), since a release refuses without the first two. In the Cloudflare dashboard the tunnel now
 shows **Healthy** with connections.
 
-The smoke step that follows checks the hostnames through Cloudflare. Until section 10 they
-still resolve to the old server, so a green smoke step here proves nothing about this one; a
-red one only means the old server is down. Section 10 ends with a second `release` whose
-smoke step proves the new path.
+The release ends by asking the public hostnames through Cloudflare from the server
+("Cloudflare serves …", just before `RELEASE OK`). If the DNS records still point at the old
+server, that check fails although the release is current and verified; section 10 fixes the
+records and ends with a second `release` whose public check proves the new path.
 
 ## 10. DNS switch-over and decommissioning the old server
 
@@ -470,10 +470,9 @@ touches the old Hetzner server. Nothing is copied from it: the new server starte
    A `530` (error 1033) means the tunnel has no connector or no Public Hostname for that
    name; a `502` that cloudflared cannot reach `edge-traefik:80`; a `404` that Traefik has no
    router for that host.
-3. **Run `release` again** (Actions → Deploy, action `release`). Its smoke step now goes
-   through the tunnel: `OK 200` for `https://arbikullakshi.com/api/health`,
-   `https://hypernova.arbikullakshi.com/` and its `/api/health`, `OK 301` for `www.` and for
-   `http://arbikullakshi.com/api/health`.
+3. **Run `release` again** (Actions → Deploy, action `release`). Its public check now goes
+   through the tunnel and prints "Cloudflare serves https://arbikullakshi.com/api/health
+   https://www.arbikullakshi.com/ https://hypernova.arbikullakshi.com/ …" before `RELEASE OK`.
 4. **Set up the portfolio again**: sign in at `https://arbikullakshi.com/admin` with
    `PORTFOLIO_ADMIN_PASSWORD`, enrol TOTP and passkeys afresh, and reconnect Google Calendar
    if you use it. Sign in to hypernova with `HYPERNOVA_ADMIN_PASSWORD`.

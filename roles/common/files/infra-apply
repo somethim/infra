@@ -30,6 +30,8 @@ readonly guard="${INFRA_APPLY_GUARD:-/usr/local/libexec/infra-compose-guard}"
 readonly wait_seconds="${INFRA_APPLY_WAIT_SECONDS:-600}"
 readonly route_wait_seconds="${INFRA_APPLY_ROUTE_WAIT_SECONDS:-60}"
 readonly poll_seconds="${INFRA_APPLY_POLL_SECONDS:-5}"
+# How long the public check waits for Cloudflare to serve the new release.
+readonly public_wait_seconds="${INFRA_APPLY_PUBLIC_WAIT_SECONDS:-300}"
 # A container counts as ready only once it has run this long without a
 # restart; "running" alone is one sample of a container that may crash-loop.
 readonly settle_seconds="${INFRA_APPLY_SETTLE_SECONDS:-30}"
@@ -530,6 +532,37 @@ check_tunnel() {
   log "the Cloudflare Tunnel is connected (cloudflared /ready answers 200)"
 }
 
+# Asks every public route the way a visitor does: from the host, by its public
+# name, through Cloudflare and the tunnel. From here, not from the CI runner,
+# because Cloudflare's bot protection answers data-centre addresses with 403.
+# It runs after the release is verified on the host, so a failure here leaves
+# a current, verified release and points at the Cloudflare side.
+check_public() {
+  local release="$1" target host path want code deadline url
+  local -a targets checked=()
+  mapfile -t targets < <(route_targets "$release")
+  targets+=("$(sed -n 's/^APEX_DOMAIN=//p' "$release/portfolio/.env") /api/health ^30[18]$ http")
+  for target in "${targets[@]}"; do
+    read -r host path want scheme <<<"$target"
+    [[ "$host" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected host name $(printf '%q' "$host") in the release's .env files"
+    url="${scheme:-https}://$host$path"
+    deadline=$((SECONDS + public_wait_seconds))
+    while :; do
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || true)"
+      if [[ "${code:-000}" =~ $want ]]; then
+        break
+      fi
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        failure_hint=""
+        fail "$url answered ${code:-000} through Cloudflare, expected $want; the release itself is current and verified on the host (530 or error 1033: the tunnel has no Public Hostname for $host; 502: the tunnel cannot reach http://edge-traefik:80; 403: a Cloudflare security rule blocks the request; 000: no DNS record, or the record is not proxied)"
+      fi
+      sleep "$poll_seconds"
+    done
+    checked+=("$url")
+  done
+  log "Cloudflare serves ${checked[*]}"
+}
+
 # Each tailnet-only port is bound to the Tailscale address and nothing else, as
 # Docker applied it (the guard checked the compose model before the start).
 check_tailnet_ports() {
@@ -680,6 +713,7 @@ install() {
   done
   start_watchtower
   verify_release "$id"
+  check_public "$stack_dir/current"
   log "RELEASE OK: $id is current, $(release_summary "$release")${previous:+; $previous is kept as the previous release}"
 }
 

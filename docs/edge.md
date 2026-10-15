@@ -89,7 +89,7 @@ on the LAN could send a forged `CF-Connecting-IP` and defeat the portfolio's rat
 
 Cloudflare terminates TLS with its own edge certificates; Traefik serves plain HTTP inside the
 host and holds no certificate, no ACME account and no volume. The HTTP → HTTPS redirect is
-Cloudflare's **Always Use HTTPS** zone setting (the Deploy workflow's smoke step checks it);
+Cloudflare's **Always Use HTTPS** zone setting (the release's public check asks for it);
 Traefik has no redirecting entrypoint. The `www.` → apex redirect stays in Traefik (below),
 because it is part of the portfolio's routing.
 
@@ -109,7 +109,8 @@ Every release ends with checks run on the host itself, after every container is 
   The container's healthcheck (`cloudflared tunnel ready`) asks the same question, so autoheal
   restarts a tunnel that loses its connections for good.
 
-The Deploy workflow's smoke step then checks the public hostnames through Cloudflare.
+Every release then asks the public hostnames through Cloudflare, from the host (`infra-apply`'s
+public check).
 
 ## The socket proxy
 

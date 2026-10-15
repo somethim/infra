@@ -146,7 +146,8 @@ SH
 # curl: a route check sends -H "Host: <host>" to Traefik's edge address and
 # gets state/curl.<host> (default 301 for www., else 200); the tunnel check
 # (no Host header) asks cloudflared's /ready and gets state/curl.ready
-# (default 200). state/curl.<key>.rc sets the exit status.
+# (default 200); the public check (a URL by name, no Host header) gets
+# state/curl.public.<scheme>.<host> (default 301 for www. and plain http, else 200). state/curl.<key>.rc sets the exit status.
 cat >"$work/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -163,7 +164,13 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
-if [ -n "$host" ]; then
+if [ -z "$host" ] && [[ "$url" =~ ^(https?)://([a-z][a-z0-9.-]*)(/.*)?$ ]]; then
+  # The public check: a visitor's request by name, through Cloudflare.
+  key="public.${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  default=200
+  case "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" in "https www."* | "http "*) default=301 ;; esac
+  printf 'curl public %s\n' "$url" >>"$FAKE_STATE/calls"
+elif [ -n "$host" ]; then
   key="$host"
   default=200
   case "$host" in www.*) default=301 ;; esac
@@ -258,7 +265,7 @@ run_apply() {
   PATH="$work/bin:$PATH" FAKE_STATE="$state" \
     INFRA_APPLY_STACK_DIR="$state/stack" INFRA_APPLY_EDGE_DIR="$state/edge" INFRA_APPLY_DOCKER_CONFIG="$state/docker" \
     INFRA_APPLY_HOST_FILE="$state/host.env" INFRA_APPLY_GUARD="$guard" \
-    INFRA_APPLY_WAIT_SECONDS=1 INFRA_APPLY_ROUTE_WAIT_SECONDS=1 INFRA_APPLY_POLL_SECONDS=0.2 \
+    INFRA_APPLY_WAIT_SECONDS=1 INFRA_APPLY_ROUTE_WAIT_SECONDS=1 INFRA_APPLY_PUBLIC_WAIT_SECONDS=1 INFRA_APPLY_POLL_SECONDS=0.2 \
     "$apply" "$@" <"$input" >"$work/out" 2>&1
 }
 

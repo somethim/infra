@@ -38,10 +38,13 @@ What each action does, and how to read `status`, is in
    deterministic tgz. The extra-vars file is deleted right after.
 4. `ssh deploy@infra-host release < bundle.tgz`. The forced command
    (`infra-deploy-gate`) runs `sudo -n /usr/local/sbin/infra-apply release` and nothing else.
-5. Smoke-test the public hosts through Cloudflare: `2xx` for the portfolio's and hypernova's
-   health and hypernova's `/`, `301` from `www.` to the apex, and `301` from `http://` to
-   `https://` (Cloudflare's Always Use HTTPS). The host has no public address, so there is no
-   direct-origin check: the tunnel is the only way in.
+5. Last, after the host has verified and marked the release, `infra-apply` asks the public
+   hosts by name through Cloudflare, from the host itself, for up to 5 minutes: `2xx` for the
+   portfolio's and hypernova's health and hypernova's `/`, `301` from `www.` to the apex, and
+   `301` from `http://` to `https://` (Cloudflare's Always Use HTTPS); it prints "Cloudflare
+   serves …". It runs on the host, not on the runner, because Cloudflare's bot protection
+   answers GitHub's data-centre addresses with `403`. A failure here leaves the release current
+   and verified and names the Cloudflare-side cause; there is nothing to roll back.
 
 A rollback first reads `status`, logs in to GHCR, and turns the inputs into digest pins with
 [`release-images.sh`](../release-images.sh) `resolve`; `build-bundle.sh --pin` applies them.
