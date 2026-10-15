@@ -177,16 +177,40 @@ def raw_lines(path):
         yield len(text) - len(text.lstrip(" ")), text.strip()
 
 
-def raw_checks(path, stack, raw_ports):
+def raw_checks(path, stack, raw_ports, raw_binds):
     """Refuse what `compose config` resolves away before the model shows it.
 
     Yields (service, env_file) pairs, and records each service's ports items,
-    as written, in raw_ports."""
+    as written, in raw_ports, and how each bind mount is written in raw_binds:
+    (service, source) -> "short", or the long form's create_host_path value
+    ("false", "true" or "absent")."""
     top = service = None
     block = None
     ports_block = None
+    volumes_block = None
+    long_mount = None
     for indent, stripped in raw_lines(path):
         key = stripped[2:] if stripped.startswith("- ") else stripped
+        if volumes_block is not None:
+            if indent > volumes_block:
+                if stripped.startswith("- ") and indent == volumes_block + 2:
+                    long_mount = None
+                    if key.startswith("type:"):
+                        long_mount = {"source": None, "chp": "absent"}
+                    elif ":" in key and not key.endswith(":"):
+                        raw_binds[(service, key.strip("'\"").split(":", 1)[0])] = "short"
+                        continue
+                if long_mount is not None:
+                    field, _, value = key.partition(":")
+                    field, value = field.strip(), value.strip().strip("'\"")
+                    if field == "source":
+                        long_mount["source"] = value
+                    elif field == "create_host_path":
+                        long_mount["chp"] = value.lower()
+                    if long_mount["source"]:
+                        raw_binds[(service, long_mount["source"])] = long_mount["chp"]
+                continue
+            volumes_block = long_mount = None
         if "<<" in key.split(":", 1)[0] and ":" in key:
             refuse("uses a YAML merge key (<<), which can pull settings from elsewhere")
         if indent == 0 and stripped.split(":", 1)[0] == "include":
@@ -227,6 +251,8 @@ def raw_checks(path, stack, raw_ports):
                     refuse(f"service {service} writes ports in a form other than a list of \"{TAILNET_PORT_FORM.format(port='<port>')}\" strings")
                 raw_ports.setdefault(service, [])
                 ports_block = indent
+            if field == "volumes" and not value.strip():
+                volumes_block = indent
             if field == "env_file":
                 value = value.strip()
                 if not value:
@@ -306,7 +332,7 @@ def check_deploy(stack, name, spec):
     return True
 
 
-def check_mounts(stack, name, spec):
+def check_mounts(stack, name, spec, raw_binds):
     """Named volumes and tmpfs only, plus the BIND_MOUNTS this service may have."""
     allowed = BIND_MOUNTS.get((stack, name), {})
     binds = []
@@ -324,7 +350,15 @@ def check_mounts(stack, name, spec):
         for field in sorted(mount):
             if field not in BIND_FIELDS:
                 refuse(f"service {name} sets {field} on its mount of {source}, which a release may not set")
-        if mount.get("target") != target or bool(mount.get("read_only")) != read_only or mount.get("bind") != {"create_host_path": False}:
+        # Compose builds differ in how they render create_host_path: false (some print
+        # {"create_host_path": false}, some drop it to {}), and the short syntax also
+        # renders as {} while meaning true. So the file as written decides: only the long
+        # form with create_host_path: false passes.
+        written = raw_binds.get((name, source))
+        bind_ok = mount.get("bind") == {"create_host_path": False} or (mount.get("bind") in ({}, None) and written == "false")
+        if written == "short":
+            bind_ok = False
+        if mount.get("target") != target or bool(mount.get("read_only")) != read_only or not bind_ok:
             refuse(f"service {name} mounts {source} as {show({k: mount.get(k) for k in ('target', 'read_only', 'bind')})}; it may only mount it at "
                    f"{target}{' read-only' if read_only else ''}, with bind.create_host_path: false")
         binds.append(f"{source}{' (ro)' if read_only else ''}")
@@ -370,10 +404,11 @@ def main():
     allowed_env_list = ", ".join(spec_for["env_files"]) or "no env file"
 
     raw_ports = {}
+    raw_binds = {}
     entries = sorted(os.listdir(project)) if os.path.isdir(project) else []
     for entry in entries:
         if entry.endswith((".yml", ".yaml")):
-            for service_name, raw in raw_checks(os.path.join(project, entry), stack, raw_ports):
+            for service_name, raw in raw_checks(os.path.join(project, entry), stack, raw_ports, raw_binds):
                 resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(project, raw))
                 if resolved not in bundle_env_files:
                     refuse(f"service {service_name or '?'} reads env_file {show(raw)}; the {stack} stack may only read {allowed_env_list} from the bundle")
@@ -463,7 +498,7 @@ def main():
             published.append(port)
         if check_deploy(stack, name, spec):
             gpus.append(name)
-        binds += [f"{name} {b}" for b in check_mounts(stack, name, spec)]
+        binds += [f"{name} {b}" for b in check_mounts(stack, name, spec, raw_binds)]
         user = spec.get("user")
         if user is not None:
             uid = str(user).split(":", 1)[0].strip()
