@@ -11,6 +11,9 @@
     - production.yml
 
   vars:
+    # Ubuntu 26.04 makes `sudo` sudo-rs, whose password prompt Ansible does not recognise
+    # ("Timeout waiting for privilege escalation prompt"). The classic sudo still ships as sudo.ws.
+    ansible_become_exe: sudo.ws
     # Also a role default, but pre_tasks run outside the role, where role_path is unset.
     deploy_ssh_public_key_file: "{{ playbook_dir }}/roles/common/files/deploy_key.pub"
 
