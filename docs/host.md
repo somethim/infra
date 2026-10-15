@@ -5,7 +5,7 @@ A dedicated PC at the owner's home running Ubuntu Server (`ubuntu_release` in
 dynamic public IP that nothing depends on. Nothing on it is reachable from the internet: the
 public arrives through the Cloudflare Tunnel, which dials out ([edge.md](edge.md)), and SSH
 only over the tailnet. Everything below is provisioning: `roles/common`, `roles/tailscale`,
-`roles/docker` and `roles/host`, run from the owner's laptop with `provision.yml`.
+`roles/docker`, `roles/gpu` and `roles/host`, run from the owner's laptop with `provision.yml`.
 
 ## SSH: Tailscale only
 
@@ -182,7 +182,9 @@ installed Engine has another major, so a major upgrade is a deliberate edit of
 `production.yml`, never a side effect of `apt upgrade`. `ci/check_access.py` (rule 8) fails if
 any apt task that upgrades or installs Docker runs before the pin.
 
-`daemon.json`:
+`daemon.json` is rendered whole from `roles/docker/templates/daemon.json.j2`, with the `nvidia`
+runtime when `gpu_enabled` ([The GPU](#the-gpu)), so no other tool (such as `nvidia-ctk runtime
+configure`) edits it and no setting is lost on the next run:
 
 - caps container logs at 30 MB each (3 × 10 MB). Without it the `json-file` driver keeps
   every line a container has ever written, and one crash-looping container fills the disk.
@@ -192,6 +194,39 @@ any apt task that upgrades or installs Docker runs before the pin.
 
 The handler **reloads** the daemon, never restarts it: `systemctl restart docker` would stop
 every container; SIGHUP re-reads `daemon.json` in place.
+
+## The GPU
+
+An NVIDIA RTX 2060 with 12 GB. `roles/gpu` runs after `roles/docker` when `production.yml`
+sets `gpu_enabled: true` (with `false` it only says so and touches nothing):
+
+- **The driver** is Ubuntu's, the server branch `nvidia_driver_major` pins (`580`), installed
+  with `ubuntu-drivers install --gpgpu nvidia:<major>-server`: the headless driver and
+  Canonical's **signed, precompiled kernel modules**, so it loads with Secure Boot on and needs
+  no DKMS build or MOK enrolment. The role first checks that `ubuntu-drivers list --gpgpu`
+  offers that branch, and stops naming the ones it does offer otherwise. It also installs
+  `nvidia-utils-<major>-server` (`nvidia-smi`) and the `libnvidia-encode`/`libnvidia-decode`
+  libraries Jellyfin's NVENC/NVDEC need. Package names carry the branch, so `apt upgrade` and
+  unattended-upgrades only ever bring updates within it; a new branch is a deliberate edit of
+  `production.yml`.
+- **The NVIDIA Container Toolkit** comes from NVIDIA's apt repository
+  (`nvidia.github.io/libnvidia-container`), its signing key pinned by sha256 in
+  `roles/gpu/defaults/main.yml`, like Docker's and Tailscale's. Containers get the GPU through a
+  Compose device reservation (`driver: nvidia`, `capabilities: [gpu]`), which uses the toolkit's
+  hook; `daemon.json` also registers the `nvidia` runtime (not as the default), which `docker
+  info` shows.
+- **No reboot.** A driver installed or updated in a run is not loaded until the next boot (a
+  fresh Ubuntu may even have `nouveau` loaded). Provisioning then prints "The NVIDIA driver was
+  just installed or updated and is not loaded yet … Reboot when it suits you" instead of
+  failing, and the next run (`--tags gpu`) requires `nvidia-smi` to answer. Unattended-upgrades
+  can update the driver within the branch; until the 04:00 reboot it schedules, `nvidia-smi`
+  reports "Driver/library version mismatch" and a GPU container that restarts in that window
+  cannot start. Provisioning names both cases.
+
+Read back on every run: `docker info` lists the `nvidia` runtime, and `nvidia-smi` names the
+card. To change the key pin: download `https://nvidia.github.io/libnvidia-container/gpgkey`,
+check its fingerprint (`gpg --show-keys`: `C95B 321B 61E8 8C18 09C4 F759 DDCA E044 F796 ECB0`,
+NVIDIA's published one), and put its `sha256sum` in the defaults.
 
 ## Memory limits
 

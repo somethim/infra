@@ -71,7 +71,7 @@ jobs:
       - name: Rollback resolution
         run: bash ci/rollback-scripts.sh
 
-      - name: Edge, Watchtower, autoheal, Docker and host verify tasks
+      - name: Edge, Watchtower, autoheal, Docker, GPU and host verify tasks
         run: bash ci/verify-tasks.sh
 
       - name: Deploy templates

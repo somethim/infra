@@ -1,0 +1,83 @@
+---
+- name: Require a driver branch production.yml can pin
+  ansible.builtin.assert:
+    that:
+      - nvidia_driver_major | string is match('^[0-9]{3}$')
+    fail_msg: "production.yml nvidia_driver_major must be the major of an Ubuntu server driver branch, such as 580."
+    quiet: true
+
+- name: Install ubuntu-drivers
+  ansible.builtin.apt:
+    name: ubuntu-drivers-common
+    state: present
+
+- name: List the compute drivers Ubuntu offers for this GPU
+  ansible.builtin.command: ubuntu-drivers list --gpgpu
+  register: gpu_drivers
+  changed_when: false
+  check_mode: false
+
+- name: Require the pinned server branch among them
+  ansible.builtin.assert:
+    that:
+      - gpu_drivers.stdout is search('nvidia:' ~ nvidia_driver_major ~ '-server')
+    fail_msg: >-
+      ubuntu-drivers offers no nvidia:{{ nvidia_driver_major }}-server driver for this host ({{ gpu_drivers.stdout_lines | join(', ') }}).
+      Either no NVIDIA GPU is visible (lspci | grep -i nvidia) or the branch is gone: pick one it lists, set
+      nvidia_driver_major in production.yml (through master) and provision again (RUNBOOK.md, "GPU, AI and media").
+    quiet: true
+
+# --gpgpu: the headless driver with Canonical's signed kernel modules, no X.
+- name: Install the pinned NVIDIA server driver
+  ansible.builtin.command:
+    argv: [ubuntu-drivers, install, --gpgpu, "nvidia:{{ nvidia_driver_major }}-server"]
+  register: gpu_driver_install
+  changed_when: "'already installed' not in gpu_driver_install.stdout"
+
+# nvidia-smi, and the encoder and decoder libraries Jellyfin's NVENC/NVDEC use;
+# the Container Toolkit mounts them into a container that reserves the GPU.
+- name: Install nvidia-smi and the video encode and decode libraries of the same branch
+  ansible.builtin.apt:
+    name:
+      - "nvidia-utils-{{ nvidia_driver_major }}-server"
+      - "libnvidia-encode-{{ nvidia_driver_major }}-server"
+      - "libnvidia-decode-{{ nvidia_driver_major }}-server"
+    state: present
+  register: gpu_userspace
+
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Trust NVIDIA's Container Toolkit signing key, pinned by checksum
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    checksum: "sha256:{{ nvidia_container_toolkit_key_sha256 }}"
+    mode: "0644"
+
+- name: Add NVIDIA's Container Toolkit apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    content: "deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\n"
+    mode: "0644"
+
+- name: Install the NVIDIA Container Toolkit
+  ansible.builtin.apt:
+    name: nvidia-container-toolkit
+    state: present
+    update_cache: true
+
+- name: Note whether the driver or its libraries changed in this run
+  ansible.builtin.set_fact:
+    gpu_just_installed: "{{ gpu_driver_install is changed or gpu_userspace is changed }}"
+
+# roles/docker wrote the nvidia runtime into daemon.json; reload Docker now so
+# the read-back below sees it.
+- name: Reload Docker with the nvidia runtime
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the driver and Docker's nvidia runtime
+  ansible.builtin.import_tasks: verify.yml

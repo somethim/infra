@@ -20,6 +20,9 @@
     - name: Docker verify
       ansible.builtin.import_tasks: ../roles/docker/tasks/verify.yml
       when: verify_role == 'docker'
+    - name: GPU verify
+      ansible.builtin.import_tasks: ../roles/gpu/tasks/verify.yml
+      when: verify_role == 'gpu'
     - name: Host verify
       ansible.builtin.import_tasks: ../roles/host/tasks/verify.yml
       when: verify_role == 'host'

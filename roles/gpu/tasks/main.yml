@@ -1,0 +1,17 @@
+---
+# See docs/host.md, "The GPU". The NVIDIA driver from Ubuntu (the server branch
+# production.yml pins, as Canonical's signed precompiled modules, so Secure Boot
+# needs no key enrolment), and the NVIDIA Container Toolkit from NVIDIA's apt
+# repository, its key pinned by checksum. The nvidia runtime in daemon.json is
+# written by roles/docker (gpu_enabled). Never reboots: a new driver prints a
+# notice instead.
+- name: Say that this host has no GPU to set up
+  ansible.builtin.debug:
+    msg: >-
+      production.yml sets gpu_enabled: false, so no NVIDIA driver or Container Toolkit is installed and
+      Docker gets no nvidia runtime. Nothing already installed is removed.
+  when: not gpu_enabled
+
+- name: Install the driver and the Container Toolkit
+  ansible.builtin.import_tasks: install.yml
+  when: gpu_enabled

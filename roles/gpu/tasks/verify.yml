@@ -1,0 +1,50 @@
+---
+# Read back: Docker lists the nvidia runtime, and nvidia-smi talks to the
+# loaded driver. Right after a driver install the running kernel may still
+# have nouveau (or no module) loaded: that is a reboot, which provisioning
+# never does by itself.
+- name: Read the runtimes Docker offers
+  ansible.builtin.command: docker info --format '{{ "{{" }}json .Runtimes{{ "}}" }}'
+  register: gpu_docker_runtimes
+  changed_when: false
+  check_mode: false
+
+- name: Require the nvidia runtime in Docker
+  ansible.builtin.assert:
+    that:
+      - (gpu_docker_runtimes.stdout | from_json).nvidia is defined
+    fail_msg: >-
+      docker info lists no nvidia runtime ({{ gpu_docker_runtimes.stdout }}). /etc/docker/daemon.json comes from
+      roles/docker with gpu_enabled: true; provision with --tags docker,gpu and check
+      `sudo journalctl -u docker` for a daemon.json error.
+    quiet: true
+
+- name: Ask the driver for the GPU
+  ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+  register: gpu_smi
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Say that the new driver needs a reboot
+  ansible.builtin.debug:
+    msg: >-
+      The NVIDIA driver was just installed or updated and is not loaded yet (nvidia-smi: {{ (gpu_smi.stdout ~ ' ' ~ gpu_smi.stderr) | trim }}).
+      Reboot when it suits you (ssh -t admin@{{ server_name }} sudo reboot); the sites are back once Docker
+      has restarted the stacks. Then run provisioning with --tags gpu to verify (RUNBOOK.md, "GPU, AI and media").
+  when:
+    - gpu_smi.rc != 0
+    - gpu_just_installed | default(false) | bool
+
+- name: Require nvidia-smi to see the GPU through the loaded driver
+  ansible.builtin.assert:
+    that:
+      - gpu_smi.rc == 0
+      - gpu_smi.stdout | trim | length > 0
+    fail_msg: >-
+      nvidia-smi exits {{ gpu_smi.rc }}: {{ (gpu_smi.stdout ~ ' ' ~ gpu_smi.stderr) | trim }}. "Driver/library version
+      mismatch" means a driver update waits for a reboot (unattended-upgrades reboots at {{ reboot_time }} UTC when
+      one is pending, or reboot now); "couldn't communicate with the NVIDIA driver" after a reboot means the module
+      did not load (`sudo dmesg | grep -i nvidia`; with Secure Boot on, only Canonical's signed modules load).
+    quiet: true
+  when: not (gpu_just_installed | default(false) | bool)

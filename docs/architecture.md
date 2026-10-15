@@ -53,7 +53,7 @@ boundary. A rollback pins an app to a digest, which pauses that for the pinned a
 
 ## Provision and release
 
-- **`provision.yml`** runs the roles `common`, `tailscale`, `docker`, `host`, `edge`,
+- **`provision.yml`** runs the roles `common`, `tailscale`, `docker`, `gpu`, `host`, `edge`,
   `watchtower`, `autoheal`, then the SSH login policy. Facts about the host (tailnet name,
   Ubuntu release, Docker major, reboot time, swap, published ports (none), domains, app image
   repositories) are in `production.yml`. The first run bootstraps a fresh Ubuntu install over

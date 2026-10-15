@@ -36,9 +36,9 @@
     state: present
     update_cache: true
 
-- name: Configure the Docker daemon (log rotation, live restore)
-  ansible.builtin.copy:
-    src: daemon.json
+- name: Configure the Docker daemon (log rotation, live restore, the NVIDIA runtime when gpu_enabled)
+  ansible.builtin.template:
+    src: daemon.json.j2
     dest: /etc/docker/daemon.json
     mode: "0644"
   notify: Reload Docker

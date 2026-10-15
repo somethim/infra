@@ -23,8 +23,8 @@ portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate
 ## How it deploys
 
 - **Provisioning** — `provision.yml`, from the owner's laptop, as `admin` with a sudo
-  password, over the tailnet. Packages, firewall, accounts, sshd, Tailscale, Docker, power
-  settings, the edge proxy (no published port), Watchtower and autoheal. No secrets. The very
+  password, over the tailnet. Packages, firewall, accounts, sshd, Tailscale, Docker, the
+  NVIDIA driver and Container Toolkit, power settings, the edge proxy (no published port), Watchtower and autoheal. No secrets. The very
   first run bootstraps a fresh Ubuntu install over the LAN as the installer's account
   ([RUNBOOK.md](RUNBOOK.md#5-first-provision-over-the-lan)).
 
@@ -58,7 +58,7 @@ build-bundle.sh        deterministic bundle + manifest; refuses unpinned third-p
 release-images.sh      turns rollback targets into digest pins
 ansible.cfg            auto-loaded; points at inventory/hosts, checks host keys
 inventory/             hosts.example only — inventory/hosts is gitignored
-roles/                 common · tailscale · docker · host · edge · watchtower · autoheal
+roles/                 common · tailscale · docker · gpu · host · edge · watchtower · autoheal
 roles/common/files/    infra-deploy-gate · infra-apply · infra-compose-guard (the host side of a release)
 stack/                 database · portfolio · hypernova · tunnel (compose files and env templates)
 tasks/                 placeholder-guards · provision-checks · ssh-route
@@ -78,6 +78,6 @@ docs/                  why any of it is the way it is
 - [database.md](docs/database.md) — the shared PostgreSQL
 - [stacks.md](docs/stacks.md) — what is peculiar about each application
 - [edge.md](docs/edge.md) — the Cloudflare Tunnel, Traefik, its socket proxy, client IPs, routing conventions
-- [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker
+- [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker, the GPU
 - [agents.md](docs/agents.md) — Watchtower, autoheal, the prune timer, re-pinning images
 - [operations.md](docs/operations.md) — short recipes outside the runbook

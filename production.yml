@@ -16,6 +16,15 @@ ubuntu_release: resolute
 docker_engine_major: 29
 
 reboot_time: "04:00"
+
+# The NVIDIA RTX 2060 (12 GB). roles/gpu installs Ubuntu's server driver of
+# this branch (ubuntu-drivers --gpgpu, signed modules) and the NVIDIA Container
+# Toolkit, and roles/docker adds the nvidia runtime. Confirm the branch on the
+# host with `ubuntu-drivers list --gpgpu` (RUNBOOK.md, "GPU, AI and media").
+# false: provisioning skips the GPU (a host without the card).
+gpu_enabled: true
+nvidia_driver_major: 580
+
 swap_size: 2G
 # Docker-published ports the LAN-facing interface may reach. None: the public
 # arrives only through the Cloudflare Tunnel, which dials out, so every new

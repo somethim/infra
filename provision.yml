@@ -26,6 +26,8 @@
       tags: [tailscale]
     - role: docker
       tags: [docker]
+    - role: gpu
+      tags: [gpu]
     - role: host
       tags: [host]
     - role: edge

@@ -1,0 +1,6 @@
+---
+# NVIDIA's apt signing key for the Container Toolkit repository
+# (https://nvidia.github.io/libnvidia-container/gpgkey, sha256 of the downloaded
+# file checked 2026-10-15). A changed key fails the download: re-check it the
+# way docs/host.md, "The GPU", describes before updating this.
+nvidia_container_toolkit_key_sha256: c880576d6cf75a48e5027a871bac70fd0421ab07d2b55f30877b21f1c87959c9

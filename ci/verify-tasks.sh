@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Runs the verify tasks of edge, watchtower, autoheal, docker and host
+# Runs the verify tasks of edge, watchtower, autoheal, docker, gpu and host
 # (roles/*/tasks/verify.yml) on localhost against fake docker, iptables,
-# swapon and systemctl that answer from per-case state files, and the provision
+# swapon, systemctl and nvidia-smi that answer from per-case state files, and the provision
 # SSH route (tasks/ssh-route.yml) for LAN, other and tailnet SSH_CONNECTION
 # values. Nothing here touches the local Docker daemon, firewall, swap or
 # systemd.
@@ -38,6 +38,8 @@ case "$1 ${2:-}" in
     cat "$state/$1.log" 2>/dev/null || true ;;
   "version --format")
     cat "$state/docker.version" ;;
+  "info --format")
+    cat "$state/docker.runtimes" ;;
   "compose version")
     [ -f "$state/compose.missing" ] && { echo "docker: unknown command: docker compose" >&2; exit 1; }
     echo "Docker Compose version v5.6.0" ;;
@@ -64,7 +66,13 @@ for unit in "$@"; do
   if [ -f "$FAKE_DOCKER_STATE/$unit.enabled" ]; then cat "$FAKE_DOCKER_STATE/$unit.enabled"; else echo masked; fi
 done
 SH
-chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon" "$work/bin/systemctl"
+cat >"$work/bin/nvidia-smi" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = "--query-gpu=name,driver_version,memory.total --format=csv,noheader" ] || { echo "fake nvidia-smi: unsupported: $*" >&2; exit 2; }
+if [ -f "$FAKE_DOCKER_STATE/nvidia-smi.err" ]; then cat "$FAKE_DOCKER_STATE/nvidia-smi.err" >&2; exit 9; fi
+echo "NVIDIA GeForce RTX 2060, 580.95.05, 12288 MiB"
+SH
+chmod +x "$work/bin/docker" "$work/bin/iptables" "$work/bin/swapon" "$work/bin/systemctl" "$work/bin/nvidia-smi"
 
 session_ok='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=0 notify=no scanned=3 skipped=0 updated=1'
 session_failed='time="2026-10-13T10:01:00Z" level=info msg="Update session completed" failed=1 notify=no scanned=3 skipped=0 updated=0'
@@ -85,6 +93,7 @@ scenario() {
   printf 'time="2026-10-13T10:00:00Z" level=info msg="Watchtower 1.22.1"\n%s\n' "$session_ok" >"$work/state/watchtower.log"
   : >"$work/state/autoheal.log"
   echo "29.1.3" >"$work/state/docker.version"
+  echo '{"io.containerd.runc.v2":{"path":"runc"},"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}}' >"$work/state/docker.runtimes"
   printf '%s\n' '-N DOCKER-USER' "$hook" '-A DOCKER-USER -j RETURN' >"$work/state/docker-user.rules"
   echo 2147483648 >"$work/state/swap"
 }
@@ -188,6 +197,25 @@ expect_fail "docker: Engine major mismatch" "Docker Engine 28.5.2 runs, but prod
 scenario
 touch "$work/state/compose.missing"
 expect_fail "docker: no compose plugin" "unknown command: docker compose" docker
+
+### gpu
+
+scenario
+expect_pass "gpu: nvidia runtime listed, nvidia-smi sees the card" gpu
+
+scenario
+echo '{"io.containerd.runc.v2":{"path":"runc"},"runc":{"path":"runc"}}' >"$work/state/docker.runtimes"
+expect_fail "gpu: Docker has no nvidia runtime" "docker info lists no nvidia runtime" gpu
+
+scenario
+echo "Failed to initialize NVML: Driver/library version mismatch" >"$work/state/nvidia-smi.err"
+expect_fail "gpu: driver and library differ (update waiting for a reboot)" "Driver/library version mismatch" gpu
+
+scenario
+echo "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver." >"$work/state/nvidia-smi.err"
+if ! run gpu -e gpu_just_installed=true; then cat "$work/out.log"; echo "FAIL a driver installed in this run failed the verify instead of asking for a reboot"; exit 1; fi
+grep -qF "The NVIDIA driver was just installed or updated and is not loaded yet" "$work/out.log" || { cat "$work/out.log"; echo "FAIL no reboot notice after a fresh driver install"; exit 1; }
+echo "ok   pass: gpu: a driver installed in this run asks for a reboot instead of failing"
 
 ### host
 
