@@ -6,8 +6,9 @@
 #
 #   postgres/<date>.sql.gz   pg_dumpall of the shared PostgreSQL, 0600; the newest 14 are kept
 #   apps/<date>/<volume>.tar.gz   the apps' own data volumes (below), the newest 7 days kept;
-#                            Jellyfin, Audiobookshelf, Kavita, Open WebUI, Beszel and Garage
-#                            are stopped while theirs are copied (SQLite must not change mid-copy)
+#                            Jellyfin, Audiobookshelf, Kavita, Open WebUI, Beszel, Garage and
+#                            SFTPGo are stopped while theirs are copied (SQLite must not change
+#                            mid-copy)
 #   media/s3/                rsync --delete mirror of Garage's objects (/srv/media/s3), taken
 #                            while Garage is stopped, so it matches that night's garage-meta copy
 #   media/<name>/            rsync --delete mirror of /srv/media/{audiobooks,books,podcasts}
@@ -36,8 +37,9 @@ readonly app_volumes=(
   "hypernova_prizm-storage"
   "beszel-data"
   "garage-meta"
+  "sftpgo-data"
 )
-readonly app_containers=(jellyfin audiobookshelf kavita open-webui beszel garage)
+readonly app_containers=(jellyfin audiobookshelf kavita open-webui beszel garage sftpgo)
 # Mirrored while the app containers are stopped: Garage's objects must match its metadata copy.
 readonly mirrored_stopped=(s3)
 readonly mirrored=(audiobooks books podcasts)

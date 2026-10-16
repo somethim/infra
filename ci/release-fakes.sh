@@ -263,8 +263,9 @@ new_state() {
     "c20 /beszel-agent running always healthy media" \
     "c21 /garage-config exited no none media" \
     "c22 /garage running always healthy media" \
-    "c23 /garage-setup exited no none media" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls beszel beszel-agent garage; do
+    "c23 /garage-setup exited no none media" \
+    "c24 /sftpgo running always healthy media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls beszel beszel-agent garage sftpgo; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
@@ -275,6 +276,7 @@ new_state() {
   tailnet_binding home-tls 443
   tailnet_binding beszel 8090
   tailnet_binding garage 3900
+  tailnet_binding sftpgo 8091
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

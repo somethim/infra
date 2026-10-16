@@ -127,7 +127,7 @@ it cannot do.
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
    (the links page 80 and 443, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
-   the Beszel status dashboard 8090, Garage's S3 API 3900, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
+   the Beszel status dashboard 8090, Garage's S3 API 3900, the SFTPGo file manager 8091, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
    ```json
@@ -138,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8096", "tcp:13378", "tcp:5000"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -382,7 +382,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 3900, 5000, 8080, 8090, 8096, 13378/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 3900, 5000, 8080, 8090, 8091, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -401,8 +401,8 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: compose model accepted: 11 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, beszel 100.x.y.z:8090, garage 100.x.y.z:3900, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
-infra-apply: bundle accepted: 26 files, manifest checksums match
+infra-apply: compose model accepted: 12 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, beszel 100.x.y.z:8090, garage 100.x.y.z:3900, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
+infra-apply: bundle accepted: 27 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -416,7 +416,7 @@ infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 are bound to 100.x.y.z alone
 infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on 100.x.y.z
 infra-apply: beszel-pair garage-setup finished: the dashboard's agent is paired, and S3 has its layout, the owner's key and the files bucket
 infra-apply: Traefik, Watchtower, autoheal and Beszel's agent reach Docker through their socket proxies with no refused calls
@@ -608,7 +608,11 @@ most values:
 - **`GARAGE_OWNER_ACCESS_KEY_ID` and `GARAGE_OWNER_SECRET_KEY`**: rotate **both together**
   (Garage never reuses a deleted key ID): `GK$(openssl rand -hex 12)` and `openssl rand -hex 32`,
   as in section 12, then `release`. `garage-setup` imports the new key, gives it the `files`
-  bucket and deletes the old one; update rclone and your S3 apps.
+  bucket and deletes the old one, and `sftpgo` picks the new key up on its restart; update
+  rclone and your S3 apps.
+- **`FILES_PASSWORD`**: `openssl rand -hex 16` (saved to "infra production secrets" as in
+  section 12), then `release`. `sftpgo` reloads its user at start, so the new password works
+  at once and the old one stops; update WebDAV mounts.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
@@ -753,7 +757,8 @@ check it.
 | Audiobookshelf | `http://infra-host:13378` | 13378 |
 | Kavita | `http://infra-host:5000` | 5000 |
 | Beszel (server status) | `http://infra-host:8090` | 8090 |
-| Garage (S3 storage) | `http://infra-host:3900` (an S3 endpoint, not a web page; see `http://infra-host/files.html`) | 3900 |
+| Files (SFTPGo, the file manager) | `http://infra-host:8091/web/client`; WebDAV at `https://home.arbikullakshi.com/dav` | 8091 (WebDAV through 443) |
+| Garage (S3 storage behind Files) | `http://infra-host:3900` (an S3 endpoint for rclone and S3 apps; see `http://infra-host/files.html`) | 3900 |
 
 ### Disks
 
@@ -802,7 +807,7 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8096", "tcp:13378", "tcp:5000"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
 
 An existing policy gets the ports it lacks from `~/.cache/infra-tailscale-setup.sh links`
@@ -867,7 +872,7 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
 "the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443
-beszel:8090 garage:3900 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
+beszel:8090 garage:3900 sftpgo:8091 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
 the first pull takes a while. In the background, after the release:
 
 - `ollama-pull` downloads `ollama_models` in order: `qwen3:4b` (2.6 GB, so **Quick** works
@@ -917,6 +922,8 @@ password from your password manager for each.
 5. **Beszel**, `http://infra-host:8090`: nothing to set up. Sign in with `status_owner_email`
    (`production.yml`) and `BESZEL_PASSWORD`; `infra-host` is already listed
    ([The status dashboard](#the-status-dashboard)).
+6. **Files**, `http://infra-host:8091/web/client` (the Files tile): nothing to set up. Sign in as
+   `owner` with `FILES_PASSWORD` ([Files](#files-s3-storage)).
 
 Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/audiobooks` and
 `/podcasts` (podcast downloads, covers).
@@ -996,9 +1003,16 @@ set_secret GARAGE_OWNER_SECRET_KEY "$(openssl rand -hex 32)"
 unset -f set_secret; unset item
 ```
 
-A release refuses to render without all six. Then provision (it creates the `beszel-data`,
+The file manager (SFTPGo) adds one more, its sign-in password, the same way:
+
+```bash
+p="$(openssl rand -hex 16)"; op item edit "infra production secrets" --vault Personal "FILES_PASSWORD[password]=$p" >/dev/null && printf %s "$p" | gh secret set FILES_PASSWORD --env production -R somethim/infra; unset p
+```
+
+A release refuses to render without all seven. Then provision (it creates the `beszel-data`,
 `beszel-agent-data` and `garage-meta` volumes, `/srv/media/s3` and `/srv/media/.beszel`, the
-`beszel` role's socket proxy, and opens 3900 and 8090 in ufw), then `release`.
+`beszel` role's socket proxy, and opens 3900 and 8090 in ufw; with the file manager also
+`sftpgo-data` and 8091), then `release`.
 
 ### The status dashboard
 
@@ -1024,7 +1038,29 @@ in the dashboard; they live in `beszel-data`, which the nightly backup copies.
 
 ### Files (S3 storage)
 
-Garage at `http://infra-host:3900`: S3-compatible storage, region `garage`, path-style
+**The file manager.** `http://infra-host:8091/web/client` (the Files tile) is SFTPGo's web
+client on the `files` bucket: upload (drag and drop), folders, rename, move, delete, preview,
+download, and share links. Sign in as `owner` with `FILES_PASSWORD`:
+
+```bash
+op item get "infra production secrets" --vault Personal --fields label=FILES_PASSWORD --reveal
+```
+
+**As a drive (WebDAV).** `https://home.arbikullakshi.com/dav` (through `home-tls`, so with the
+real certificate), user `owner`, the same password. On the laptop: Nautilus, Other Locations,
+`davs://home.arbikullakshi.com/dav`, or `rclone config create homedav webdav
+url=https://home.arbikullakshi.com/dav vendor=other user=owner pass="$(rclone obscure "$(op item
+get 'infra production secrets' --vault Personal --fields label=FILES_PASSWORD --reveal)")"`. On
+Android: a WebDAV-capable file manager (Material Files, Solid Explorer) with that address.
+
+Everything is code: `sftpgo` loads its user from the compose file on every start (mode 0: added,
+or updated to match), so the password follows `FILES_PASSWORD` and the storage is always the
+`files` bucket with the owner's S3 key. SFTP, FTP, the admin web UI and the REST API are off; an
+admin account exists only because SFTPGo requires one, with a random password made new at every
+start. Share links and sessions live in `sftpgo-data`, which the nightly backup copies (SFTPGo
+stopped). `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
+
+**Straight to S3.** Garage at `http://infra-host:3900`: S3-compatible storage, region `garage`, path-style
 addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).
 Objects are on the media disk (`/srv/media/s3`), the metadata on the SSD (`garage-meta`); the
 nightly backup stops Garage, copies `garage-meta` and mirrors `/srv/media/s3`, so the two match.
@@ -1047,8 +1083,8 @@ Any S3 app works the same way (Cyberduck, S3 Files, FolderSync, …): S3-compati
 imports your key (`garage-setup.env`) and gives it read, write and owner rights on `files` on
 every release; `ssh admin@infra-host sudo docker logs garage-setup` shows what it did. More
 buckets: add their names to `GARAGE_BUCKETS` in `stack/media/docker-compose.yml` and release.
-There is no web interface: the one community UI for Garage has had no release in a year and
-would need Garage's full admin token.
+Garage's own web UIs are not used (the one community UI has had no release in a year and would
+need Garage's full admin token); the file manager above is the interface.
 
 ### Copying media in
 

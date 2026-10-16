@@ -84,7 +84,8 @@ leading or trailing spaces, which Compose would rewrite.
 | `BESZEL_AGENT_TOKEN` | The token Beszel's agent presents (`openssl rand -hex 24`, at least 32 letters, digits and `-`). Rendered into `media/beszel-agent.env` and `media/beszel-pair.env` (which registers it as the owner's universal token) |
 | `GARAGE_RPC_SECRET` | Garage's RPC secret (`openssl rand -hex 32`, exactly 64 hex digits). Only in `media/garage.env`, read by `garage` |
 | `GARAGE_ADMIN_TOKEN` | Garage's admin API token (`openssl rand -hex 32`, at least 32 letters and digits). In `media/garage.env` and `media/garage-setup.env` |
-| `GARAGE_OWNER_ACCESS_KEY_ID` / `GARAGE_OWNER_SECRET_KEY` | The owner's S3 key (`GK` + `openssl rand -hex 12`; `openssl rand -hex 32`), imported by `garage-setup` (`media/garage-setup.env`). Rotate both together: Garage never reuses a deleted key ID |
+| `GARAGE_OWNER_ACCESS_KEY_ID` / `GARAGE_OWNER_SECRET_KEY` | The owner's S3 key (`GK` + `openssl rand -hex 12`; `openssl rand -hex 32`), imported by `garage-setup` (`media/garage-setup.env`) and used by `sftpgo` (`media/sftpgo.env`) for the files bucket. Rotate both together: Garage never reuses a deleted key ID |
+| `FILES_PASSWORD` | The owner's file manager (SFTPGo web client and WebDAV) password (`openssl rand -hex 16`, at least 16 letters and digits). Only in `media/sftpgo.env`, read by `sftpgo`, which reloads its user from it on every start |
 | `SEARXNG_SECRET` | SearXNG's secret key (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/searxng.env`, read only by `searxng`. Rotating it changes nothing visible ([stacks.md](stacks.md#ai)) |
 
 The three database passwords must be at least 32 letters and digits (`[A-Za-z0-9]{32,}`)
@@ -93,7 +94,7 @@ them, and the hypernova session secret, with `openssl rand -hex 24`.
 `PORTFOLIO_TOTP_ENCRYPTION_KEY` must be base64 of 32 bytes (`[A-Za-z0-9+/]{43}=`).
 `CF_TUNNEL_TOKEN` must look like a token Cloudflare issues (`eyJ` and at least 40 more
 base64 characters). `WEBUI_SECRET_KEY` and `SEARXNG_SECRET` must be at least 32 letters and digits. `HOME_TLS_CF_DNS_TOKEN` must be 40 or
-more letters, digits, `_` and `-`. The Beszel and Garage secrets' formats are in their rows above. [RUNBOOK.md](../RUNBOOK.md#7-the-production-environment) generates every
+more letters, digits, `_` and `-`. The Beszel, Garage and file manager secrets' formats are in their rows above. [RUNBOOK.md](../RUNBOOK.md#7-the-production-environment) generates every
 value.
 
 ### Variables
@@ -132,6 +133,7 @@ mode 0644, the rest 0600:
 | `media/beszel-agent.env` | `TOKEN`, the agent's token | `beszel-agent` |
 | `media/garage.env` | `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN` | `garage` |
 | `media/garage-setup.env` | `GARAGE_ADMIN_TOKEN`, `OWNER_ACCESS_KEY_ID`, `OWNER_SECRET_ACCESS_KEY` | `garage-setup` |
+| `media/sftpgo.env` | `FILES_PASSWORD`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | `sftpgo` |
 | `ghcr.env` | GHCR login | `infra-apply`'s `docker login` |
 | `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama models, the ACME contact and the dashboard's login name only | Compose interpolation |
 | `release.env`, `manifest.sha256`, `<stack>/docker-compose.yml` | no secrets | `infra-apply` |
@@ -147,12 +149,12 @@ anything changes ("…; the running release is untouched") unless all of this ho
    Tailscale IPv4 (`TAILSCALE_IP`, in `100.64.0.0/10`) and the `ai` and `media` accounts
    (`AI_USER`, `MEDIA_USER`, never root), no other release or status holds the lock, and `/opt/edge/docker-compose.yml` (Traefik, written by
    provisioning) exists.
-2. The bundle is at most 1 MiB, a gzip tar of exactly the 26 expected names, regular files
+2. The bundle is at most 1 MiB, a gzip tar of exactly the 27 expected names, regular files
    only, each at most 256 KiB.
 3. `manifest.sha256` lists exactly those files, and every checksum matches.
 4. Every env file is `KEY=value` lines only; `ghcr.env` sets exactly `GHCR_USERNAME` and
    `GHCR_TOKEN`; `tunnel/tunnel.env` sets exactly `TUNNEL_TOKEN`; `ai/open-webui.env` sets
-   exactly `WEBUI_SECRET_KEY`; `ai/searxng.env` sets exactly `SEARXNG_SECRET`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; each Beszel and Garage env file sets
+   exactly `WEBUI_SECRET_KEY`; `ai/searxng.env` sets exactly `SEARXNG_SECRET`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; each Beszel, Garage and SFTPGo env file sets
    exactly its keys in the formats of the secrets above; `release.env` sets exactly
    `RELEASE_MODE` and `RELEASE_COMMIT`.
 5. Each app image is `<repo>:latest` in a `latest` release, or `<repo>:<tag>@sha256:<digest>`
@@ -163,7 +165,7 @@ anything changes ("…; the running release is untouched") unless all of this ho
    container: only hypernova's provider joins `llm`); no privileged settings, added
    capabilities, devices, host namespaces or Docker socket; no host port but the tailnet-only
    ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000, `home` 80,
-   `home-tls` 443, `beszel` 8090, `garage` 3900), each
+   `home-tls` 443, `beszel` 8090, `garage` 3900, `sftpgo` 8091), each
    written exactly `"${TAILSCALE_IP}:<port>:<port>"` and resolved to the address `host.env`
    names; no bind mount but the media library folders, Garage's `/srv/media/s3` and the two
    folders Beszel's agent sizes disks through, each in its own container at its fixed path,

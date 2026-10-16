@@ -124,6 +124,7 @@ cat >"$work/vars.json" <<JSON
   "garage_admin_token": "HarnessGarageAdmin0123456789abcdefAB",
   "garage_owner_access_key_id": "GKcccc3333cccc3333cccc3333",
   "garage_owner_secret_key": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
+  "files_password": "HarnessFilesPassword0123",
   "deploy_key_file": "$work/deploy_key.pub"
 }
 JSON
@@ -133,7 +134,8 @@ secrets=(ghp_HarnessToken0123456789 HarnessPgSuperuser0123456789abcdefA HarnessP
   eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ HarnessWebuiSecret0123456789abcdefABCDEF
   HarnessHomeTlsDnsToken0123456789abcdefABCDEF HarnessSearxngSecret0123456789abcdefABCDEF
   HarnessBeszelPassword0123 harness-beszel-agent-token-0123456789 aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111
-  HarnessGarageAdmin0123456789abcdefAB GKcccc3333cccc3333cccc3333 bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222)
+  HarnessGarageAdmin0123456789abcdefAB GKcccc3333cccc3333cccc3333 bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222
+  HarnessFilesPassword0123)
 
 build() {
   "$root/build-bundle.sh" "$@" >"$work/build.log" 2>&1
@@ -145,8 +147,8 @@ build "$work/vars.json" "$work/good-again.tgz" || { cat "$work/build.log"; echo 
 cmp -s "$work/good.tgz" "$work/good-again.tgz" || { echo "FAIL build-bundle.sh is not deterministic"; exit 1; }
 echo "ok   bundle: two builds from the same vars are byte-identical"
 if tar -tvzf "$work/good.tgz" | grep -qv '^-'; then tar -tvzf "$work/good.tgz"; echo "FAIL the bundle holds entries other than regular files"; exit 1; fi
-[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 26 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 26 files"; exit 1; }
-echo "ok   bundle: 26 file entries, no directories"
+[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 27 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 27 files"; exit 1; }
+echo "ok   bundle: 27 file entries, no directories"
 unpack "$work/good.tgz" "$work/good"
 grep -qxF "RELEASE_COMMIT=$(git -C "$root" rev-parse HEAD)" "$work/good/release.env" || { echo "FAIL release.env does not name the checked-out commit"; exit 1; }
 grep -qx 'RELEASE_MODE=latest' "$work/good/release.env" || { echo "FAIL a plain build is not a latest release"; exit 1; }
@@ -166,7 +168,8 @@ owner_of() {
     harness-beszel-agent-token*) echo "media/beszel-pair.env media/beszel-agent.env" ;;
     aaaa1111*) echo media/garage.env ;;
     HarnessGarageAdmin*) echo "media/garage.env media/garage-setup.env" ;;
-    GKcccc3333* | bbbb2222*) echo media/garage-setup.env ;;
+    GKcccc3333* | bbbb2222*) echo "media/garage-setup.env media/sftpgo.env" ;;
+    HarnessFilesPassword*) echo media/sftpgo.env ;;
     *) echo portfolio/portfolio.env ;;
   esac
 }
@@ -244,6 +247,8 @@ render_refused "a Garage RPC secret that is not 64 hex digits" '.garage_rpc_secr
 render_refused "no Garage admin token" 'del(.garage_admin_token)'
 render_refused "a Garage key ID that is not GK and 24 hex digits" '.garage_owner_access_key_id = "AKIAHARNESS0123456789"'
 render_refused "a Garage secret key that is not 64 hex digits" '.garage_owner_secret_key = "short"'
+render_refused "a files password shorter than 16 letters and digits" '.files_password = "short"'
+render_refused "a files password with a symbol" '.files_password = "HarnessFilesPassword-0123"'
 render_refused "a hypernova model ollama-pull does not fetch" '.hypernova_ollama_model = "llama3.2:3b"'
 render_refused "an Ollama model without a tag" '.ollama_models = ["qwen3:4b", "qwen3"]'
 printf 'REPLACE_ME_BEFORE_DEPLOYING\n' >"$work/placeholder.pub"
@@ -272,7 +277,7 @@ for stack in database portfolio hypernova tunnel ai media; do
 done
 grep -qF "compose model accepted: 7 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for comfyui, ollama, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU services"; exit 1; }
-grep -qF "compose model accepted: 11 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, beszel $tailscale_ip:8090, garage $tailscale_ip:3900, home $tailscale_ip:80, home-tls $tailscale_ip:443, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, beszel-agent /srv/media/.beszel (ro), beszel-agent /srv/backup (ro), garage /srv/media/s3, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for beszel-agent, jellyfin, no Docker socket" "$work/out" ||
+grep -qF "compose model accepted: 12 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, beszel $tailscale_ip:8090, garage $tailscale_ip:3900, home $tailscale_ip:80, home-tls $tailscale_ip:443, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000, sftpgo $tailscale_ip:8091 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, beszel-agent /srv/media/.beszel (ro), beszel-agent /srv/backup (ro), garage /srv/media/s3, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for beszel-agent, jellyfin, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the media stack summary does not name its tailnet ports, library mounts and GPU"; exit 1; }
 echo "ok   the six checked-in stacks pass the compose guard"
 [ -f "$state/stack/releases/$first_id/.verified" ] || { echo "FAIL the release was not marked verified"; exit 1; }
@@ -295,7 +300,7 @@ for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl
 done
 [ "$(grep -c '^curl \(route\|ready\) ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
 [ "$(grep -c '^curl public ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL the public check asked other than the four routes and the http redirect"; exit 1; }
-grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
+grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
 grep -qxF "curl tls home.arbikullakshi.com:443:$tailscale_ip https://home.arbikullakshi.com/" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not ask home-tls by name on the tailnet address"; exit 1; }
 grep -qF "infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on $tailscale_ip" "$work/out" || { cat "$work/out"; echo "FAIL verify did not report home-tls's certificate"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
@@ -741,7 +746,7 @@ compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets dep
 compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) beszel-socket and media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
 compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
 compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read home-tls.env' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
-compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack beszel, beszel-agent, beszel-pair, garage, garage-setup, home-tls may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
+compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack beszel, beszel-agent, beszel-pair, garage, garage-setup, home-tls, sftpgo may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
 # The guard on its own, against the resolved models of the checked-in stacks.
 for stack in database portfolio hypernova tunnel ai media; do
   repos=()
@@ -852,14 +857,14 @@ expect_refused "a container with an unreadable StartedAt" "not ready after 1s: p
 installed_state
 sleep 1
 touch "$state/vanished/c4"
-expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 23 listed containers could not be inspected" "$work/second.tgz" release
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 24 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
 
 installed_state
 sleep 1
-for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21 c22 c23; do touch "$state/vanished/$c"; done
-expect_refused "every listed container is gone before the inspect" "not ready after 1s: 23 of 23 listed containers could not be inspected" "$work/second.tgz" release
+for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21 c22 c23 c24; do touch "$state/vanished/$c"; done
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 24 of 24 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
 
 installed_state

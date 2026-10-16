@@ -122,9 +122,9 @@ Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: 
 (`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Ollama,
 Open WebUI, SearXNG and ComfyUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for
 `ollama` and `ollama-pull`, Open WebUI's for `open-webui` and `webui-presets`, ComfyUI's for
-`comfyui` and `comfyui-fetch`), busybox, Traefik, Beszel (hub and the NVIDIA agent), curl and
-Garage (`stack/media/docker-compose.yml`: busybox for `home` and `garage-config`, Traefik for
-`home-tls`, curl for `beszel-pair` and `garage-setup`), Traefik,
+`comfyui` and `comfyui-fetch`), busybox, Traefik, Beszel (hub and the NVIDIA agent), curl,
+Garage and SFTPGo (`stack/media/docker-compose.yml`: busybox for `home` and `garage-config`,
+Traefik for `home-tls`, curl for `beszel-pair` and `garage-setup`), Traefik,
 Watchtower, autoheal and the socket proxy
 (`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned

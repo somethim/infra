@@ -209,6 +209,7 @@ jobs:
           GARAGE_ADMIN_TOKEN: ${{ secrets.GARAGE_ADMIN_TOKEN }}
           GARAGE_OWNER_ACCESS_KEY_ID: ${{ secrets.GARAGE_OWNER_ACCESS_KEY_ID }}
           GARAGE_OWNER_SECRET_KEY: ${{ secrets.GARAGE_OWNER_SECRET_KEY }}
+          FILES_PASSWORD: ${{ secrets.FILES_PASSWORD }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -232,7 +233,8 @@ jobs:
             garage_rpc_secret: env.GARAGE_RPC_SECRET,
             garage_admin_token: env.GARAGE_ADMIN_TOKEN,
             garage_owner_access_key_id: env.GARAGE_OWNER_ACCESS_KEY_ID,
-            garage_owner_secret_key: env.GARAGE_OWNER_SECRET_KEY
+            garage_owner_secret_key: env.GARAGE_OWNER_SECRET_KEY,
+            files_password: env.FILES_PASSWORD
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 

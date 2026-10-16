@@ -210,9 +210,11 @@ refuse to render, since the stack could not start.
 ## media
 
 Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), the
-Beszel status dashboard, Garage (S3 storage), for the owner alone, and `home`, a links page
+Beszel status dashboard, Garage (S3 storage) with SFTPGo as its file manager, for the owner
+alone, and `home`, a links page
 (`http://infra-host/`) with a tile for each of them and Open WebUI (six tiles, two by three),
-with `home-tls` in front of it for `https://home.arbikullakshi.com/`. Like `ai`, nothing here is
+with `home-tls` in front of it for `https://home.arbikullakshi.com/` (and the file manager's
+WebDAV at `/dav`). Like `ai`, nothing here is
 public: no `edge`, no label for the edge Traefik, never behind the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
 the tailnet is faster: a phone or TV on Tailscale talks to the server directly (or through a
 relay when it must), WireGuard-encrypted.
@@ -230,6 +232,7 @@ relay when it must), WireGuard-encrypted.
 | `garage-config` | none (one-shot) | none | writes `garage.toml` into `garage-meta` |
 | `garage` | 3900 (S3; admin 3903 and RPC 3901 on the `media` network only) | `/srv/media/s3` → `/data`, read-write (the objects) | `garage-meta` (`/meta`: the config and the SQLite metadata) |
 | `garage-setup` | none (one-shot) | none | none (Garage's admin API) |
+| `sftpgo` | 8091 (web client; WebDAV on 8092, `media` network only, through `home-tls` at `/dav`) | none (its files are the `files` bucket, over S3) | `sftpgo-data` (`/var/lib/sftpgo`: its SQLite database, share links) |
 
 **`beszel`, `beszel-pair`, `beszel-agent`** (Beszel 0.21). The hub creates the owner's login on
 its first start from `BESZEL_HUB_USER_EMAIL` (`status_owner_email`, `media/.env`) and
@@ -260,9 +263,21 @@ Garage never reuses a deleted key ID, so a new secret needs a new ID, and keys n
 under another ID are deleted), creates the buckets in `GARAGE_BUCKETS` (`files`) and grants the
 key read, write and owner on them. It prints no secret and fails the release
 (`check_one_shots`) when anything is refused. The objects are on the media disk, the metadata on
-the SSD (Garage recommends fast storage for it). There is no web interface: the only community
-one has had no release in a year and would need the full admin token; S3 clients and
-`http://infra-host/files.html` cover it.
+the SSD (Garage recommends fast storage for it). Garage's own community web UI is not used (no
+release in a year, and it would need the full admin token); `sftpgo` is the interface.
+
+**`sftpgo`** (SFTPGo 2.7, the `-alpine` image) is the file manager on the `files` bucket: its
+web client (`http://infra-host:8091/web/client`, the Files tile) uploads by drag and drop, makes
+folders, renames, moves, deletes, previews, downloads and makes share links, and its WebDAV
+server (8092, on the `media` network only) is published at `https://home.arbikullakshi.com/dav`
+by `home-tls`, with the real certificate, so a laptop or phone mounts the bucket as a drive. Its
+one user, `owner`, is code: at every start `OWNER_JSON_SH` (compose file) writes it to tmpfs and
+SFTPGo loads it with `LOADDATA_MODE=0` (added, or updated to match), with the password from
+`FILES_PASSWORD` and an S3 filesystem (`http://garage:3900`, region `garage`, bucket `files`,
+path-style) with the owner's key (`sftpgo.env`). SFTPGo sends every sign-in to its admin setup
+page until an admin exists, so the same file adds one with a fresh random password at each
+start; the admin web UI and the REST API are off, so nobody can use it. SFTP and FTP are off. It
+starts after `garage-setup` has created the bucket and imported the key.
 
 **`home-tls`** is a second Traefik (the edge image and digest) that terminates TLS for
 `home.arbikullakshi.com` and proxies to `home:80` over the `media` network. The apex sends HSTS
@@ -293,7 +308,7 @@ read-only root filesystem and a tmpfs `/tmp`. Kavita does not: its entrypoint co
 `appsettings.json` from the image's `/tmp/config` on first start, which a tmpfs `/tmp` would
 hide; as a non-root user it cannot write anything root owns in the image anyway. Each secret is in
 its own env file, read by its one container (`home-tls.env`, `beszel.env`, `beszel-pair.env`,
-`beszel-agent.env`, `garage.env`, `garage-setup.env`); `media/.env` holds only the uid and gid,
+`beszel-agent.env`, `garage.env`, `garage-setup.env`, `sftpgo.env`); `media/.env` holds only the uid and gid,
 the links page's name and ACME contact and the dashboard's login name.
 
 **GPU.** Jellyfin reserves the GPU like Ollama for NVENC/NVDEC transcodes, and `beszel-agent`
@@ -304,7 +319,7 @@ for reading the GPU's state through NVML (the guard allows exactly `ollama`, `co
 together. Consumer drivers allow a handful of concurrent NVENC sessions, plenty for one home.
 
 **Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB, `garage` 512 MiB,
-`beszel` 192 MiB, `beszel-agent` 128 MiB, `home-tls` 128 MiB, `home` 32 MiB, the one-shots 16–32 MiB.
+`sftpgo` 256 MiB, `beszel` 192 MiB, `beszel-agent` 128 MiB, `home-tls` 128 MiB, `home` 32 MiB, the one-shots 16–32 MiB.
 With `ollama` at 8 GiB and the rest, the stacks fit a 16 GB machine with the swap file as a
 buffer; give Ollama less if the server has less RAM.
 

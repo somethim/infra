@@ -7,7 +7,8 @@ deploy_user: deploy
 # The only inbound rules, all on the tailnet: SSH, and the tailnet-only ports
 # (roles/host/defaults/main.yml, tailnet_ports: the home links page on 80 and
 # its https front on 443, Kavita, Open WebUI, Jellyfin, Audiobookshelf, the
-# Beszel status dashboard on 8090 and Garage's S3 API on 3900). LAN 22 is added or
+# Beszel status dashboard on 8090, Garage's S3 API on 3900 and the SFTPGo file
+# manager on 8091). LAN 22 is added or
 # removed separately in firewall.yml (ssh_outside_tailnet). No public web port:
 # the public arrives through the Cloudflare Tunnel, which dials out.
 ufw_allowed:
@@ -18,6 +19,7 @@ ufw_allowed:
   - in on tailscale0 proto tcp to any port 5000
   - in on tailscale0 proto tcp to any port 8080
   - in on tailscale0 proto tcp to any port 8090
+  - in on tailscale0 proto tcp to any port 8091
   - in on tailscale0 proto tcp to any port 8096
   - in on tailscale0 proto tcp to any port 13378
 ssh_public_key_pattern: '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh[.]com|sk-ecdsa-sha2-nistp256@openssh[.]com) [A-Za-z0-9+/]+={0,3}( .*)?$'

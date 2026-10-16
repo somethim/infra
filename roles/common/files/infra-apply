@@ -52,15 +52,15 @@ readonly bundle_files=(
   tunnel/docker-compose.yml tunnel/tunnel.env
   ai/docker-compose.yml ai/.env ai/open-webui.env ai/searxng.env
   media/docker-compose.yml media/.env media/home-tls.env
-  media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env
+  media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env
 )
 readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env)
 readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env manifest.sha256)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
-readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443" "beszel 8090" "garage 3900")
+readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443" "beszel 8090" "garage 3900" "sftpgo 8091")
 # One-shots whose work a release depends on: each must exit 0 (the dashboard's
 # pairing and Garage's layout, key and bucket).
 readonly checked_one_shots=(beszel-pair garage-setup)
@@ -261,6 +261,8 @@ validate_env_files() {
   require_env "$dir" media/garage.env '^GARAGE_RPC_SECRET=[0-9a-f]{64}$' '^GARAGE_ADMIN_TOKEN=[A-Za-z0-9]{32,}$'
   require_env "$dir" media/garage-setup.env '^GARAGE_ADMIN_TOKEN=[A-Za-z0-9]{32,}$' '^OWNER_ACCESS_KEY_ID=GK[0-9a-f]{24}$' \
     '^OWNER_SECRET_ACCESS_KEY=[0-9a-f]{64}$'
+  require_env "$dir" media/sftpgo.env '^FILES_PASSWORD=[A-Za-z0-9]{16,}$' '^S3_ACCESS_KEY_ID=GK[0-9a-f]{24}$' \
+    '^S3_SECRET_ACCESS_KEY=[0-9a-f]{64}$'
 }
 
 # require_env <bundle dir> <file> <line pattern>...: the file holds exactly one

@@ -72,7 +72,7 @@ new_state() {
   state="$work/state$count"
   mkdir -p "$state/backup" "$state/running" "$state/stopped" "$state/volumes"
   touch "$state/mounted" "$state/calls"
-  for volume in jellyfin-config audiobookshelf-config audiobookshelf-metadata kavita-config open-webui-data portfolio-media hypernova_prizm-storage ollama-models beszel-data garage-meta; do
+  for volume in jellyfin-config audiobookshelf-config audiobookshelf-metadata kavita-config open-webui-data portfolio-media hypernova_prizm-storage ollama-models beszel-data garage-meta sftpgo-data; do
     mkdir -p "$state/volumes/$volume"
     echo "$volume data" >"$state/volumes/$volume/data.db"
   done
@@ -92,7 +92,7 @@ new_state() {
   mkdir -p "$state/media/s3/ab/cd"
   echo object >"$state/media/s3/ab/cd/abcdef"
   touch "$state/running/jellyfin" "$state/running/audiobookshelf" "$state/running/open-webui" "$state/stopped/kavita" \
-    "$state/running/beszel" "$state/running/garage"
+    "$state/running/beszel" "$state/running/garage" "$state/running/sftpgo"
 }
 
 run_backup() {
@@ -142,7 +142,7 @@ for dir in "$state/backup" "$state/backup/postgres" "$state/backup/apps" "$state
 done
 echo "ok   PostgreSQL: pg_dumpall to postgres/<date>.sql.gz, 0600, in 0700 directories"
 apps="$state/backup/apps/2026-10-15"
-want_tars="$(printf '%s.tar.gz\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media beszel-data garage-meta | LC_ALL=C sort)"
+want_tars="$(printf '%s.tar.gz\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media beszel-data garage-meta sftpgo-data | LC_ALL=C sort)"
 [ "$(find "$apps" -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$want_tars" ] || { find "$apps"; echo "FAIL the app backup does not hold exactly the app volumes"; exit 1; }
 grep -q 'ollama-models' "$state/calls" && { echo "FAIL the Ollama models were looked at"; exit 1; }
 [ "$(members "$apps/jellyfin-config.tar.gz")" = "$(printf '%s\n' data.db metadata metadata/poster.jpg)" ] || { members "$apps/jellyfin-config.tar.gz"; echo "FAIL jellyfin-config: logs left in, or data missing"; exit 1; }
@@ -150,7 +150,7 @@ grep -q 'ollama-models' "$state/calls" && { echo "FAIL the Ollama models were lo
 [ "$(members "$apps/kavita-config.tar.gz")" = data.db ] || { members "$apps/kavita-config.tar.gz"; echo "FAIL kavita-config: its cache was copied"; exit 1; }
 [ "$(members "$apps/audiobookshelf-metadata.tar.gz")" = data.db ] || { members "$apps/audiobookshelf-metadata.tar.gz"; echo "FAIL audiobookshelf-metadata: its cache was copied"; exit 1; }
 echo "ok   apps: one tar per app volume, caches and logs left out, never the Ollama models"
-for name in jellyfin audiobookshelf open-webui beszel garage; do
+for name in jellyfin audiobookshelf open-webui beszel garage sftpgo; do
   stop_line="$(grep -n "^stop --time 60 $name$" "$state/calls" | cut -d: -f1)"
   start_line="$(grep -n "^start $name$" "$state/calls" | cut -d: -f1)"
   first_volume="$(grep -n '^volume inspect' "$state/calls" | head -n 1 | cut -d: -f1)"
