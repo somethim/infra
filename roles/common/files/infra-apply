@@ -50,13 +50,13 @@ readonly bundle_files=(
   portfolio/docker-compose.yml portfolio/.env portfolio/portfolio.env
   hypernova/docker-compose.yml hypernova/.env hypernova/provider.env
   tunnel/docker-compose.yml tunnel/tunnel.env
-  ai/docker-compose.yml ai/.env ai/open-webui.env
+  ai/docker-compose.yml ai/.env ai/open-webui.env ai/searxng.env
   media/docker-compose.yml media/.env media/home-tls.env
 )
 readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env media/.env media/home-tls.env)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env)
 readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env media/.env media/home-tls.env manifest.sha256)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
 readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443")
@@ -244,6 +244,9 @@ validate_env_files() {
   fi
   if ! grep -qE '^WEBUI_SECRET_KEY=[A-Za-z0-9]{32,}$' "$dir/ai/open-webui.env" || [ "$(grep -c . "$dir/ai/open-webui.env")" -ne 1 ]; then
     untouched "ai/open-webui.env must set exactly WEBUI_SECRET_KEY"
+  fi
+  if ! grep -qE '^SEARXNG_SECRET=[A-Za-z0-9]{32,}$' "$dir/ai/searxng.env" || [ "$(grep -c . "$dir/ai/searxng.env")" -ne 1 ]; then
+    untouched "ai/searxng.env must set exactly SEARXNG_SECRET"
   fi
   if ! grep -qE '^CF_DNS_API_TOKEN=[A-Za-z0-9_-]{40,}$' "$dir/media/home-tls.env" || [ "$(grep -c . "$dir/media/home-tls.env")" -ne 1 ]; then
     untouched "media/home-tls.env must set exactly CF_DNS_API_TOKEN"

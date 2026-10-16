@@ -24,6 +24,7 @@ service_accounts:
 service_volumes:
   - { name: ollama-models, account: ai }
   - { name: open-webui-data, account: ai }
+  - { name: comfyui-data, account: ai }
   - { name: jellyfin-config, account: media }
   - { name: jellyfin-cache, account: media }
   - { name: audiobookshelf-config, account: media }

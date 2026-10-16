@@ -13,5 +13,6 @@
   "hypernova_admin_password": "fake-hypernova-admin-0000",
   "cf_tunnel_token": "eyJhIjoiZmFrZS1hY2NvdW50IiwidCI6ImZha2UtdHVubmVsIiwicyI6ImZha2UifQ==",
   "home_tls_cf_dns_token": "FakeHomeTlsDnsToken000000000000000000000000",
-  "webui_secret_key": "FakeWebuiSecretKey00000000000000000000000000000000"
+  "webui_secret_key": "FakeWebuiSecretKey00000000000000000000000000000000",
+  "searxng_secret": "FakeSearxngSecret000000000000000000000000000000000"
 }

@@ -5,7 +5,7 @@ Ubuntu Server 26.04 LTS, with no port open to the internet. The public reaches t
 through a **Cloudflare Tunnel** the server dials out to; SSH works only over **Tailscale**. It
 provisions the host, runs the edge Traefik proxy and the autonomous agents, and releases every
 stack: the shared `database`, two applications, `portfolio` and `hypernova`, the `tunnel`, and
-for the owner alone, over the tailnet only, `ai` (Ollama and Open WebUI on the GPU) and `media`
+for the owner alone, over the tailnet only, `ai` (Ollama, Open WebUI, SearXNG web search and ComfyUI image generation on the GPU) and `media`
 (Jellyfin, Audiobookshelf, Kavita). It also mounts the library and backup disks and backs up
 every night.
 

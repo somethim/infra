@@ -42,7 +42,7 @@ TAILNET_PORTS = {
 TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
 TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
 # The only services that may reserve a device: the NVIDIA GPU, all of it, nothing else.
-GPU_SERVICES = {("ai", "ollama"), ("media", "jellyfin")}
+GPU_SERVICES = {("ai", "ollama"), ("ai", "comfyui"), ("media", "jellyfin")}
 GPU_DEVICE = {"driver": "nvidia", "count": -1, "capabilities": ["gpu"]}
 # The only bind mounts: (stack, service) -> {host source: (container target, read-only)}.
 BIND_MOUNTS = {
@@ -85,17 +85,17 @@ STACKS = {
         "labels": AUTOHEAL_LABEL,
     },
     # The owner's AI, reachable only over the tailnet: never routed, never
-    # auto-updated (pinned images), never on edge or data. Only Open WebUI
-    # reads the stack's secret.
+    # auto-updated (pinned images), never on edge or data. Open WebUI and
+    # SearXNG each read their own secret.
     "ai": {
         "networks": {"ai", "llm"},
-        "volumes": {"ollama-models": {"name": "ollama-models", "external": True},
-                    "open-webui-data": {"name": "open-webui-data", "external": True}},
-        "containers": {"ollama", "ollama-pull", "open-webui"},
-        "env_files": ("open-webui.env",),
+        "volumes": {name: {"name": name, "external": True} for name in ("ollama-models", "open-webui-data", "comfyui-data")},
+        "containers": {"ollama", "ollama-pull", "open-webui", "webui-presets", "searxng", "comfyui", "comfyui-fetch"},
+        "env_files": ("open-webui.env", "searxng.env"),
         "labels": AUTOHEAL_LABEL,
-        "container_networks": {"ollama": {"ai", "llm"}, "ollama-pull": {"ai"}, "open-webui": {"ai"}},
-        "container_env_files": {"open-webui": {"open-webui.env"}},
+        "container_networks": {"ollama": {"ai", "llm"}, "ollama-pull": {"ai"}, "open-webui": {"ai"}, "webui-presets": {"ai"},
+                               "searxng": {"ai"}, "comfyui": {"ai"}, "comfyui-fetch": {"ai"}},
+        "container_env_files": {"open-webui": {"open-webui.env"}, "searxng": {"searxng.env"}},
         "hardened": True,
     },
     # The owner's media, reachable only over the tailnet. One secret: the

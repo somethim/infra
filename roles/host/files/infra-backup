@@ -12,8 +12,8 @@
 #
 # Every step runs even when an earlier one failed; the script exits 1 if any
 # did, which starts infra-backup-failed.service (an error line in the journal).
-# Never touches the ollama-models volume (models download again) or Jellyfin's
-# cache and transcodes. Restoring: RUNBOOK.md, "Restoring from the backup disk".
+# Never touches the ollama-models and comfyui-data volumes (models and the
+# Stable Diffusion checkpoint download again) or Jellyfin's cache and transcodes. Restoring: RUNBOOK.md, "Restoring from the backup disk".
 set -euo pipefail
 umask 077
 

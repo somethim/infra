@@ -81,59 +81,131 @@ image and the stack entry are all gone.
 
 ## ai
 
-Ollama and Open WebUI on the GPU, for the owner alone. Nothing in this stack is public: it is
-not on `edge`, has no Traefik label, and is never behind the tunnel.
+Ollama, Open WebUI, SearXNG and ComfyUI, for the owner alone. Nothing in this stack is public:
+it is not on `edge`, has no Traefik label, and is never behind the tunnel. Everything Open
+WebUI's admin panel would otherwise hold is code in `stack/ai/docker-compose.yml` and applied
+on every release: the owner configures nothing in the GUI.
 
 - **`ollama`** serves models on `11434` inside Docker only: it publishes no port. It joins
   `ai` (a plain bridge, which it needs to download models) and `llm`, an **internal** network
   (no route out) whose only other member is hypernova's `prizm-provider`. Its models and key
   live in the external `ollama-models` volume (`HOME=/ollama`), on the SSD.
-- **`ollama-pull`** is a one-shot on every release: `ollama pull <ollama_model>` against
-  `http://ollama:11434` once Ollama is healthy. A model Ollama already has costs a manifest
-  check. It exits; verify does not wait for it (restart `"no"`). `sudo docker logs ollama-pull`
-  shows whether it worked (no internet, or a model name Ollama does not know).
+- **`ollama-pull`** is a one-shot on every release, once Ollama is healthy: `ollama pull` for
+  each model in `ollama_models` (`production.yml`, passed as `OLLAMA_MODELS`), in order. A model
+  Ollama already has costs a manifest check. Only when every pull finished does it remove the
+  models the list no longer names (`ollama rm`), so the volume does not keep models nobody uses;
+  a failed pull removes nothing. A model pulled by hand (from the admin panel) is removed by
+  the next release unless it is added to the list. It exits; verify does not wait for it
+  (restart `"no"`). `sudo docker logs ollama-pull` shows each pull and removal.
 - **`open-webui`** is the chat UI, `OLLAMA_BASE_URL=http://ollama:11434`, with its data
-  (accounts, chats, its RAG embedding model, downloaded on first use) in the external
+  (accounts, chats, presets, its RAG embedding model, downloaded on first use) in the external
   `open-webui-data` volume. It publishes **8080 on the host's Tailscale address only**
   ([architecture.md](architecture.md#public-and-tailnet-only)). `WEBUI_AUTH=true`: every page
-  needs a login. The first account created becomes the admin; `DEFAULT_USER_ROLE=pending`
-  makes any later sign-up wait for the admin's approval, and the admin turns sign-up off right
-  after creating the account ([RUNBOOK.md](../RUNBOOK.md#first-logins)). Its only secret,
-  `WEBUI_SECRET_KEY`, signs sessions and comes from `open-webui.env`, which no other container
-  may read. OpenAI connections, community sharing, update checks and telemetry are off.
+  needs a login. `ENABLE_PERSISTENT_CONFIG=false`: the environment is the whole configuration,
+  read on every start; what the admin panel saves lasts until the next restart, so a setting
+  is changed in the compose file and released. Sign-up is off (`ENABLE_SIGNUP=false`; the
+  owner's account exists), `DEFAULT_USER_ROLE=pending` would hold any account that got in
+  anyway, new chats start on the **Quick** preset (`DEFAULT_MODELS=quick`), web search goes to
+  `searxng` and image generation to `comfyui`. Its only secret, `WEBUI_SECRET_KEY`, signs
+  sessions and comes from `open-webui.env`, which no other container may read. OpenAI
+  connections, community sharing, update checks and telemetry are off.
+- **`webui-presets`** is a one-shot on every release, once `open-webui` is healthy. It runs
+  Open WebUI's own code (same image, same volume, `python3 -c`) and writes the presets in
+  `PRESETS` into its database as workspace models, owned by the admin account and readable by
+  every user; it hides the raw `ollama_models` from the model picker, and deletes the presets
+  it wrote that `PRESETS` no longer lists (it marks its own with `managed_by: infra` and leaves
+  everything else alone). A preset whose base model `ollama_models` does not pull stops it with
+  an error; on a fresh volume, before anyone has signed up, it does nothing and says so.
+  `sudo docker logs webui-presets` lists what it added, updated or removed. It needs no key:
+  it reads and writes the database directly and serves nothing.
+- **`searxng`** is the web search Open WebUI queries (`http://searxng:8080/search`, JSON):
+  a metasearch engine on the `ai` network only, with no rate limiter (nothing outside the
+  stack can reach it), no image proxy and no metrics. Its settings are written to `/tmp` from
+  the compose file at start; its secret key comes from `searxng.env` (`SEARXNG_SECRET`), which
+  no other container may read. Engines that block it for a while (CAPTCHAs, rate limits) are
+  skipped for that query; the others still answer.
+- **`comfyui`** generates images for Open WebUI on the GPU (`http://comfyui:8188`), with
+  **Stable Diffusion XL base 1.0**. ComfyUI publishes no official image; this is YanWenKun's
+  `comfyui-boot` (`cu126-slim`, CUDA 12.6, which the 580 driver runs): the most used maintained
+  build, which bakes a tagged stable ComfyUI release into the image rather than cloning one at
+  start. The stack runs that copy directly as the `ai` account (not the image's root
+  entrypoint), with a read-only root, `--disable-all-custom-nodes` (ComfyUI-Manager, which can
+  install code, never loads), `--disable-api-nodes`, and its data (`models/`, outputs, its
+  settings) in the external `comfyui-data` volume (`--base-directory=/data`). The workflow
+  Open WebUI sends (`COMFYUI_WORKFLOW`, ComfyUI's API format) is in the compose file, 1024×1024
+  and 25 steps by default; `COMFYUI_WORKFLOW_NODES` tells Open WebUI which inputs take the
+  prompt, size, steps, seed and checkpoint.
+- **`comfyui-fetch`** is a one-shot on every release: it downloads `sd_xl_base_1.0.safetensors`
+  (6.9 GB, from a pinned revision of `stabilityai/stable-diffusion-xl-base-1.0`, ungated,
+  CreativeML Open RAIL++-M) into `comfyui-data` and keeps it only if its sha256 matches the
+  pinned one. A checkpoint already there is skipped. Verify does not wait for it; until it
+  finishes, image generation fails with a missing checkpoint. `sudo docker logs comfyui-fetch`
+  shows the progress (every GiB). FLUX.1-schnell was the other candidate: its smallest
+  all-in-one file (fp8) is 17 GB, more than the host's 16 GB of RAM can stage while loading.
+
+**The presets.** `PRESETS` in the compose file is the one list:
+
+| Preset | Base model | For | Context | Defaults |
+|---|---|---|---|---|
+| Quick | `qwen3:4b` | short answers checked against the web | 8k | web search on, thinking off |
+| MCU Coder | `qwen2.5-coder:14b` | embedded Rust, C and C++ | 16k | temperature 0.2 |
+| Robotics | `qwen3:14b` | kinematics, control, ROS 2, with the maths | 16k | |
+| Research | `qwen3:14b` | searches until it can cite an answer | 16k | web search on, native function calling (the model calls the search tool again and again) |
+| Image | `qwen3:4b` | image generation | 8k | image generation on, thinking off |
+
+Research would like 32k of context, but `qwen3:14b` (Q4, about 9 GB) plus a 32k cache does not
+fit 12 GB even at q8_0, and a model that spills to the CPU slows to a few words a second; 16k
+with the q8_0 cache stays on the GPU. To add a model: append it to `ollama_models`
+(`<model>:<tag>`, sized for 12 GB) and release. To add or change a preset: edit `PRESETS`
+(id, name, base, description, num_ctx, temperature, system, optional `function_calling` and
+`features`), and release. Avoid `$` in prompts (Compose would read it as a variable).
 
 **Hardening.** Every container runs as the `ai` account (`ai_uid:ai_gid` in `production.yml`,
 `2001:2001`, created by `roles/host` with no login), never root, with `cap_drop: [ALL]`,
-`no-new-privileges` and a `mem_limit`; the compose guard refuses the stack otherwise. The two
-volumes are created by provisioning with their root owned by that account (0700) and mounted
-with `nocopy`, so Docker never copies the image's root-owned directory over them. `ollama` and
-`ollama-pull` also run with a read-only root filesystem (a tmpfs `/tmp`). `open-webui` does not:
-the Python app writes a few files into its own tree at start, which as a non-root user already
-fails harmlessly for anything root owns, and a read-only root would add little.
+`no-new-privileges` and a `mem_limit`; the compose guard refuses the stack otherwise, and
+allows the GPU only to `ollama` and `comfyui` (and Jellyfin in `media`). The three volumes are
+created by provisioning with their root owned by that account (0700) and mounted with
+`nocopy`, so Docker never copies an image's root-owned directory over them. `ollama`,
+`ollama-pull`, `searxng`, `comfyui` and `comfyui-fetch` also run with a read-only root
+filesystem (a tmpfs `/tmp`). `open-webui` and `webui-presets` do not: the Python app writes a
+few files into its own tree at start, which as a non-root user already fails harmlessly for
+anything root owns, and a read-only root would add little. Only `open-webui` publishes a port;
+`searxng` and `comfyui` (which has no login) are reachable from the `ai` network alone.
 
 **hypernova.** The provider reaches Ollama on `llm` (`OLLAMA_HOST=http://ollama:11434`,
-`OLLAMA_MODEL` = `ollama_model`, `AI_DISABLED=false` in `provider.env`). `prizm-web` is not on
-`llm`; the guard refuses it there.
+`OLLAMA_MODEL` = `hypernova_ollama_model`, which must be in `ollama_models`;
+`AI_DISABLED=false` in `provider.env`). `prizm-web` is not on `llm`; the guard refuses it there.
 
-**Memory and VRAM.** `mem_limit`: `ollama` 8 GiB (the model sits in VRAM; RAM covers what
-does not fit and the runner), `open-webui` 2 GiB (its embedding model runs on the CPU),
-`ollama-pull` 128 MiB. The RTX 2060 has 12 GB of VRAM, shared with Jellyfin's transcodes in
-the [`media`](#media) stack: `qwen2.5:7b` (Q4) takes about 5–6 GB with its context, each NVENC/NVDEC
-transcode a few hundred MB. Ollama keeps **one** model loaded (`OLLAMA_MAX_LOADED_MODELS=1`,
-one request at a time) and unloads it after 10 minutes idle (`OLLAMA_KEEP_ALIVE=10m`), so a
-bigger model or a second one cannot crowd the card out for long. A 14B model (~9 GB) still
-fits with one or two transcodes; anything larger spills to the CPU and gets slow, which
-`ollama ps` shows as a CPU/GPU split.
+**Sharing the GPU.** The RTX 2060 has 12 GB of VRAM, shared by Ollama, ComfyUI and Jellyfin's
+transcodes (a few hundred MB each). Ollama keeps **one** model loaded
+(`OLLAMA_MAX_LOADED_MODELS=1`, one request at a time) and unloads it after **2 minutes** idle
+(`OLLAMA_KEEP_ALIVE=2m`), with flash attention and a q8_0 KV cache, so a 14B model and its 16k
+context take about 11 GB. ComfyUI loads Stable Diffusion XL (about 7 GB) for each image and
+frees RAM and VRAM right after (`--cache-none --disable-smart-memory`). The trade-offs: the
+first message after 2 idle minutes waits a few seconds while the model loads again, and each
+image takes 10–20 s longer to load the checkpoint. The **Image** preset runs on the 4B model
+(about 4 GB), so the checkpoint fits next to it; turning image generation on in a chat with a
+14B model squeezes ComfyUI into what is left, which is slow or fails. Switching between
+presets on different base models (Quick and MCU Coder, say) swaps the model in VRAM, a few
+seconds each time.
+
+**Memory.** `mem_limit`: `ollama` 8 GiB (the model sits in VRAM; RAM covers the runner and
+what does not fit), `comfyui` 8 GiB (it stages the 7 GB checkpoint in RAM while loading it,
+then frees it), `open-webui` 2 GiB (its embedding model runs on the CPU), `webui-presets`
+512 MiB, `searxng` 384 MiB, `comfyui-fetch` 256 MiB, `ollama-pull` 128 MiB. The limits add up
+to more than the host's 16 GB on purpose: they cap each container, and the large two peak only
+while loading a model.
 
 **Updates.** The images are pinned `<tag>@sha256:<digest>` and carry no Watchtower label, on
 purpose: Open WebUI migrates its database on start, Ollama changes its model format now and
-then, and neither should change unattended. Move them with a re-pin and a release
-([agents.md](agents.md#re-pinning-third-party-images)); `autoheal` restarts either if it
-turns unhealthy.
+then, ComfyUI and SearXNG change often, and none should change unattended. Move them with a
+re-pin and a release ([agents.md](agents.md#re-pinning-third-party-images)); `autoheal`
+restarts any of them that turns unhealthy. A new Open WebUI version can rename what
+`webui-presets` imports: `docker logs webui-presets` after the release shows it.
 
-**GPU.** `ollama` reserves the GPU (`deploy.resources.reservations.devices`, driver `nvidia`,
-`count: all`, `capabilities: [gpu]`); the guard allows that for `ollama` and Jellyfin only.
-`gpu_enabled: false` makes the release refuse to render, since the stack could not start.
+**GPU.** `ollama` and `comfyui` reserve the GPU (`deploy.resources.reservations.devices`,
+driver `nvidia`, `count: all`, `capabilities: [gpu]`). `gpu_enabled: false` makes the release
+refuse to render, since the stack could not start.
 
 ## media
 

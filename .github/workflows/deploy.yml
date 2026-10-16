@@ -202,6 +202,7 @@ jobs:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           HOME_TLS_CF_DNS_TOKEN: ${{ secrets.HOME_TLS_CF_DNS_TOKEN }}
           WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}
+          SEARXNG_SECRET: ${{ secrets.SEARXNG_SECRET }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -218,7 +219,8 @@ jobs:
             hypernova_admin_password: env.HYPERNOVA_ADMIN_PASSWORD,
             cf_tunnel_token: env.CF_TUNNEL_TOKEN,
             home_tls_cf_dns_token: env.HOME_TLS_CF_DNS_TOKEN,
-            webui_secret_key: env.WEBUI_SECRET_KEY
+            webui_secret_key: env.WEBUI_SECRET_KEY,
+            searxng_secret: env.SEARXNG_SECRET
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 

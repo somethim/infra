@@ -109,9 +109,10 @@ Containers are not pruned at all, so a deliberately stopped one survives. Run it
 ## Re-pinning third-party images
 
 Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: PostgreSQL
-(`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Ollama
-and Open WebUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for `ollama` and
-`ollama-pull`), Traefik,
+(`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Ollama,
+Open WebUI, SearXNG and ComfyUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for
+`ollama` and `ollama-pull`, Open WebUI's for `open-webui` and `webui-presets`, ComfyUI's for
+`comfyui` and `comfyui-fetch`), busybox and Traefik (`stack/media/docker-compose.yml`, for `home` and `home-tls`), Traefik,
 Watchtower, autoheal and the socket proxy
 (`roles/{edge,watchtower,autoheal}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
@@ -130,7 +131,8 @@ To move one:
 3. Apply it: provision with that role's tag (`--tags edge`, `--tags watchtower` or
    `--tags autoheal`; the socket proxy needs all three), or run `release` for PostgreSQL,
    cloudflared, Ollama and Open WebUI. Read an Open WebUI release's notes first: it migrates
-   its database on start, so a copy of the `open-webui-data` volume
+   its database on start (and `webui-presets` imports its model code, so read its log after
+   the release), so a copy of the `open-webui-data` volume
    ([operations.md](operations.md#backups)) is the way back. A PostgreSQL pin may move only within the major
    ([database.md](database.md#upgrades)). Pick a cloudflared release that has been out for a
    couple of weeks; it is never auto-updated (`--no-autoupdate`, no Watchtower label).

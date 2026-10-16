@@ -26,12 +26,21 @@ reboot_time: "04:00"
 gpu_enabled: true
 nvidia_driver_major: 580
 
-# The ai stack (Ollama, Open WebUI) runs as this account, which roles/host
-# creates; its volumes belong to it. The model ollama-pull fetches on every
-# release, and the one hypernova's provider asks Ollama for.
+# The ai stack (Ollama, Open WebUI, SearXNG, ComfyUI) runs as this account,
+# which roles/host creates; its volumes belong to it.
 ai_uid: 2001
 ai_gid: 2001
-ollama_model: qwen2.5:7b
+# The models ollama-pull fetches on every release, in this order (the small one
+# first, so "Quick" answers soonest after a fresh volume). Once every pull
+# succeeded it removes any model not listed here, so the volume does not grow
+# with models nobody uses. Each fits the RTX 2060's 12 GB: the presets that use
+# them are in stack/ai/presets.json. Names are <model>:<tag>, never a bare name.
+ollama_models:
+  - qwen3:4b
+  - qwen2.5-coder:14b
+  - qwen3:14b
+# The model hypernova's provider asks Ollama for; it must be in ollama_models.
+hypernova_ollama_model: qwen3:4b
 
 # The media stack (Jellyfin, Audiobookshelf, Kavita) runs as this account,
 # which roles/host creates and which owns the library; admin is in its group.

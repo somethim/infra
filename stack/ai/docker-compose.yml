@@ -1,11 +1,19 @@
-# Ollama and Open WebUI on the GPU, for the owner only. See docs/stacks.md.
-# Nothing here is public: Ollama publishes no port and joins only the ai
-# network (and llm, which it shares with hypernova's provider alone); Open
+# The owner's AI on the GPU, for the owner only. See docs/stacks.md.
+# Nothing here is public: no service but Open WebUI publishes a port, and Open
 # WebUI publishes 8080 on the host's Tailscale address and nowhere else
-# (TAILSCALE_IP comes from /etc/infra/host.env, which infra-apply exports). No
+# (TAILSCALE_IP comes from /etc/infra/host.env, which infra-apply exports).
+# Ollama also joins llm, which it shares with hypernova's provider alone. No
 # Traefik label, no Watchtower label: the images are pinned and move only with
-# a reviewed re-pin and a release. .env (uid, gid, model) feeds interpolation
-# only; Open WebUI reads its one secret from open-webui.env.
+# a reviewed re-pin and a release. .env (uid, gid, models) feeds interpolation
+# only; Open WebUI reads its key from open-webui.env, SearXNG its own from
+# searxng.env.
+#
+# Everything the owner would otherwise click together in Open WebUI is set
+# here, on every start: the settings (ENABLE_PERSISTENT_CONFIG=false makes the
+# environment win over anything saved in the admin panel), the presets
+# (webui-presets writes PRESETS into Open WebUI's database), web search
+# (SearXNG) and image generation (ComfyUI with Stable Diffusion XL).
+# A literal dollar sign is written $$ (Compose would interpolate it).
 name: ai
 
 services:
@@ -24,11 +32,15 @@ services:
     environment:
       # The models and Ollama's key live in the ollama-models volume.
       HOME: /ollama
-      # One model in VRAM at a time, unloaded after 10 minutes idle, so
-      # Jellyfin's transcodes keep room on the 12 GB card (docs/stacks.md).
+      # One model in VRAM at a time, unloaded after 2 minutes idle, so ComfyUI
+      # and Jellyfin's transcodes find room on the 12 GB card (docs/stacks.md).
       OLLAMA_MAX_LOADED_MODELS: "1"
       OLLAMA_NUM_PARALLEL: "1"
-      OLLAMA_KEEP_ALIVE: 10m
+      OLLAMA_KEEP_ALIVE: 2m
+      # A q8_0 KV cache (flash attention is required for it) halves the
+      # context's VRAM: a 14B model with 16k context stays on the GPU.
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
     volumes:
       - type: volume
         source: ollama-models
@@ -54,9 +66,10 @@ services:
     labels:
       - autoheal=true
 
-  # One-shot: asks Ollama to pull OLLAMA_MODEL on every release. A pull of a
-  # model Ollama already has only re-checks its manifest. docker logs
-  # ollama-pull shows the result.
+  # One-shot on every release: pulls every model in OLLAMA_MODELS (a model
+  # Ollama already has only re-checks its manifest), then, only if every pull
+  # finished, removes the models the list no longer names. Verify does not
+  # wait for it (restart "no"); docker logs ollama-pull shows the result.
   ollama-pull:
     image: ollama/ollama:0.40.4@sha256:926d40fd6eeeebd346b5c358a63de2a10ec995371cd93dd22f1843200694b1a6
     container_name: ollama-pull
@@ -69,7 +82,27 @@ services:
       - no-new-privileges:true
     environment:
       OLLAMA_HOST: http://ollama:11434
-    command: [pull, "${OLLAMA_MODEL}"]
+      OLLAMA_MODELS: "${OLLAMA_MODELS}"
+    entrypoint: [/bin/sh, -c]
+    command:
+      - |
+        set -u
+        ok=1
+        for model in $$OLLAMA_MODELS; do
+          echo "ollama-pull: pulling $$model"
+          ollama pull "$$model" || ok=0
+        done
+        if [ "$$ok" != 1 ]; then
+          echo "ollama-pull: FAILED: a pull did not finish; nothing was removed" >&2
+          exit 1
+        fi
+        ollama list | awk 'NR > 1 { print $$1 }' | while read -r have; do
+          case " $$OLLAMA_MODELS " in
+            *" $$have "*) ;;
+            *) echo "ollama-pull: removing $$have, which ollama_models no longer lists"; ollama rm "$$have" ;;
+          esac
+        done
+        echo "ollama-pull: every model in ollama_models is present: $$OLLAMA_MODELS"
     depends_on:
       ollama:
         condition: service_healthy
@@ -89,17 +122,50 @@ services:
     environment:
       HOME: /app/backend/data
       OLLAMA_BASE_URL: http://ollama:11434
+      # The environment is the configuration: what the admin panel saves is
+      # dropped at the next start. Change a setting here and release.
+      ENABLE_PERSISTENT_CONFIG: "false"
       WEBUI_AUTH: "true"
-      # The first account becomes the admin; new sign-ups then wait as
-      # "pending" until the admin approves them. Turn sign-up off in the
-      # admin panel right after (RUNBOOK.md, "First logins").
+      # The owner's account exists; nobody else may sign up. A sign-up that
+      # got through anyway would wait as "pending" for the admin's approval.
+      ENABLE_SIGNUP: "false"
+      ENABLE_LOGIN_FORM: "true"
       DEFAULT_USER_ROLE: pending
+      # New chats start on the Quick preset (webui-presets writes it).
+      DEFAULT_MODELS: quick
       ENABLE_OPENAI_API: "false"
       ENABLE_COMMUNITY_SHARING: "false"
       ENABLE_VERSION_UPDATE_CHECK: "false"
       ANONYMIZED_TELEMETRY: "false"
       DO_NOT_TRACK: "true"
       SCARF_NO_ANALYTICS: "true"
+      # Web search through the stack's own SearXNG.
+      ENABLE_WEB_SEARCH: "true"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: http://searxng:8080/search
+      WEB_SEARCH_RESULT_COUNT: "5"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "2"
+      # Image generation through the stack's ComfyUI (Stable Diffusion XL,
+      # fetched by comfyui-fetch). The workflow is ComfyUI's API format; the
+      # nodes list tells Open WebUI which inputs take the prompt, size, steps,
+      # seed and checkpoint.
+      ENABLE_IMAGE_GENERATION: "true"
+      IMAGE_GENERATION_ENGINE: comfyui
+      COMFYUI_BASE_URL: http://comfyui:8188
+      IMAGE_GENERATION_MODEL: sd_xl_base_1.0.safetensors
+      IMAGE_SIZE: 1024x1024
+      IMAGE_STEPS: "25"
+      COMFYUI_WORKFLOW_NODES: '[{"type":"prompt","key":"text","node_ids":["6"]},{"type":"model","key":"ckpt_name","node_ids":["4"]},{"type":"width","key":"width","node_ids":["5"]},{"type":"height","key":"height","node_ids":["5"]},{"type":"n","key":"batch_size","node_ids":["5"]},{"type":"steps","key":"steps","node_ids":["3"]},{"type":"seed","key":"seed","node_ids":["3"]}]'
+      COMFYUI_WORKFLOW: |
+        {
+          "3": {"class_type": "KSampler", "inputs": {"seed": 0, "steps": 25, "cfg": 7, "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+          "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}},
+          "5": {"class_type": "EmptyLatentImage", "inputs": {"width": 1024, "height": 1024, "batch_size": 1}},
+          "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 1]}},
+          "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry, low quality, distorted, deformed, watermark, text, signature, jpeg artifacts", "clip": ["4", 1]}},
+          "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+          "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "open-webui", "images": ["8", 0]}}
+        }
     ports:
       - "${TAILSCALE_IP}:8080:8080"
     volumes:
@@ -110,10 +176,355 @@ services:
           nocopy: true
     depends_on:
       - ollama
+      - searxng
+      - comfyui
     networks:
       - ai
     labels:
       - autoheal=true
+
+  # One-shot on every release, once Open WebUI is healthy: writes PRESETS into
+  # its database with Open WebUI's own code (same image, same volume), owned by
+  # the admin account and visible to every user; hides the raw OLLAMA_MODELS
+  # from the model picker; removes the presets it wrote that PRESETS no longer
+  # lists. Leaves everything else (chats, other models) alone. Refuses a
+  # preset whose base model ollama_models does not pull. docker logs
+  # webui-presets shows what changed.
+  webui-presets:
+    image: ghcr.io/open-webui/open-webui:v0.12.2@sha256:10e6a78ba2d172493460a9e8a92c496aaa7a64dc4d26d622a2e95e0c736081c9
+    container_name: webui-presets
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 512m
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /app/backend/data
+      # Only loads Open WebUI's models; it serves nothing and needs no key.
+      WEBUI_AUTH: "false"
+      ENABLE_DB_MIGRATIONS: "false"
+      OLLAMA_MODELS: "${OLLAMA_MODELS}"
+      # id (the chat URL and DEFAULT_MODELS name it), name, base (in
+      # ollama_models), description, num_ctx (16384 keeps a 14B model on the
+      # GPU with Ollama's q8_0 cache), temperature, system prompt, optional
+      # function_calling ("native" lets the model search again and again) and
+      # features on by default (web_search, image_generation). "/no_think"
+      # turns Qwen3's thinking off where speed matters more.
+      PRESETS: |
+        [
+          {
+            "id": "quick",
+            "name": "Quick",
+            "base": "qwen3:4b",
+            "description": "Fast, short answers, checked against a web search.",
+            "num_ctx": 8192,
+            "temperature": 0.3,
+            "features": [
+              "web_search"
+            ],
+            "system": "Answer in at most three short sentences, or a short list when the question asks for several items. When web search results are given, base the answer on them and cite the source as a link; if they do not answer the question, say so in one line instead of guessing. Give numbers with their date and unit. Do not mention your tools or limitations unless asked. /no_think"
+          },
+          {
+            "id": "mcu-coder",
+            "name": "MCU Coder",
+            "base": "qwen2.5-coder:14b",
+            "description": "Embedded Rust, C and C++ for microcontrollers.",
+            "num_ctx": 16384,
+            "temperature": 0.2,
+            "system": "You are a senior embedded firmware engineer. You write Rust (no_std, embedded-hal 1.0, PACs and HALs, RTIC, Embassy, defmt, probe-rs), C (C11, register-level and vendor HAL code, CMSIS) and C++ (C++17 without exceptions, RTTI or heap unless the user allows them) for microcontrollers such as STM32, nRF52, RP2040 and ESP32. Respect the constraints that matter on small targets: RAM and flash size, stack depth, no dynamic allocation by default, interrupt safety (critical sections, atomics, volatile access, shared state between ISR and main), timing and latency, power modes and peripheral clocks. When an answer depends on a specific chip, say which chip and which reference manual or datasheet section you assume, and mark register addresses, bit positions and timing values as assumptions to check against the datasheet. Prefer complete, compilable examples with the needed crates or includes, the memory.x or linker notes and the build or flash command. Point out undefined behaviour, race conditions and blocking calls in interrupt context."
+          },
+          {
+            "id": "robotics",
+            "name": "Robotics",
+            "base": "qwen3:14b",
+            "description": "Kinematics, control, sensors and ROS 2, with the maths shown.",
+            "num_ctx": 16384,
+            "temperature": 0.4,
+            "system": "You are a robotics engineer. Cover ROS 2 (nodes, topics, services, actions, tf2, launch files, rclcpp and rclpy), forward and inverse kinematics, dynamics, motion planning, control (PID tuning, feedforward, state space, LQR, MPC), sensors and sensor fusion (IMU, encoders, lidar, cameras, complementary and Kalman filters), motor drivers and real-time constraints. Show the maths step by step with units and coordinate frames, state the assumptions (rigid bodies, small angles, sample rate, noise), and check results with a quick sanity estimate. When code helps, give complete examples in C++ or Python, or embedded C or Rust for the microcontroller side."
+          },
+          {
+            "id": "research",
+            "name": "Research",
+            "base": "qwen3:14b",
+            "description": "Searches the web repeatedly until it can answer with sources.",
+            "num_ctx": 16384,
+            "temperature": 0.3,
+            "function_calling": "native",
+            "features": [
+              "web_search"
+            ],
+            "system": "You are a careful researcher with a web search tool. Break the question into the facts you need, then search for them one at a time, refining the query after each result, and keep searching until every part of the answer is supported by a source or you have tried at least five different queries for it. Prefer primary and official sources (the organisation itself, government and university sites, papers) over aggregators, and check that figures and requirements are current. Answer with: a direct answer first; then the reasoning or a comparison table when there are several options; then the sources as links; then a short list of what you checked and anything you could not confirm, with your uncertainty stated plainly."
+          },
+          {
+            "id": "image",
+            "name": "Image",
+            "base": "qwen3:4b",
+            "description": "Generates images on the server's GPU (Stable Diffusion XL).",
+            "num_ctx": 8192,
+            "temperature": 0.7,
+            "features": [
+              "image_generation"
+            ],
+            "system": "You help create images. The image is generated from the user's request automatically; reply with one or two sentences describing what was made, and offer one concrete variation (style, composition, lighting or colour). Keep replies short. /no_think"
+          }
+        ]
+      PRESETS_PY: |
+        import asyncio, json, os, sys
+
+        from open_webui.models.models import ModelForm, ModelMeta, ModelParams, Models
+        from open_webui.models.users import Users
+
+        MARK = "infra"
+        PUBLIC = [{"principal_type": "user", "principal_id": "*", "permission": "read"}]
+        TEXT_CAPABILITIES = {
+            "file_context": True, "vision": False, "file_upload": True, "web_search": True,
+            "image_generation": True, "code_interpreter": True, "terminal": False, "citations": True,
+            "status_updates": True, "memory": True, "builtin_tools": True,
+        }
+
+
+        def form_for(preset):
+            params = {"system": preset["system"], "num_ctx": preset["num_ctx"]}
+            for key in ("temperature", "function_calling"):
+                if key in preset:
+                    params[key] = preset[key]
+            meta = {
+                "description": preset["description"],
+                "capabilities": TEXT_CAPABILITIES,
+                "defaultFeatureIds": preset.get("features", []),
+                "managed_by": MARK,
+            }
+            return ModelForm(id=preset["id"], base_model_id=preset["base"], name=preset["name"],
+                             meta=ModelMeta(**meta), params=ModelParams(**params), access_grants=PUBLIC, is_active=True)
+
+
+        def hidden_form(base):
+            return ModelForm(id=base, base_model_id=None, name=base,
+                             meta=ModelMeta(hidden=True, managed_by=MARK), params=ModelParams(), access_grants=PUBLIC, is_active=True)
+
+
+        def same(current, form):
+            want = form.model_dump(exclude={"access_grants", "commit_message"})
+            have = {"id": current.id, "base_model_id": current.base_model_id, "name": current.name,
+                    "meta": current.meta.model_dump(), "params": current.params.model_dump(), "is_active": current.is_active}
+            grants = sorted((g.principal_type, g.principal_id, g.permission) for g in current.access_grants)
+            return have == want and grants == [("user", "*", "read")]
+
+
+        async def main():
+            presets = json.loads(os.environ["PRESETS"])
+            bases = os.environ["OLLAMA_MODELS"].split()
+            missing = sorted({p["base"] for p in presets} - set(bases))
+            if missing:
+                print(f"webui-presets: refused: presets use {missing}, which ollama_models does not pull", file=sys.stderr)
+                return 1
+            owner = await Users.get_super_admin_user()
+            if owner is None:
+                print("webui-presets: no admin account yet; sign up in Open WebUI, then release again to apply the presets")
+                return 0
+            wanted = [form_for(p) for p in presets] + [hidden_form(b) for b in bases]
+            ids = {f.id for f in wanted}
+            changed = []
+            for form in wanted:
+                current = await Models.get_model_by_id(form.id)
+                if current is None:
+                    await Models.insert_new_model(form, owner.id)
+                    changed.append(f"added {form.id}")
+                elif not same(current, form):
+                    await Models.update_model_by_id(form.id, form, user_id=owner.id)
+                    changed.append(f"updated {form.id}")
+            for model in await Models.get_all_models():
+                if model.meta.model_dump().get("managed_by") == MARK and model.id not in ids:
+                    await Models.delete_model_by_id(model.id)
+                    changed.append(f"removed {model.id}")
+            print("webui-presets: " + (", ".join(changed) if changed else "every preset is current")
+                  + f"; {len(presets)} presets, {len(bases)} base models hidden, owned by {owner.email}")
+            return 0
+
+
+        sys.exit(asyncio.run(main()))
+    command: [python3, -c, "import os; exec(os.environ['PRESETS_PY'])"]
+    volumes:
+      - type: volume
+        source: open-webui-data
+        target: /app/backend/data
+        volume:
+          nocopy: true
+    depends_on:
+      open-webui:
+        condition: service_healthy
+    networks:
+      - ai
+
+  # Web search for Open WebUI: a metasearch engine queried over the ai network
+  # only (JSON, no rate limiter, no image proxy). Its settings are written to
+  # /tmp at start; its secret comes from searxng.env.
+  searxng:
+    image: searxng/searxng:2026.9.30-a9d990033@sha256:a07a5cd2da2c63d66e559f9e4d3a3db106cfc6c32fb0ac70abe91cc28bcd7350
+    container_name: searxng
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 384m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: searxng.env
+    entrypoint: [/bin/sh, -c]
+    command:
+      - printf '%s' "$$SEARXNG_SETTINGS" >/tmp/settings.yml && exec /usr/local/searxng/.venv/bin/granian searx.webapp:app
+    environment:
+      SEARXNG_SETTINGS_PATH: /tmp/settings.yml
+      # The image's default (::) fails where Docker turns IPv6 off.
+      GRANIAN_HOST: 0.0.0.0
+      SEARXNG_SETTINGS: |
+        use_default_settings:
+          engines:
+            remove: [ahmia, torch]
+        general:
+          instance_name: searxng
+          enable_metrics: false
+        search:
+          safe_search: 0
+          formats: [html, json]
+        server:
+          # SEARXNG_SECRET (searxng.env) replaces this value.
+          secret_key: "set-from-SEARXNG_SECRET"
+          limiter: false
+          public_instance: false
+          image_proxy: false
+        valkey:
+          url: false
+    networks:
+      - ai
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - autoheal=true
+
+  # Image generation for Open WebUI, on the GPU. ComfyUI has no official
+  # image: this is YanWenKun's comfyui-boot (cu126-slim), a pinned build with a
+  # stable ComfyUI release baked in. It runs that copy directly as the ai
+  # account, read-only, with no custom nodes (ComfyUI-Manager is not loaded)
+  # and its data (models, outputs, settings) in the comfyui-data volume.
+  # --cache-none and --disable-smart-memory free RAM and VRAM after each image,
+  # so Ollama gets the card back (docs/stacks.md, "Sharing the GPU").
+  comfyui:
+    image: yanwk/comfyui-boot:cu126-slim-20260928@sha256:ec6f2ee5d41cea74087ace6e9e26526c13b467003eccc47dba5d06efb159e661
+    container_name: comfyui
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 8g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/cache
+    command:
+      - python3
+      - /default-comfyui-bundle/ComfyUI/main.py
+      - --listen=0.0.0.0
+      - --port=8188
+      - --base-directory=/data
+      - --disable-all-custom-nodes
+      - --disable-api-nodes
+      - --disable-auto-launch
+      - --cache-none
+      - --disable-smart-memory
+      - --preview-method=none
+    volumes:
+      - type: volume
+        source: comfyui-data
+        target: /data
+        volume:
+          nocopy: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - ai
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8188/system_stats', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+
+  # One-shot on every release: downloads the Stable Diffusion XL checkpoint
+  # (6.9 GB) into comfyui-data once, from a pinned Hugging Face revision, and
+  # keeps it only if its sha256 matches. Skips a checkpoint that is already
+  # there. Verify does not wait for it (restart "no"); until it finishes, image
+  # generation fails with "checkpoint not found". docker logs comfyui-fetch.
+  comfyui-fetch:
+    image: yanwk/comfyui-boot:cu126-slim-20260928@sha256:ec6f2ee5d41cea74087ace6e9e26526c13b467003eccc47dba5d06efb159e661
+    container_name: comfyui-fetch
+    user: "${AI_UID}:${AI_GID}"
+    mem_limit: 256m
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      WEIGHTS_URL: https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/462165984030d82259a11f4367a4eed129e94a7b/sd_xl_base_1.0.safetensors
+      WEIGHTS_SHA256: 31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b
+      WEIGHTS_PATH: /data/models/checkpoints/sd_xl_base_1.0.safetensors
+      FETCH_PY: |
+        import hashlib, os, sys, time, urllib.request
+
+        url, want, dest = os.environ["WEIGHTS_URL"], os.environ["WEIGHTS_SHA256"], os.environ["WEIGHTS_PATH"]
+        if os.path.isfile(dest):
+            print(f"comfyui-fetch: {dest} is present")
+            sys.exit(0)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        part = dest + ".part"
+        digest, done, step, started = hashlib.sha256(), 0, 1024 ** 3, time.time()
+        print(f"comfyui-fetch: downloading {url}", flush=True)
+        with urllib.request.urlopen(url, timeout=60) as response, open(part, "wb") as out:
+            total = int(response.headers.get("Content-Length") or 0)
+            while True:
+                chunk = response.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                if (done + len(chunk)) // step > done // step:
+                    print(f"comfyui-fetch: {(done + len(chunk)) // 1048576} of {total // 1048576} MiB", flush=True)
+                done += len(chunk)
+        if digest.hexdigest() != want:
+            os.remove(part)
+            print(f"comfyui-fetch: FAILED: sha256 {digest.hexdigest()} is not the pinned {want}; nothing was kept", file=sys.stderr)
+            sys.exit(1)
+        os.replace(part, dest)
+        print(f"comfyui-fetch: {dest} verified ({done // 1048576} MiB in {int(time.time() - started)} s)")
+    command: [python3, -c, "import os; exec(os.environ['FETCH_PY'])"]
+    volumes:
+      - type: volume
+        source: comfyui-data
+        target: /data
+        volume:
+          nocopy: true
+    networks:
+      - ai
 
 networks:
   ai:
@@ -129,4 +540,7 @@ volumes:
     external: true
   open-webui-data:
     name: open-webui-data
+    external: true
+  comfyui-data:
+    name: comfyui-data
     external: true

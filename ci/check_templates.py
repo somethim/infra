@@ -62,6 +62,7 @@ SECRET_PREFIX_FILES = {
     "ghcr_": {"ghcr.env"},
     "cf_": {"tunnel/tunnel.env"},
     "webui_": {"ai/open-webui.env"},
+    "searxng_": {"ai/searxng.env"},
     "home_tls_": {"media/home-tls.env"},
 }
 # Set at apply time from /etc/infra/host.env (infra-apply exports them), never by a bundle file.
@@ -473,8 +474,8 @@ def self_test() -> None:
                 m(tmp)
         return mutate
 
-    jq_last = "            webui_secret_key: env.WEBUI_SECRET_KEY\n"
-    env_last = "          WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}\n"
+    jq_last = "            searxng_secret: env.SEARXNG_SECRET\n"
+    env_last = "          SEARXNG_SECRET: ${{ secrets.SEARXNG_SECRET }}\n"
     dead_secret = both(
         edit(WORKFLOW, jq_last, jq_last.rstrip("\n") + ",\n            crm_db_password: env.CRM_DB_PASSWORD\n"),
         edit(WORKFLOW, env_last, env_last + "          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}\n"),
@@ -541,8 +542,10 @@ def self_test() -> None:
          "renders the secret 'webui_secret_key' into media/.env"),
         ("2", "the Open WebUI key rendered into hypernova's env", append("stack/hypernova/provider.env.j2", "WEBUI={{ webui_secret_key }}\n"),
          "renders 'webui_secret_key' into hypernova/provider.env"),
-        ("3", "an ai variable no env.j2 sets", edit("stack/ai/docker-compose.yml", 'command: [pull, "${OLLAMA_MODEL}"]', 'command: [pull, "${OLLAMA_PULL_MODEL}"]'),
-         "${OLLAMA_PULL_MODEL} is not set by stack/ai/env.j2"),
+        ("3", "an ai variable no env.j2 sets", edit("stack/ai/docker-compose.yml", '      OLLAMA_HOST: http://ollama:11434\n      OLLAMA_MODELS: "${OLLAMA_MODELS}"', '      OLLAMA_HOST: http://ollama:11434\n      OLLAMA_MODELS: "${OLLAMA_PULL_MODELS}"'),
+         "${OLLAMA_PULL_MODELS} is not set by stack/ai/env.j2"),
+        ("2", "the SearXNG key rendered into Open WebUI's env", append("stack/ai/open-webui.env.j2", "SEARXNG_SECRET={{ searxng_secret }}\n"),
+         "renders 'searxng_secret' into ai/open-webui.env"),
     ]
     caught_rules = set()
     for rule, name, mutate, expected in cases:

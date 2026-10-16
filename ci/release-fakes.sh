@@ -230,7 +230,7 @@ new_state() {
   fi
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 MEDIA_USER=2000:2000 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
-  # ollama-pull is a one-shot (restart: "no"): verify does not wait for it.
+  # ollama-pull, webui-presets and comfyui-fetch are one-shots (restart: "no"): verify does not wait for them.
   printf '%s\n' \
     "c1 /postgresql running always healthy database" \
     "c2 /portfolio running always healthy portfolio" \
@@ -244,8 +244,12 @@ new_state() {
     "c10 /audiobookshelf running always healthy media" \
     "c11 /kavita running always healthy media" \
     "c12 /home running always healthy media" \
-    "c13 /home-tls running always healthy media" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui jellyfin audiobookshelf kavita home home-tls; do
+    "c13 /home-tls running always healthy media" \
+    "c14 /searxng running always healthy ai" \
+    "c15 /comfyui running always healthy ai" \
+    "c16 /webui-presets exited no none ai" \
+    "c17 /comfyui-fetch exited no none ai" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080

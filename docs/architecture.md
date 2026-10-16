@@ -130,7 +130,7 @@ refuses any env line that is not `KEY=value`.
 | --- | --- | --- |
 | `edge` | `roles/host` | Traefik, `cloudflared`, plus every container that serves a public domain |
 | `data` | `roles/host` | PostgreSQL, plus every container that talks to it |
-| `ai` | `roles/host` | Ollama, `ollama-pull`, Open WebUI (a plain bridge: Ollama downloads models, Open WebUI publishes its tailnet port) |
+| `ai` | `roles/host` | Ollama, `ollama-pull`, Open WebUI, `webui-presets`, SearXNG, ComfyUI, `comfyui-fetch` (a plain bridge: Ollama and `comfyui-fetch` download models, SearXNG queries search engines, Open WebUI publishes its tailnet port) |
 | `llm` | `roles/host`, `--internal` | Ollama and hypernova's `prizm-provider`, nothing else; no route out |
 | `media` | `roles/host` | Jellyfin, Audiobookshelf, Kavita (metadata lookups, podcast downloads, their tailnet ports) |
 | `edge-socket`, `watchtower-socket`, `autoheal-socket` | their compose projects, `internal: true` | one agent and its socket proxy each |

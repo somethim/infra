@@ -13,9 +13,10 @@
 #   hypernova/provider.env  DSN, session, admin     (prizm-provider)
 #   tunnel/tunnel.env       Cloudflare Tunnel token (cloudflared)
 #   ai/open-webui.env       Open WebUI session key  (open-webui)
+#   ai/searxng.env          SearXNG secret key      (searxng)
 #   media/home-tls.env      Cloudflare DNS token    (home-tls, for its certificate)
 #   ghcr.env                registry login          (infra-apply's docker login)
-# The <stack>/.env files hold only image references, domains, uids and the model.
+# The <stack>/.env files hold only image references, domains, uids and the models.
 - name: Render the infra release bundle on the runner
   hosts: localhost
   connection: local
@@ -42,6 +43,7 @@
       - cf_tunnel_token
       - home_tls_cf_dns_token
       - webui_secret_key
+      - searxng_secret
 
   pre_tasks:
     - name: Require deploy secrets
@@ -60,13 +62,15 @@
           - cf_tunnel_token | default('') is match('^eyJ[A-Za-z0-9+/_-]{40,}={0,2}$')
           - webui_secret_key | default('') is match('^[A-Za-z0-9]{32,}$')
           - home_tls_cf_dns_token | default('') is match('^[A-Za-z0-9_-]{40,}$')
+          - searxng_secret | default('') is match('^[A-Za-z0-9]{32,}$')
         fail_msg: >-
           Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
           32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, the portfolio and
           hypernova admin passwords and session secret, CF_TUNNEL_TOKEN as the token Cloudflare shows for
           the tunnel (base64, starting eyJ), WEBUI_SECRET_KEY of at least 32 letters and digits
-          (openssl rand -hex 32), and HOME_TLS_CF_DNS_TOKEN as the Cloudflare API token that may edit the
-          zone's DNS (40 or more letters, digits, _ and -) (RUNBOOK.md, "Rotating a secret").
+          (openssl rand -hex 32), HOME_TLS_CF_DNS_TOKEN as the Cloudflare API token that may edit the
+          zone's DNS (40 or more letters, digits, _ and -), and SEARXNG_SECRET of at least 32 letters and
+          digits (openssl rand -hex 32) (RUNBOOK.md, "Rotating a secret").
         quiet: true
 
     - name: Refuse deploy values the Compose env files would rewrite
@@ -86,6 +90,19 @@
       ansible.builtin.import_tasks: tasks/placeholder-guards.yml
       vars:
         deploy_key_file: "{{ playbook_dir }}/roles/common/files/deploy_key.pub"
+
+    - name: Require Ollama model names the pull, the presets and hypernova agree on
+      ansible.builtin.assert:
+        that:
+          - ollama_models is sequence and ollama_models is not string and ollama_models | length > 0
+          - ollama_models | select('match', '^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*$') | list | length == ollama_models | length
+          - ollama_models | unique | length == ollama_models | length
+          - hypernova_ollama_model in ollama_models
+        fail_msg: >-
+          production.yml's ollama_models must be a non-empty list of distinct <model>:<tag> names (ollama-pull
+          removes any model the list does not name, so a bare name would be pulled as :latest and removed
+          again), and hypernova_ollama_model must be one of them.
+        quiet: true
 
     - name: Require the GPU the ai and media stacks reserve
       ansible.builtin.assert:
@@ -147,6 +164,7 @@
         - { src: tunnel/tunnel.env.j2, dest: tunnel/tunnel.env }
         - { src: ai/env.j2, dest: ai/.env }
         - { src: ai/open-webui.env.j2, dest: ai/open-webui.env }
+        - { src: ai/searxng.env.j2, dest: ai/searxng.env }
         - { src: media/env.j2, dest: media/.env }
         - { src: media/home-tls.env.j2, dest: media/home-tls.env }
         - { src: ghcr.env.j2, dest: ghcr.env }

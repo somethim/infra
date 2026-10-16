@@ -138,7 +138,7 @@ to `host.env` (`AI_USER=2001:2001`, `MEDIA_USER=2000:2000`); the compose guard r
 or `media` service that runs as anything else. `admin` is in the `media` group, so it can copy
 files into the library.
 
-Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`,
+Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`, `comfyui-data`,
 `jellyfin-config`, `jellyfin-cache`, `audiobookshelf-config`, `audiobookshelf-metadata`,
 `kavita-config`, `home-tls-acme`), external
 to the stacks like `pgdata-v18`, so a release can never create an empty one in its place. Each

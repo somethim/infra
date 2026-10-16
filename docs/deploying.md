@@ -80,13 +80,14 @@ leading or trailing spaces, which Compose would rewrite.
 | `CF_TUNNEL_TOKEN` | The token of the remotely managed Cloudflare Tunnel `infra-host` (base64, starts with `eyJ`; Zero Trust → Networks → Tunnels → the tunnel's connector install command). Rendered only into `tunnel/tunnel.env`, read only by `cloudflared` ([edge.md](edge.md#why-the-tunnel-is-a-release-stack)) |
 | `HOME_TLS_CF_DNS_TOKEN` | Cloudflare API token with Zone Read and DNS Edit on arbikullakshi.com only, for `home-tls`'s Let's Encrypt DNS-01 challenge ([RUNBOOK.md](../RUNBOOK.md#the-links-page)). Rendered only into `media/home-tls.env`, read only by `home-tls`. Rotating it changes nothing but the next renewal's credentials |
 | `WEBUI_SECRET_KEY` | Signs Open WebUI's login sessions (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/open-webui.env`, read only by `open-webui`. Rotating it signs everyone out; nothing else is lost ([stacks.md](stacks.md#ai)) |
+| `SEARXNG_SECRET` | SearXNG's secret key (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/searxng.env`, read only by `searxng`. Rotating it changes nothing visible ([stacks.md](stacks.md#ai)) |
 
 The three database passwords must be at least 32 letters and digits (`[A-Za-z0-9]{32,}`)
 and all different: they are written into `provision.sql` and the DSNs as literals. Generate
 them, and the hypernova session secret, with `openssl rand -hex 24`.
 `PORTFOLIO_TOTP_ENCRYPTION_KEY` must be base64 of 32 bytes (`[A-Za-z0-9+/]{43}=`).
 `CF_TUNNEL_TOKEN` must look like a token Cloudflare issues (`eyJ` and at least 40 more
-base64 characters). `WEBUI_SECRET_KEY` must be at least 32 letters and digits. `HOME_TLS_CF_DNS_TOKEN` must be 40 or
+base64 characters). `WEBUI_SECRET_KEY` and `SEARXNG_SECRET` must be at least 32 letters and digits. `HOME_TLS_CF_DNS_TOKEN` must be 40 or
 more letters, digits, `_` and `-`. [RUNBOOK.md](../RUNBOOK.md#7-the-production-environment) generates every
 value.
 
@@ -119,9 +120,10 @@ mode 0644, the rest 0600:
 | `hypernova/provider.env` | DSN, session secret, admin password | `prizm-provider` |
 | `tunnel/tunnel.env` | `TUNNEL_TOKEN`, the Cloudflare Tunnel token | `cloudflared` |
 | `ai/open-webui.env` | `WEBUI_SECRET_KEY`, Open WebUI's session key | `open-webui` |
+| `ai/searxng.env` | `SEARXNG_SECRET`, SearXNG's secret key | `searxng` |
 | `media/home-tls.env` | `CF_DNS_API_TOKEN`, the Cloudflare DNS token for the links page's certificate | `home-tls` |
 | `ghcr.env` | GHCR login | `infra-apply`'s `docker login` |
-| `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama model and the ACME contact only | Compose interpolation |
+| `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama models and the ACME contact only | Compose interpolation |
 | `release.env`, `manifest.sha256`, `<stack>/docker-compose.yml` | no secrets | `infra-apply` |
 
 See [architecture.md](architecture.md#env-files) for why the `.env` files carry no secrets.
@@ -135,12 +137,12 @@ anything changes ("…; the running release is untouched") unless all of this ho
    Tailscale IPv4 (`TAILSCALE_IP`, in `100.64.0.0/10`) and the `ai` and `media` accounts
    (`AI_USER`, `MEDIA_USER`, never root), no other release or status holds the lock, and `/opt/edge/docker-compose.yml` (Traefik, written by
    provisioning) exists.
-2. The bundle is at most 1 MiB, a gzip tar of exactly the 19 expected names, regular files
+2. The bundle is at most 1 MiB, a gzip tar of exactly the 21 expected names, regular files
    only, each at most 256 KiB.
 3. `manifest.sha256` lists exactly those files, and every checksum matches.
 4. Every env file is `KEY=value` lines only; `ghcr.env` sets exactly `GHCR_USERNAME` and
    `GHCR_TOKEN`; `tunnel/tunnel.env` sets exactly `TUNNEL_TOKEN`; `ai/open-webui.env` sets
-   exactly `WEBUI_SECRET_KEY`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; `release.env` sets exactly
+   exactly `WEBUI_SECRET_KEY`; `ai/searxng.env` sets exactly `SEARXNG_SECRET`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; `release.env` sets exactly
    `RELEASE_MODE` and `RELEASE_COMMIT`.
 5. Each app image is `<repo>:latest` in a `latest` release, or `<repo>:<tag>@sha256:<digest>`
    in a `pinned` one, for the repository `/etc/infra/host.env` names.

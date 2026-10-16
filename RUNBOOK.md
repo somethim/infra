@@ -334,6 +334,7 @@ done
 gh secret set PORTFOLIO_TOTP_ENCRYPTION_KEY --env production --body "$(openssl rand -base64 32)"
 gh secret set HYPERNOVA_SESSION_SECRET --env production --body "$(openssl rand -hex 24)"
 gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
+gh secret set SEARXNG_SECRET --env production --body "$(openssl rand -hex 32)"
 # HOME_TLS_CF_DNS_TOKEN: a Cloudflare API token, created as in "The links page" (section 12)
 
 # Apps: the two operator passwords you will log in with; store each in your password manager first
@@ -591,6 +592,8 @@ most values:
   The certificate already issued keeps working; only renewals use the token.
 - **`WEBUI_SECRET_KEY`**: `openssl rand -hex 32`, then `release`. It only signs Open WebUI's
   sessions, so everyone is signed out and nothing else changes.
+- **`SEARXNG_SECRET`**: `openssl rand -hex 32` (saved to "infra production secrets" in
+  1Password as in section 12), then `release`. Nothing else changes.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
@@ -707,8 +710,8 @@ in [docs/operations.md](docs/operations.md).
 
 ## 12. GPU, AI and media
 
-**Owner action.** Turns on what the rest of the hardware is for: Ollama with Open WebUI on the
-RTX 2060, Jellyfin, Audiobookshelf and Kavita on the 1 TB internal HDD, and a nightly backup to
+**Owner action.** Turns on what the rest of the hardware is for: Ollama with Open WebUI (presets,
+web search through SearXNG, image generation through ComfyUI) on the RTX 2060, Jellyfin, Audiobookshelf and Kavita on the 1 TB internal HDD, and a nightly backup to
 the 1 TB external USB HDD. None of it is public: it is reachable only over the tailnet, on the
 server's Tailscale address, and only by the Tailscale accounts the policy names (you). Video
 never goes through the Cloudflare Tunnel. Do the steps in this order; each one says how to
@@ -776,14 +779,18 @@ else for `tag:infra-server`:
 `nc -z -w 5 infra-host 8096` succeeds, and `nc -z -w 5 192.168.1.50 8096` (the LAN address)
 times out.
 
-### The Open WebUI secret
+### The Open WebUI and SearXNG secrets
 
 ```bash
 gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
+k="$(openssl rand -hex 32)"
+op item edit "infra production secrets" --vault Personal "SEARXNG_SECRET[password]=$k" >/dev/null &&
+  printf %s "$k" | gh secret set SEARXNG_SECRET --env production; unset k
 ```
 
-It signs Open WebUI's sessions and reaches only the `open-webui` container. Nobody needs to
-know it.
+`WEBUI_SECRET_KEY` signs Open WebUI's sessions and reaches only the `open-webui` container;
+`SEARXNG_SECRET` is SearXNG's key and reaches only `searxng`. Nobody needs to know either. A
+release refuses to render without both.
 
 ### Provision, reboot and check the GPU
 
@@ -827,14 +834,23 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
 "the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443
-are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB); the first pull takes a
-while. `ollama-pull` then downloads `qwen2.5:7b` (about 4.7 GB) in the background:
+are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
+the first pull takes a while. In the background, after the release:
+
+- `ollama-pull` downloads `ollama_models` in order: `qwen3:4b` (2.6 GB, so **Quick** works
+  first), `qwen2.5-coder:14b` (9 GB) and `qwen3:14b` (9.3 GB), about 21 GB on the SSD;
+  roughly 30 minutes at 100 Mbit/s.
+- `comfyui-fetch` downloads the Stable Diffusion XL checkpoint (6.9 GB) and checks its sha256.
+- `webui-presets` writes the five presets into Open WebUI (once you have signed up; on a
+  fresh volume it waits for the next release).
 
 ```bash
-ssh admin@infra-host sudo docker logs -f ollama-pull      # ends with "success"
+ssh admin@infra-host sudo docker logs -f ollama-pull      # "every model in ollama_models is present"
+ssh admin@infra-host sudo docker logs -f comfyui-fetch    # "… verified (6616 MiB in … s)"
+ssh admin@infra-host sudo docker logs webui-presets       # "added quick, …" or "every preset is current"
 ssh admin@infra-host sudo docker exec ollama nvidia-smi -L   # GPU 0: NVIDIA GeForce RTX 2060 (inside the container)
 ssh admin@infra-host sudo docker exec ollama ollama ps    # after a chat: 100% GPU
-ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # only the four, each on 100.x.y.z
+ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # ports only on 100.x.y.z
 ```
 
 hypernova's AI features use the same Ollama over the internal `llm` network from this release
@@ -846,10 +862,13 @@ Right after the release, before anyone else could, from the laptop (on the tailn
 password from your password manager for each.
 
 1. **Open WebUI**, `http://infra-host:8080`: **sign up**; the first account becomes the
-   admin. Then **Admin Panel → Settings → General → Enable New Sign Ups: off**, and save. Any
-   account that signed up before that waits as "pending" and can do nothing until you approve
-   it; delete it under **Admin Panel → Users**. The model list shows `qwen2.5:7b` once
-   `ollama-pull` has finished.
+   admin. Nothing else to set: sign-up, web search, image generation and the presets come from
+   `stack/ai/docker-compose.yml` on every start, and the admin panel's changes last only until
+   the next restart ([docs/stacks.md](docs/stacks.md#ai)). `ENABLE_SIGNUP=false` still lets
+   the very first account sign up, and nobody after it. On a fresh volume, run `release` once
+   more after signing up: the first run's `webui-presets` found no admin to own the presets.
+   The picker shows **Quick** (the default), **MCU Coder**, **Robotics**, **Research** and
+   **Image** once `ollama-pull` has fetched their models.
 2. **Jellyfin**, `http://infra-host:8096`: the setup wizard. Create the admin user; add two
    libraries: **Shows** (content type Shows, folder `/media/shows`) and **Movies** (Movies,
    `/media/movies`); leave "Allow remote connections" on (the tailnet is "remote" to Jellyfin)

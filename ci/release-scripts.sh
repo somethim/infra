@@ -117,6 +117,7 @@ cat >"$work/vars.json" <<JSON
   "cf_tunnel_token": "eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ",
   "webui_secret_key": "HarnessWebuiSecret0123456789abcdefABCDEF",
   "home_tls_cf_dns_token": "HarnessHomeTlsDnsToken0123456789abcdefABCDEF",
+  "searxng_secret": "HarnessSearxngSecret0123456789abcdefABCDEF",
   "deploy_key_file": "$work/deploy_key.pub"
 }
 JSON
@@ -124,7 +125,7 @@ secrets=(ghp_HarnessToken0123456789 HarnessPgSuperuser0123456789abcdefA HarnessP
   HarnessPortfolioDb0123456789abcdefAB SGFybmVzc1RvdHBLZXkwMTIzNDU2Nzg5YWJjZGVmQUI= harness-portfolio-admin
   re_HarnessResendKey HarnessGoogleSecret HarnessHypernovaSession0123456789 harness-hypernova-admin
   eyJHarnessTunnelToken0123456789abcdefABCDEFGHIJ HarnessWebuiSecret0123456789abcdefABCDEF
-  HarnessHomeTlsDnsToken0123456789abcdefABCDEF)
+  HarnessHomeTlsDnsToken0123456789abcdefABCDEF HarnessSearxngSecret0123456789abcdefABCDEF)
 
 build() {
   "$root/build-bundle.sh" "$@" >"$work/build.log" 2>&1
@@ -136,8 +137,8 @@ build "$work/vars.json" "$work/good-again.tgz" || { cat "$work/build.log"; echo 
 cmp -s "$work/good.tgz" "$work/good-again.tgz" || { echo "FAIL build-bundle.sh is not deterministic"; exit 1; }
 echo "ok   bundle: two builds from the same vars are byte-identical"
 if tar -tvzf "$work/good.tgz" | grep -qv '^-'; then tar -tvzf "$work/good.tgz"; echo "FAIL the bundle holds entries other than regular files"; exit 1; fi
-[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 20 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 20 files"; exit 1; }
-echo "ok   bundle: 20 file entries, no directories"
+[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 21 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 21 files"; exit 1; }
+echo "ok   bundle: 21 file entries, no directories"
 unpack "$work/good.tgz" "$work/good"
 grep -qxF "RELEASE_COMMIT=$(git -C "$root" rev-parse HEAD)" "$work/good/release.env" || { echo "FAIL release.env does not name the checked-out commit"; exit 1; }
 grep -qx 'RELEASE_MODE=latest' "$work/good/release.env" || { echo "FAIL a plain build is not a latest release"; exit 1; }
@@ -152,6 +153,7 @@ owner_of() {
     eyJHarnessTunnelToken*) echo tunnel/tunnel.env ;;
     HarnessWebuiSecret*) echo ai/open-webui.env ;;
     HarnessHomeTlsDns*) echo media/home-tls.env ;;
+    HarnessSearxngSecret*) echo ai/searxng.env ;;
     *) echo portfolio/portfolio.env ;;
   esac
 }
@@ -161,12 +163,12 @@ for secret in "${secrets[@]}"; do
   [ "$found" = "$want" ] || { echo "FAIL a secret is in '$found', expected only '$want'"; exit 1; }
 done
 for file in portfolio/.env hypernova/.env ai/.env media/.env; do
-  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODEL|MEDIA_UID|MEDIA_GID|HOME_DOMAIN|ACME_EMAIL)=' "$work/good/$file"; then
-    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts, the model and the ACME contact"; exit 1
+  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODELS|MEDIA_UID|MEDIA_GID|HOME_DOMAIN|ACME_EMAIL)=' "$work/good/$file"; then
+    cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts, the models and the ACME contact"; exit 1
   fi
 done
-grep -qx 'OLLAMA_MODEL=qwen2.5:7b' "$work/good/ai/.env" || { echo "FAIL ai/.env does not name production.yml's ollama_model"; exit 1; }
-grep -qx 'OLLAMA_MODEL=qwen2.5:7b' "$work/good/hypernova/provider.env" || { echo "FAIL hypernova's provider does not ask for production.yml's ollama_model"; exit 1; }
+grep -qx 'OLLAMA_MODELS=qwen3:4b qwen2.5-coder:14b qwen3:14b' "$work/good/ai/.env" || { echo "FAIL ai/.env does not list production.yml's ollama_models"; exit 1; }
+grep -qx 'OLLAMA_MODEL=qwen3:4b' "$work/good/hypernova/provider.env" || { echo "FAIL hypernova's provider does not ask for production.yml's hypernova_ollama_model"; exit 1; }
 grep -qx 'OLLAMA_HOST=http://ollama:11434' "$work/good/hypernova/provider.env" || { echo "FAIL hypernova's provider does not reach Ollama on llm"; exit 1; }
 echo "ok   bundle: each secret is only in the env file of the container that reads it"
 
@@ -220,6 +222,10 @@ render_refused "no Open WebUI key" 'del(.webui_secret_key)'
 render_refused "a short Open WebUI key" '.webui_secret_key = "short"'
 render_refused "no Cloudflare DNS token for home-tls" 'del(.home_tls_cf_dns_token)'
 render_refused "a Cloudflare DNS token that is too short" '.home_tls_cf_dns_token = "short"'
+render_refused "no SearXNG key" 'del(.searxng_secret)'
+render_refused "a short SearXNG key" '.searxng_secret = "short"'
+render_refused "a hypernova model ollama-pull does not fetch" '.hypernova_ollama_model = "llama3.2:3b"'
+render_refused "an Ollama model without a tag" '.ollama_models = ["qwen3:4b", "qwen3"]'
 printf 'REPLACE_ME_BEFORE_DEPLOYING\n' >"$work/placeholder.pub"
 render_refused "the placeholder deploy key" ".deploy_key_file = \"$work/placeholder.pub\""
 
@@ -244,13 +250,13 @@ first_id="$(current_release)"
 for stack in database portfolio hypernova tunnel ai media; do
   grep -q "compose model accepted: .* in the $stack stack, no privileged settings" "$work/out" || { cat "$work/out"; echo "FAIL the checked-in $stack stack did not pass the compose guard"; exit 1; }
 done
-grep -qF "compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for ollama, no Docker socket" "$work/out" ||
-  { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU"; exit 1; }
+grep -qF "compose model accepted: 7 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for comfyui, ollama, no Docker socket" "$work/out" ||
+  { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU services"; exit 1; }
 grep -qF "compose model accepted: 5 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, home $tailscale_ip:80, home-tls $tailscale_ip:443, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for jellyfin, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the media stack summary does not name its tailnet ports, library mounts and GPU"; exit 1; }
 echo "ok   the six checked-in stacks pass the compose guard"
 [ -f "$state/stack/releases/$first_id/.verified" ] || { echo "FAIL the release was not marked verified"; exit 1; }
-for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env media/.env media/home-tls.env manifest.sha256; do
+for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env manifest.sha256; do
   [ "$(stat -c %a "$state/stack/current/$file")" = 600 ] || { echo "FAIL $file is not 0600 in the release"; exit 1; }
 done
 [ "$(stat -c %a "$state/stack/current/portfolio/docker-compose.yml")" = 644 ] || { echo "FAIL docker-compose.yml is not 0644"; exit 1; }
@@ -500,6 +506,11 @@ printf 'WEBUI_SECRET_KEY=HarnessWebuiSecret0123456789abcdefABCDEF\nOPENAI_API_KE
 repack badwebui
 refused_bundle "open-webui.env with an extra key" "ai/open-webui\\.env must set exactly WEBUI_SECRET_KEY" "$work/badwebui.tgz"
 
+variant badsearxng
+printf 'SEARXNG_SECRET=HarnessSearxngSecret0123456789abcdefABCDEF\nSEARXNG_SETTINGS_PATH=/etc/passwd\n' >"$work/badsearxng/ai/searxng.env"
+repack badsearxng
+refused_bundle "searxng.env with an extra key" "ai/searxng\\.env must set exactly SEARXNG_SECRET" "$work/badsearxng.tgz"
+
 variant badhometls
 printf 'CF_DNS_API_TOKEN=HarnessHomeTlsDnsToken0123456789abcdefABCDEF\nCF_API_EMAIL=x\n' >"$work/badhometls/media/home-tls.env"
 repack badhometls
@@ -660,19 +671,23 @@ compose_case "Open WebUI on a LAN address by default" ai 'service open-webui pub
 compose_case "a second Open WebUI port" ai 'service open-webui publishes \[".*8080:8080", ".*:8081:8080"\]' "text = text.replace('$owui_port', '$owui_port      - \"\${TAILSCALE_IP}:8081:8080\"\n')"
 compose_case "ports in flow style" ai "service open-webui writes ports in a form other than a list" "text = text.replace('    ports:\n$owui_port', '    ports: [\"\${TAILSCALE_IP}:8080:8080\"]\n')"
 compose_case "Ollama published on the tailnet" ai "service ollama sets ports, which publishes a host port" "text = text.replace('    container_name: ollama\n', '    container_name: ollama\n    ports:\n      - \"\${TAILSCALE_IP}:11434:11434\"\n')"
-compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only comfyui, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
 compose_case "Ollama with deploy labels" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('    deploy:\n      resources:', '    deploy:\n      labels:\n        x-extra: \"1\"\n      resources:', 1)"
-compose_case "Ollama reserving more than the GPU" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('capabilities: [gpu]', 'capabilities: [gpu, utility]')"
+compose_case "Ollama reserving more than the GPU" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('capabilities: [gpu]', 'capabilities: [gpu, utility]', 1)"
 compose_case "Ollama as root" ai 'service ollama runs as "0:0"; it must run as 2001:2001' "text = text.replace('    container_name: ollama\n    user: \"\${AI_UID}:\${AI_GID}\"\n', '    container_name: ollama\n    user: \"0:0\"\n')"
 compose_case "Open WebUI without a memory limit" ai "service open-webui sets no mem_limit" "text = text.replace('    mem_limit: 2g\n', '')"
 compose_case "Open WebUI keeping its capabilities" ai "service open-webui does not drop every capability" "text = text.replace('    container_name: open-webui\n    user: \"\${AI_UID}:\${AI_GID}\"\n    mem_limit: 2g\n    restart: always\n    cap_drop: [ALL]\n', '    container_name: open-webui\n    user: \"\${AI_UID}:\${AI_GID}\"\n    mem_limit: 2g\n    restart: always\n')"
 compose_case "Ollama on the data network" ai 'network data is "data"; the ai stack may only join' "text = text.replace('      - ai\n      - llm\n', '      - ai\n      - llm\n      - data\n', 1).replace('networks:\n  ai:\n', 'networks:\n  data:\n    name: data\n    external: true\n  ai:\n')"
-compose_case "Open WebUI on llm" ai "service open-webui joins llm; open-webui may only join ai" "text = text.replace('    depends_on:\n      - ollama\n    networks:\n      - ai\n', '    depends_on:\n      - ollama\n    networks:\n      - ai\n      - llm\n')"
-compose_case "Ollama reading Open WebUI's secret" ai 'service ollama reads env_file ".*open-webui.env"; in the ai stack open-webui may read an env file' "text = text.replace('    environment:\n      # The models', '    env_file: open-webui.env\n    environment:\n      # The models')"
+compose_case "Open WebUI on llm" ai "service open-webui joins llm; open-webui may only join ai" "text = text.replace('      - comfyui\n    networks:\n      - ai\n', '      - comfyui\n    networks:\n      - ai\n      - llm\n')"
+compose_case "ComfyUI published on the tailnet" ai "service comfyui sets ports, which publishes a host port" "text = text.replace('    container_name: comfyui\n', '    container_name: comfyui\n    ports:\n      - \"\${TAILSCALE_IP}:8188:8188\"\n')"
+compose_case "ComfyUI as root" ai 'service comfyui runs as "0:0"; it must run as 2001:2001' "text = text.replace('    container_name: comfyui\n    user: \"\${AI_UID}:\${AI_GID}\"\n', '    container_name: comfyui\n    user: \"0:0\"\n')"
+compose_case "the GPU for SearXNG" ai "service searxng sets deploy, which can reserve host devices" "text = text.replace('    container_name: searxng\n', '    container_name: searxng\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "the preset writer reading SearXNG's secret" ai 'service webui-presets reads env_file ".*searxng.env"; in the ai stack open-webui, searxng may read an env file' "text = text.replace('    container_name: webui-presets\n', '    container_name: webui-presets\n    env_file: searxng.env\n')"
+compose_case "Ollama reading Open WebUI's secret" ai 'service ollama reads env_file ".*open-webui.env"; in the ai stack open-webui, searxng may read an env file' "text = text.replace('    environment:\n      # The models', '    env_file: open-webui.env\n    environment:\n      # The models')"
 compose_case "a bind mount into Ollama" ai 'service ollama has a "bind" mount of "/srv/media"' "text = text.replace('    volumes:\n      - type: volume\n        source: ollama-models\n', '    volumes:\n      - /srv/media:/media:ro\n      - type: volume\n        source: ollama-models\n')"
 compose_case "a Watchtower label on Ollama" ai "service ollama sets the label com.centurylinklabs.watchtower.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - com.centurylinklabs.watchtower.enable=true\n', 1)"
 compose_case "a service named apart from its container" ai 'service pull names its container "ollama-pull"' "text = text.replace('  ollama-pull:\n    image:', '  pull:\n    image:')"
-compose_case "the tailnet port moved to another service name" ai "service webui sets ports, which publishes a host port" "text = text.replace('  open-webui:\n    image:', '  webui:\n    image:')"
+compose_case "the tailnet port moved to another service name" ai "service webui sets ports, which publishes a host port" "text = text.replace('  open-webui:\n    image:', '  webui:\n    image:').replace('      open-webui:\n        condition:', '      webui:\n        condition:')"
 compose_case "the models volume created by the release" ai 'volume ollama-models is "ollama-models"; the ai stack keeps its data in "ollama-models" \(external\)' "text = text.replace('  ollama-models:\n    name: ollama-models\n    external: true\n', '  ollama-models:\n    name: ollama-models\n')"
 compose_case "hypernova's web app on llm" hypernova "service web joins llm; prizm-web may only join edge" "text = text.replace('    networks:\n      - edge\n    labels:', '    networks:\n      - edge\n      - llm\n    labels:')"
 
@@ -687,7 +702,7 @@ compose_case "a shared mount propagation" media 'service jellyfin mounts /srv/me
 compose_case "the podcasts folder in Kavita" media 'service kavita has a "bind" mount of "/srv/media/podcasts"' "text = text.replace('        source: /srv/media/books\n', '        source: /srv/media/podcasts\n')"
 compose_case "the host's /etc in Audiobookshelf" media 'service audiobookshelf has a "bind" mount of "/etc"' "text = text.replace('        source: /srv/media/podcasts\n', '        source: /etc\n')"
 compose_case "Kavita as root" media 'service kavita runs as "0:0"; it must run as 2000:2000' "text = text.replace('    container_name: kavita\n    user: \"\${MEDIA_UID}:\${MEDIA_GID}\"\n', '    container_name: kavita\n    user: \"0:0\"\n')"
-compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only comfyui, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
 compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
 compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
 compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read home-tls.env' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
@@ -802,14 +817,14 @@ expect_refused "a container with an unreadable StartedAt" "not ready after 1s: p
 installed_state
 sleep 1
 touch "$state/vanished/c4"
-expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 13 listed containers could not be inspected" "$work/second.tgz" release
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 17 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
 
 installed_state
 sleep 1
-for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13; do touch "$state/vanished/$c"; done
-expect_refused "every listed container is gone before the inspect" "not ready after 1s: 13 of 13 listed containers could not be inspected" "$work/second.tgz" release
+for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17; do touch "$state/vanished/$c"; done
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 17 of 17 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
 
 installed_state
