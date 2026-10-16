@@ -303,8 +303,8 @@ services:
         <h2>rclone (laptop)</h2>
         <pre>rclone config create home s3 provider=Other endpoint=https://${HOST_S3} \
           region=garage force_path_style=true \
-          access_key_id="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
-          secret_access_key="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
+          access_key_id="$$(op item get 'infra production secrets' --vault "Home Server" --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
+          secret_access_key="$$(op item get 'infra production secrets' --vault "Home Server" --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
         rclone copy ~/Documents/report.pdf home:files/
         rclone mount home:files ~/Files --vfs-cache-mode writes --daemon</pre>
         </section>

@@ -269,7 +269,7 @@ With `cf`:
 #    (done 2026-10-15: tunnel "home-server", id 1dfdb06e-04a8-4a4b-942b-ede6c46015de)
 OUT=$(cf tunnels create --name home-server --config-source cloudflare 2>/dev/null)
 TUNNEL_ID=$(jq -r '.id' <<<"$OUT"); TUNNEL_TOKEN=$(jq -r '.token' <<<"$OUT"); unset OUT
-op item create --category password --vault Personal --title "Cloudflare tunnel token (home-server)" \
+op item create --category password --vault "Home Server" --title "Cloudflare tunnel token (home-server)" \
   "password=$TUNNEL_TOKEN" "tunnel id[text]=$TUNNEL_ID" >/dev/null; unset TUNNEL_TOKEN
 
 # 2. Set the tunnel's ingress
@@ -314,7 +314,7 @@ gh variable set TS_OAUTH_CLIENT_ID --env production --body '<client id>'
 gh secret set TS_OAUTH_SECRET --env production                     # paste the OAuth client secret
 
 # The Cloudflare Tunnel token from section 6
-op item get "Cloudflare tunnel token (home-server)" --vault Personal --fields label=password --reveal | gh secret set CF_TUNNEL_TOKEN --env production
+op item get "Cloudflare tunnel token (home-server)" --vault "Home Server" --fields label=password --reveal | gh secret set CF_TUNNEL_TOKEN --env production
 
 # GHCR: an account and a classic token with read:packages that can read
 # ghcr.io/somethim/portfolio and the ghcr.io/hypernova3643725 images
@@ -322,8 +322,8 @@ gh variable set GHCR_USERNAME --env production --body '<github user>'
 # GitHub shows a token's value only once. If you don't have it saved, make a new one:
 # GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) →
 # Generate new token (classic), scope read:packages only, expiry 1 year; store it in 1Password
-# (Personal, "GHCR read token (infra)"), then:
-op item get "GHCR read token (infra)" --vault Personal --fields label=password --reveal | gh secret set GHCR_TOKEN --env production
+# ("Home Server" vault, "GHCR read token (infra)"), then:
+op item get "GHCR read token (infra)" --vault "Home Server" --fields label=password --reveal | gh secret set GHCR_TOKEN --env production
 
 # Database: three different passwords, 48 hex characters each; nobody needs to know them
 for name in POSTGRES_SUPERUSER_PASSWORD PRIZM_DB_PASSWORD PORTFOLIO_DB_PASSWORD; do
@@ -854,7 +854,7 @@ times out.
 ```bash
 gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
 k="$(openssl rand -hex 32)"
-op item edit "infra production secrets" --vault Personal "SEARXNG_SECRET[password]=$k" >/dev/null &&
+op item edit "infra production secrets" --vault "Home Server" "SEARXNG_SECRET[password]=$k" >/dev/null &&
   printf %s "$k" | gh secret set SEARXNG_SECRET --env production; unset k
 ```
 
@@ -1003,7 +1003,7 @@ Create it, keep it in 1Password and set the secret without it ever showing on sc
 ```bash
 policies='[{"effect":"allow","resources":{"com.cloudflare.api.account.zone.b548cd8d33527abe0bc4f3fc106096d1":"*"},"permission_groups":[{"id":"4755a26eedb94da69e1066d98aa820be"},{"id":"c8fed203ed3043cba015a93ad1616f1f"}]}]'
 tok="$(cf user tokens create -q --name 'infra home-tls (arbikullakshi.com DNS edit)' --policies "$policies" | sed -n '/^{/,$p' | jq -r .value)"
-[ -n "$tok" ] && [ "$tok" != null ] && op item create --category password --vault Personal --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
+[ -n "$tok" ] && [ "$tok" != null ] && op item create --category password --vault "Home Server" --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
   printf %s "$tok" | gh secret set HOME_TLS_CF_DNS_TOKEN --env production -R somethim/infra && echo "token stored and set"
 unset tok
 ```
@@ -1015,7 +1015,7 @@ zone · arbikullakshi.com**, create, then store and set it from the clipboard:
 
 ```bash
 read -rsp 'token: ' tok; echo
-op item create --category password --vault Personal --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
+op item create --category password --vault "Home Server" --title "Cloudflare DNS token (home TLS)" "password=$tok" >/dev/null &&
   printf %s "$tok" | gh secret set HOME_TLS_CF_DNS_TOKEN --env production -R somethim/infra; unset tok
 ```
 
@@ -1036,7 +1036,7 @@ Six new secrets, generated here and kept in the "infra production secrets" item 
 
 ```bash
 item="infra production secrets"
-set_secret() { op item edit "$item" --vault Personal "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
+set_secret() { op item edit "$item" --vault "Home Server" "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
 set_secret BESZEL_PASSWORD "$(openssl rand -hex 16)"
 set_secret BESZEL_AGENT_TOKEN "$(openssl rand -hex 24)"
 set_secret GARAGE_RPC_SECRET "$(openssl rand -hex 32)"
@@ -1049,14 +1049,14 @@ unset -f set_secret; unset item
 The file manager (SFTPGo) adds one more, its sign-in password, the same way:
 
 ```bash
-p="$(openssl rand -hex 16)"; op item edit "infra production secrets" --vault Personal "FILES_PASSWORD[password]=$p" >/dev/null && printf %s "$p" | gh secret set FILES_PASSWORD --env production -R somethim/infra; unset p
+p="$(openssl rand -hex 16)"; op item edit "infra production secrets" --vault "Home Server" "FILES_PASSWORD[password]=$p" >/dev/null && printf %s "$p" | gh secret set FILES_PASSWORD --env production -R somethim/infra; unset p
 ```
 
 Immich adds two more, its database password and the password its first admin is created with:
 
 ```bash
 item="infra production secrets"
-set_secret() { op item edit "$item" --vault Personal "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
+set_secret() { op item edit "$item" --vault "Home Server" "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
 set_secret IMMICH_DB_PASSWORD "$(openssl rand -hex 32)"
 set_secret IMMICH_ADMIN_PASSWORD "$(openssl rand -hex 16)"
 unset -f set_secret; unset item
@@ -1076,7 +1076,7 @@ memory and network, with history. Sign in with `status_owner_email` from `produc
 `BESZEL_PASSWORD`:
 
 ```bash
-op item get "infra production secrets" --vault Personal --fields label=BESZEL_PASSWORD --reveal
+op item get "infra production secrets" --vault "Home Server" --fields label=BESZEL_PASSWORD --reveal
 ```
 
 Everything is code: the hub (`beszel`) creates that login on its first start; `beszel-pair`
@@ -1109,7 +1109,7 @@ renewed while you use it (SFTPGo allows no longer), and survives closing the bro
 releases; signing out, or 12 hours without opening the page, ends it:
 
 ```bash
-op item get "infra production secrets" --vault Personal --fields label=FILES_PASSWORD --reveal
+op item get "infra production secrets" --vault "Home Server" --fields label=FILES_PASSWORD --reveal
 ```
 
 **As a drive (WebDAV).** `https://files.home.arbikullakshi.com/dav` (through `home-tls`, so with
@@ -1117,7 +1117,7 @@ the real certificate; `https://home.arbikullakshi.com/dav` still works for older
 `owner`, the same password. On the laptop: Nautilus, Other Locations,
 `davs://files.home.arbikullakshi.com/dav`, or `rclone config create homedav webdav
 url=https://files.home.arbikullakshi.com/dav vendor=other user=owner pass="$(rclone obscure "$(op item
-get 'infra production secrets' --vault Personal --fields label=FILES_PASSWORD --reveal)")"`. On
+get 'infra production secrets' --vault "Home Server" --fields label=FILES_PASSWORD --reveal)")"`. On
 Android: a WebDAV-capable file manager (Material Files, Solid Explorer) with that address.
 
 Everything is code: `sftpgo` loads its user from the compose file on every start (mode 0: added,
@@ -1141,8 +1141,8 @@ The key is the one in 1Password; with rclone on the laptop:
 ```bash
 rclone config create home s3 provider=Other endpoint=https://s3.home.arbikullakshi.com \
   region=garage force_path_style=true \
-  access_key_id="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
-  secret_access_key="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
+  access_key_id="$(op item get 'infra production secrets' --vault "Home Server" --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
+  secret_access_key="$(op item get 'infra production secrets' --vault "Home Server" --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
 rclone copy ~/Documents/report.pdf home:files/
 rclone ls home:files
 rclone mount home:files ~/S3 --vfs-cache-mode writes     # optional: as a folder
@@ -1168,7 +1168,7 @@ then the photos mirrored without the thumbnails and encoded video Immich can reb
 password of your own (Immich insists; keep it in 1Password):
 
 ```bash
-op item get "infra production secrets" --vault Personal --fields label=IMMICH_ADMIN_PASSWORD --reveal
+op item get "infra production secrets" --vault "Home Server" --fields label=IMMICH_ADMIN_PASSWORD --reveal
 ```
 
 **The phone.** Install the Immich app (Play Store, F-Droid or the APK on Immich's GitHub
@@ -1200,7 +1200,7 @@ own backup on the phone.
    ```bash
    ~/.local/share/immich-go/immich-go upload from-google-photos \
      --server=https://photos.home.arbikullakshi.com \
-     --api-key="$(op item get 'Immich API key (immich-go)' --vault Personal --fields label=password --reveal)" \
+     --api-key="$(op item get 'Immich API key (immich-go)' --vault "Home Server" --fields label=password --reveal)" \
      --concurrent-tasks=4 --client-timeout=60m --on-errors=continue --session-tag \
      ~/Downloads/takeout/takeout-*.zip
    ```
