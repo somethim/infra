@@ -83,6 +83,9 @@ jobs:
       - name: Deploy access
         run: python3 ci/check_access.py --self-test
 
+      - name: Drive-style file list matches the pinned SFTPGo
+        run: bash ci/files-ui.sh
+
       - name: Validate the edge, Watchtower and autoheal compose files
         run: |
           set -euo pipefail

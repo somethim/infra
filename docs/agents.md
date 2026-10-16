@@ -127,7 +127,8 @@ Garage, SFTPGo and Immich (`stack/media/docker-compose.yml`: busybox for `home` 
 Traefik for `home-tls`, curl for `beszel-pair`, `garage-setup` and `immich-admin`; Immich's server,
 CUDA machine-learning, PostgreSQL and Valkey images move together, to exactly what the new Immich
 release's own `docker-compose.yml` names, after reading its release notes, since Immich migrates
-its database on start), Traefik,
+its database on start; an SFTPGo re-pin also needs `FILES_HTML_SHA256` updated once `DRIVE_JS` has
+been checked against the new `webclient/files.html`, which `ci/files-ui.sh` enforces), Traefik,
 Watchtower, autoheal and the socket proxy
 (`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned

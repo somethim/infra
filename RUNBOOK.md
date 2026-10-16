@@ -1093,8 +1093,18 @@ in the dashboard; they live in `beszel-data`, which the nightly backup copies.
 ### Files (S3 storage)
 
 **The file manager.** `https://files.home.arbikullakshi.com/web/client` (the Files tile) is SFTPGo's web
-client on the `files` bucket: upload (drag and drop), folders, rename, move, delete, preview,
-download, and share links. Sign in as `owner` with `FILES_PASSWORD`. A sign-in lasts 12 hours,
+client on the `files` bucket, made to work like Google Drive:
+
+- **click** a row to select it (Ctrl/⌘-click adds to the selection); **double-click** opens it. On a
+  phone, a **tap** opens it.
+- Files open in a **full-screen preview** (PDF, images, video, audio, text) with **‹ ›** (or the
+  arrow keys) for the previous and next file, **⤓** to download, **✕** or Esc to close. Other files
+  show a Download button.
+- **Right-click** a row for Open, Download, Rename, Move or copy, Share, Delete. The **⤓** button on
+  each row downloads (a folder downloads as a zip).
+- Folders open on double-click; drag files onto the page to upload; the search box filters.
+
+Sign in as `owner` with `FILES_PASSWORD`. A sign-in lasts 12 hours,
 renewed while you use it (SFTPGo allows no longer), and survives closing the browser and
 releases; signing out, or 12 hours without opening the page, ends it:
 
@@ -1115,7 +1125,10 @@ or updated to match), so the password follows `FILES_PASSWORD` and the storage i
 `files` bucket with the owner's S3 key. SFTP, FTP, the admin web UI and the REST API are off; an
 admin account exists only because SFTPGo requires one, with a random password made new at every
 start. Share links, sessions and the key that signs them (`web-signing.key`, made once) live in
-`sftpgo-data`, which the nightly backup copies (SFTPGo stopped). `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
+`sftpgo-data`, which the nightly backup copies (SFTPGo stopped). The log's first line is `files:
+Drive-style file list on`; `files: WARNING … serving SFTPGo's own file list` means the image's
+file-list page is not the one the Drive behaviour was written against (a re-pin skipped
+`ci/files-ui.sh`): everything still works, only clicks and previews are SFTPGo's own. `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
 
 **Straight to S3.** Garage at `https://s3.home.arbikullakshi.com` (or `http://infra-host:3900`): S3-compatible storage, region `garage`, path-style
 addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).

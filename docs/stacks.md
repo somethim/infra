@@ -288,6 +288,19 @@ page until an admin exists, so the same file adds one with a fresh random passwo
 start; the admin web UI and the REST API are off, so nobody can use it. SFTP and FTP are off. It
 starts after `garage-setup` has created the bucket and imported the key.
 
+Its file list behaves like Google Drive: `FILES_UI_SH` (compose file) copies the image's templates
+to `/tmp/templates` (SFTPGo serves them from there, `SFTPGO_HTTPD__TEMPLATES_PATH`) and inserts
+`DRIVE_JS` into `webclient/files.html` right after its `extra_js` block opens. The script adds
+click-to-select, double-click (tap on a phone) to open, a full-screen preview for PDF, images,
+video, audio and text with previous/next and download, a right-click menu that drives SFTPGo's own
+rename, move, share and delete, and a download button on each row in place of the eye. Images,
+video, audio and text load from the normal file URL (an `<img>` or `<video>` ignores its
+`Content-Disposition: attachment`); PDFs use SFTPGo's own `viewpdf` page. It patches only the
+`files.html` whose sha256 is `FILES_HTML_SHA256`; on any other it logs a warning and serves the
+stock page, and `ci/files-ui.sh` fails the checks when the pinned image's page and that hash part,
+when `DRIVE_JS` holds a dollar sign (Compose would read it) or double braces (SFTPGo's template
+engine would), or when it does not parse.
+
 Sessions: `SFTPGO_HTTPD__COOKIE_LIFETIME=720` is SFTPGo's maximum (it ignores more than 720
 minutes), renewed once half has passed, so a sign-in lasts 12 hours from the last visit. The
 cookie has `Expires`/`Max-Age` (it outlives the browser), `HttpOnly`, `SameSite=Strict`, and

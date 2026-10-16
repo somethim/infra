@@ -952,6 +952,13 @@ services:
       # sftpgo-data instead of being regenerated at every start.
       SFTPGO_HTTPD__COOKIE_LIFETIME: "720"
       SFTPGO_HTTPD__SIGNING_PASSPHRASE_FILE: /var/lib/sftpgo/web-signing.key
+      # The Drive-style file list: FILES_UI_SH copies the image's templates to
+      # /tmp/templates and inserts DRIVE_JS into webclient/files.html, but only
+      # into the files.html it was written against (FILES_HTML_SHA256, checked
+      # in CI by ci/files-ui.sh); any other one is served as shipped.
+      SFTPGO_HTTPD__TEMPLATES_PATH: /tmp/templates
+      SFTPGO_HTTPD__STATIC_FILES_PATH: /usr/share/sftpgo/static
+      FILES_HTML_SHA256: 04e3d5d39a90abe183adbdad999ab32e08b74d7248f1c2395003667a7c97f1d0
       SFTPGO_HTTPD__BACKUPS_PATH: /var/lib/sftpgo/backups
       SFTPGO_WEBDAVD__BINDINGS__0__PORT: "8092"
       SFTPGO_WEBDAVD__BINDINGS__0__PREFIX: /dav
@@ -974,7 +981,300 @@ services:
         [ -s "$$key" ] || (umask 077 && tr -dc A-Za-z0-9 </dev/urandom | head -c 64 >"$$key")
         printf '{"admins":[{"username":"admin","status":1,"password":"%s","permissions":["*"]}],"users":[{"username":"owner","status":1,"password":"%s","home_dir":"/var/lib/sftpgo/owner","permissions":{"/":["*"]},"filesystem":{"provider":1,"s3config":{"bucket":"files","region":"garage","endpoint":"http://garage:3900","force_path_style":true,"access_key":"%s","access_secret":{"status":"Plain","payload":"%s"}}}}]}' \
           "$$admin_password" "$$FILES_PASSWORD" "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY" >/tmp/owner.json
-    command: [sh, -c, "printf '%s' \"$$OWNER_JSON_SH\" >/tmp/owner.sh && sh /tmp/owner.sh && exec sftpgo serve"]
+      FILES_UI_SH: |
+        set -eu
+        src=/usr/share/sftpgo/templates
+        rm -rf /tmp/templates && cp -r "$$src" /tmp/templates
+        have="$$(sha256sum "$$src/webclient/files.html" | cut -d' ' -f1)"
+        if [ "$$have" = "$$FILES_HTML_SHA256" ]; then
+          printf '%s' "$$DRIVE_JS" >/tmp/drive.js
+          awk '{ print } /^\{\{- define "extra_js"\}\}$$/ { print "<script nonce=\"{{.CSPNonce}}\">"; while ((getline line < "/tmp/drive.js") > 0) print line; print "</script>" }' \
+            "$$src/webclient/files.html" >/tmp/templates/webclient/files.html
+          grep -q drive-preview /tmp/templates/webclient/files.html
+          echo "files: Drive-style file list on"
+        else
+          echo "files: WARNING webclient/files.html is $$have, not $$FILES_HTML_SHA256; serving SFTPGo's own file list" >&2
+        fi
+      # Single click selects, double click (a tap on a phone) opens a
+      # full-screen preview with prev/next and download, right click opens a
+      # menu, the row's button downloads. No dollar sign or double braces in
+      # here: Compose and SFTPGo's templates would read them.
+      DRIVE_JS: |
+        (function () {
+          "use strict";
+          // Drive-style behaviour for SFTPGo's file list: single click selects,
+          // double click (or a tap on a touch screen) opens, a right click opens a
+          // menu, and files open in a full-screen preview with prev/next and download.
+          var KINDS = {
+            image: ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"],
+            video: ["mp4", "webm", "mov", "m4v", "ogv", "mkv"],
+            audio: ["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus"],
+            pdf: ["pdf"],
+            text: ["txt", "md", "log", "csv", "tsv", "json", "xml", "yml", "yaml", "ini", "conf", "cfg", "toml", "env",
+              "sh", "py", "js", "ts", "go", "rs", "c", "h", "cpp", "hpp", "java", "kt", "html", "css", "scss", "sql", "srt", "vtt"]
+          };
+          var TEXT_LIMIT = 2 * 1024 * 1024;
+          // A tap opens straight away, as in Drive's app; a mouse click selects.
+          var lastPointer = "mouse";
+
+          function ext(name) {
+            var i = name.lastIndexOf(".");
+            return i < 0 ? "" : name.slice(i + 1).toLowerCase();
+          }
+          function kindOf(name) {
+            var e = ext(name);
+            for (var k in KINDS) { if (KINDS[k].indexOf(e) >= 0) return k; }
+            return "";
+          }
+          function dt() { return window.jQuery("#file_manager_list").DataTable(); }
+          function dataOf(tr) { var d = dt().row(tr).data(); return d || null; }
+          function isDir(d) { return String(d.type) === "1"; }
+          function el(tag, attrs, text) {
+            var e = document.createElement(tag);
+            for (var a in (attrs || {})) e.setAttribute(a, attrs[a]);
+            if (text) e.textContent = text;
+            return e;
+          }
+
+          // ---- selection ----------------------------------------------------------
+          function checkbox(tr) { return tr.querySelector("td:first-child input[type=checkbox]"); }
+          function setChecked(tr, on) {
+            var cb = checkbox(tr);
+            if (cb && cb.checked !== on) cb.click();
+          }
+          function selectOnly(tr) {
+            document.querySelectorAll("#file_manager_list_body tr").forEach(function (r) { if (r !== tr) setChecked(r, false); });
+            setChecked(tr, true);
+          }
+
+          // ---- opening and downloading -------------------------------------------
+          function download(d, tr) {
+            if (isDir(d)) {
+              selectOnly(tr);
+              var btn = document.querySelector('[data-kt-filemanager-table-select="download_selected"]');
+              if (btn) btn.click();
+              return;
+            }
+            var a = el("a", { href: d.url, download: d.name });
+            document.body.appendChild(a); a.click(); a.remove();
+          }
+          function open(d, tr) {
+            if (isDir(d)) { window.location.href = d.url; return; }
+            var list = [];
+            dt().rows({ search: "applied", page: "current" }).every(function () {
+              var r = this.data();
+              if (r && !isDir(r)) list.push({ d: r, tr: this.node() });
+            });
+            var idx = 0;
+            list.forEach(function (it, i) { if (it.d.url === d.url) idx = i; });
+            Preview.show(list, idx);
+          }
+
+          // ---- full-screen preview -----------------------------------------------
+          var Preview = (function () {
+            var root, title, counter, body, list = [], idx = 0, alive = null;
+            function build() {
+              root = el("div", { id: "drive-preview", tabindex: "-1" });
+              var bar = el("div", { "class": "drive-bar" });
+              var close = el("button", { "class": "drive-btn", title: "Close (Esc)", "aria-label": "Close" }, "✕");
+              title = el("div", { "class": "drive-title" });
+              counter = el("div", { "class": "drive-counter" });
+              var dl = el("button", { "class": "drive-btn", title: "Download", "aria-label": "Download" }, "⤓");
+              bar.appendChild(close); bar.appendChild(title); bar.appendChild(counter); bar.appendChild(dl);
+              body = el("div", { "class": "drive-body" });
+              var prev = el("button", { "class": "drive-nav drive-prev", title: "Previous", "aria-label": "Previous" }, "‹");
+              var next = el("button", { "class": "drive-nav drive-next", title: "Next", "aria-label": "Next" }, "›");
+              root.appendChild(bar); root.appendChild(body); root.appendChild(prev); root.appendChild(next);
+              close.addEventListener("click", hide);
+              dl.addEventListener("click", function () { var it = list[idx]; if (it) download(it.d, it.tr); });
+              prev.addEventListener("click", function () { go(-1); });
+              next.addEventListener("click", function () { go(1); });
+              root.addEventListener("click", function (e) { if (e.target === root || e.target === body) hide(); });
+              document.body.appendChild(root);
+            }
+            function render() {
+              var it = list[idx], d = it.d, k = kindOf(d.name);
+              title.textContent = d.name;
+              counter.textContent = list.length > 1 ? (idx + 1) + " / " + list.length : "";
+              root.querySelector(".drive-prev").style.visibility = idx > 0 ? "visible" : "hidden";
+              root.querySelector(".drive-next").style.visibility = idx < list.length - 1 ? "visible" : "hidden";
+              body.innerHTML = "";
+              if (k === "image") {
+                body.appendChild(el("img", { src: d.url, alt: d.name }));
+              } else if (k === "video") {
+                body.appendChild(el("video", { src: d.url, controls: "", autoplay: "", playsinline: "", preload: "metadata" }));
+              } else if (k === "audio") {
+                var wrap = el("div", { "class": "drive-audio" });
+                wrap.appendChild(el("div", { "class": "drive-audio-name" }, d.name));
+                wrap.appendChild(el("audio", { src: d.url, controls: "", autoplay: "" }));
+                body.appendChild(wrap);
+              } else if (k === "pdf") {
+                body.appendChild(el("iframe", { src: d.url.replace("/files?", "/viewpdf?"), title: d.name }));
+              } else if (k === "text" && Number(d.size || 0) <= TEXT_LIMIT) {
+                var pre = el("pre", { "class": "drive-text" }, "Loading…");
+                body.appendChild(pre);
+                fetch(d.url, { credentials: "same-origin" }).then(function (r) { return r.text(); })
+                  .then(function (t) { if (list[idx] === it) pre.textContent = t; })
+                  .catch(function () { pre.textContent = "This file could not be loaded."; });
+              } else {
+                var none = el("div", { "class": "drive-none" });
+                none.appendChild(el("div", { "class": "drive-none-name" }, d.name));
+                none.appendChild(el("div", {}, "No preview available for this file."));
+                var b = el("button", { "class": "btn btn-primary mt-5" }, "Download");
+                b.addEventListener("click", function () { download(d, it.tr); });
+                none.appendChild(b);
+                body.appendChild(none);
+              }
+            }
+            function go(step) {
+              var n = idx + step;
+              if (n < 0 || n >= list.length) return;
+              idx = n; render();
+            }
+            function onKey(e) {
+              if (!root || root.style.display === "none") return;
+              if (e.key === "Escape") { e.preventDefault(); hide(); }
+              else if (e.key === "ArrowLeft") { e.preventDefault(); go(-1); }
+              else if (e.key === "ArrowRight") { e.preventDefault(); go(1); }
+            }
+            function show(l, i) {
+              if (!root) { build(); document.addEventListener("keydown", onKey); }
+              list = l; idx = i;
+              root.style.display = "flex"; document.body.style.overflow = "hidden";
+              render(); root.focus();
+              if (typeof window.keepAlive === "function" && !alive) alive = setInterval(window.keepAlive, 300000);
+            }
+            function hide() {
+              if (!root) return;
+              body.innerHTML = ""; root.style.display = "none"; document.body.style.overflow = "";
+              if (alive) { clearInterval(alive); alive = null; }
+            }
+            return { show: show };
+          })();
+
+          // ---- right-click menu ---------------------------------------------------
+          var Menu = (function () {
+            var m;
+            function hide() { if (m) m.style.display = "none"; }
+            function item(label, fn, cls) {
+              var a = el("button", { "class": "drive-menu-item" + (cls ? " " + cls : "") }, label);
+              a.addEventListener("click", function (e) { e.preventDefault(); hide(); fn(); });
+              m.appendChild(a);
+            }
+            function show(x, y, d, tr) {
+              if (!m) {
+                m = el("div", { id: "drive-menu" });
+                document.body.appendChild(m);
+                document.addEventListener("click", hide);
+                document.addEventListener("scroll", hide, true);
+                window.addEventListener("resize", hide);
+                document.addEventListener("keydown", function (e) { if (e.key === "Escape") hide(); });
+              }
+              m.innerHTML = "";
+              item(isDir(d) ? "Open" : "Open preview", function () { open(d, tr); });
+              item("Download", function () { download(d, tr); });
+              [["rename", "Rename"], ["move_or_copy", "Move or copy"], ["share", "Share"], ["delete", "Delete", "drive-danger"]]
+                .forEach(function (a) {
+                  var t = tr.querySelector('[data-kt-filemanager-table-action="' + a[0] + '"]');
+                  if (t) item(a[1], function () { t.click(); }, a[2]);
+                });
+              m.style.display = "block";
+              var w = m.offsetWidth, h = m.offsetHeight;
+              m.style.left = Math.min(x, window.innerWidth - w - 8) + "px";
+              m.style.top = Math.min(y, window.innerHeight - h - 8) + "px";
+            }
+            return { show: show, hide: hide };
+          })();
+
+          // ---- wiring -------------------------------------------------------------
+          var IGNORE = 'input, button, .btn, .menu, [data-kt-menu-trigger], [data-kt-filemanger-table="view_item"]';
+          function rowFrom(e) {
+            var tr = e.target.closest("#file_manager_list_body tr");
+            if (!tr || e.target.closest(IGNORE)) return null;
+            var d = dataOf(tr);
+            return d ? { tr: tr, d: d } : null;
+          }
+          function addDownloadButtons() {
+            document.querySelectorAll("#file_manager_list_body tr").forEach(function (tr) {
+              var cell = tr.querySelector("td:last-child .d-flex");
+              if (!cell || cell.querySelector(".drive-dl")) return;
+              var d = dataOf(tr);
+              if (!d) return;
+              var b = el("button", { type: "button", title: "Download", "aria-label": "Download",
+                "class": "btn btn-sm btn-icon btn-light btn-active-light-primary ms-2 drive-dl" }, "⤓");
+              b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); download(d, tr); });
+              cell.insertBefore(b, cell.firstChild);
+            });
+          }
+          function init() {
+            var body = document.getElementById("file_manager_list_body");
+            if (!body || !window.jQuery) return;
+            var css = el("style");
+            css.textContent = [
+              '#file_manager_list_body [data-kt-filemanger-table="view_item"]{display:none}',
+              "#file_manager_list_body tr{cursor:default;user-select:none}",
+              "#file_manager_list_body tr:has(td:first-child input:checked) td{background:rgba(27,132,255,.12)}",
+              "#file_manager_list_body td a.text-gray-800{pointer-events:none}",
+              ".drive-dl{font-size:1.1rem;line-height:1}",
+              "#drive-preview{position:fixed;inset:0;z-index:2000;display:none;flex-direction:column;background:rgba(10,10,12,.94);outline:none}",
+              ".drive-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;color:#eee;background:rgba(0,0,0,.35)}",
+              ".drive-title{flex:1;font-size:1.05rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+              ".drive-counter{color:#aaa;font-size:.9rem}",
+              ".drive-btn{background:none;border:0;color:#eee;font-size:1.4rem;width:40px;height:40px;border-radius:50%;cursor:pointer}",
+              ".drive-btn:hover,.drive-nav:hover{background:rgba(255,255,255,.12)}",
+              ".drive-body{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:12px 64px}",
+              ".drive-body img,.drive-body video{max-width:100%;max-height:100%;object-fit:contain}",
+              ".drive-body iframe{width:100%;height:100%;border:0;background:#fff;border-radius:4px}",
+              ".drive-text{width:100%;max-width:1000px;height:100%;overflow:auto;margin:0;padding:16px;background:#1e1e22;color:#ddd;border-radius:6px;white-space:pre-wrap;font-size:.9rem}",
+              ".drive-audio,.drive-none{color:#eee;text-align:center}",
+              ".drive-audio-name,.drive-none-name{font-size:1.2rem;margin-bottom:16px}",
+              ".drive-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:0;color:#fff;font-size:2.4rem;width:52px;height:52px;border-radius:50%;cursor:pointer}",
+              ".drive-prev{left:8px}.drive-next{right:8px}",
+              "@media (max-width:600px){.drive-body{padding:8px}.drive-nav{top:auto;bottom:16px;transform:none} }",
+              "#drive-menu{position:fixed;z-index:2100;display:none;min-width:190px;padding:6px 0;background:var(--bs-body-bg,#1e1e2d);border:1px solid rgba(127,127,127,.25);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35)}",
+              ".drive-menu-item{display:block;width:100%;text-align:left;background:none;border:0;padding:8px 16px;color:var(--bs-body-color,#ddd);cursor:pointer}",
+              ".drive-menu-item:hover{background:rgba(127,127,127,.15)}",
+              ".drive-danger{color:#f1416c}"
+            ].join("\n");
+            document.head.appendChild(css);
+
+            body.addEventListener("pointerdown", function (e) { lastPointer = e.pointerType || "mouse"; }, true);
+            body.addEventListener("click", function (e) {
+              var r = rowFrom(e);
+              if (!r) return;
+              e.preventDefault();
+              if (lastPointer === "touch") { open(r.d, r.tr); return; }
+              if (e.ctrlKey || e.metaKey) { var cb = checkbox(r.tr); if (cb) cb.click(); return; }
+              selectOnly(r.tr);
+            });
+            body.addEventListener("dblclick", function (e) {
+              var r = rowFrom(e);
+              if (!r) return;
+              e.preventDefault();
+              window.getSelection && window.getSelection().removeAllRanges();
+              open(r.d, r.tr);
+            });
+            body.addEventListener("contextmenu", function (e) {
+              var tr = e.target.closest("#file_manager_list_body tr");
+              if (!tr) return;
+              var d = dataOf(tr);
+              if (!d) return;
+              e.preventDefault();
+              if (!checkbox(tr) || !checkbox(tr).checked) selectOnly(tr);
+              Menu.show(e.clientX, e.clientY, d, tr);
+            });
+            body.addEventListener("keydown", function (e) {
+              if (e.key !== "Enter") return;
+              var r = rowFrom(e);
+              if (r) { e.preventDefault(); open(r.d, r.tr); }
+            });
+            new MutationObserver(addDownloadButtons).observe(body, { childList: true, subtree: true });
+            addDownloadButtons();
+          }
+          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+          else init();
+        })();
+    command: [sh, -c, "printf '%s' \"$$OWNER_JSON_SH\" >/tmp/owner.sh && sh /tmp/owner.sh && printf '%s' \"$$FILES_UI_SH\" >/tmp/files-ui.sh && sh /tmp/files-ui.sh && exec sftpgo serve"]
     ports:
       - "${TAILSCALE_IP}:8091:8091"
     volumes:
