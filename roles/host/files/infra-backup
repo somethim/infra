@@ -6,8 +6,10 @@
 #
 #   postgres/<date>.sql.gz   pg_dumpall of the shared PostgreSQL, 0600; the newest 14 are kept
 #   apps/<date>/<volume>.tar.gz   the apps' own data volumes (below), the newest 7 days kept;
-#                            Jellyfin, Audiobookshelf, Kavita and Open WebUI are stopped
-#                            while theirs are copied (SQLite must not change mid-copy)
+#                            Jellyfin, Audiobookshelf, Kavita, Open WebUI, Beszel and Garage
+#                            are stopped while theirs are copied (SQLite must not change mid-copy)
+#   media/s3/                rsync --delete mirror of Garage's objects (/srv/media/s3), taken
+#                            while Garage is stopped, so it matches that night's garage-meta copy
 #   media/<name>/            rsync --delete mirror of /srv/media/{audiobooks,books,podcasts}
 #
 # Every step runs even when an earlier one failed; the script exits 1 if any
@@ -32,8 +34,12 @@ readonly app_volumes=(
   "open-webui-data ./cache"
   "portfolio-media"
   "hypernova_prizm-storage"
+  "beszel-data"
+  "garage-meta"
 )
-readonly app_containers=(jellyfin audiobookshelf kavita open-webui)
+readonly app_containers=(jellyfin audiobookshelf kavita open-webui beszel garage)
+# Mirrored while the app containers are stopped: Garage's objects must match its metadata copy.
+readonly mirrored_stopped=(s3)
 readonly mirrored=(audiobooks books podcasts)
 
 failures=0
@@ -117,6 +123,9 @@ backup_apps() {
       failed "tar of the volume $volume failed"
     fi
   done
+  for name in "${mirrored_stopped[@]}"; do
+    mirror_one "$name"
+  done
   start_stopped
   if [ "$failures" -eq "$before" ]; then
     rm -rf "${dir:?}/$stamp"
@@ -128,27 +137,33 @@ backup_apps() {
   keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$keep_apps"
 }
 
-mirror_media() {
-  local name source target
+# mirror_one <name>: rsync --delete /srv/media/<name> to the backup disk.
+mirror_one() {
+  local name="$1" source target
+  source="$media_root/$name"
+  target="$backup_root/media/$name"
   private_dir "$backup_root/media"
+  if [ ! -d "$source" ]; then
+    failed "$source does not exist (is the media disk mounted?); its mirror is untouched"
+    return 0
+  fi
+  mkdir -p "$target"
+  # An empty library over a full mirror is almost always a missing disk, not a deletion.
+  if [ -z "$(find "$source" -mindepth 1 -print -quit)" ] && [ -n "$(find "$target" -mindepth 1 -print -quit)" ]; then
+    failed "$source is empty but its mirror is not; not mirroring an empty library over it (delete $target by hand if the library really is empty)"
+    return 0
+  fi
+  if rsync --archive --delete --numeric-ids "$source/" "$target/"; then
+    log "mirrored $source"
+  else
+    failed "rsync of $source failed"
+  fi
+}
+
+mirror_media() {
+  local name
   for name in "${mirrored[@]}"; do
-    source="$media_root/$name"
-    target="$backup_root/media/$name"
-    if [ ! -d "$source" ]; then
-      failed "$source does not exist (is the media disk mounted?); its mirror is untouched"
-      continue
-    fi
-    mkdir -p "$target"
-    # An empty library over a full mirror is almost always a missing disk, not a deletion.
-    if [ -z "$(find "$source" -mindepth 1 -print -quit)" ] && [ -n "$(find "$target" -mindepth 1 -print -quit)" ]; then
-      failed "$source is empty but its mirror is not; not mirroring an empty library over it (delete $target by hand if the library really is empty)"
-      continue
-    fi
-    if rsync --archive --delete --numeric-ids "$source/" "$target/"; then
-      log "mirrored $source"
-    else
-      failed "rsync of $source failed"
-    fi
+    mirror_one "$name"
   done
 }
 

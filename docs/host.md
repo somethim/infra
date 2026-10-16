@@ -89,8 +89,8 @@ through neither sshd nor the tailnet, and takes `admin`'s password.
 
 ## Firewall
 
-ufw denies inbound by default and allows only **22 and the tailnet-only ports (80, 443, 5000, 8080,
-8096, 13378) on `tailscale0`** (`ufw_allowed`). There is no public web port (80 and 443 are the tailnet-only links page): the Cloudflare Tunnel is an outbound
+ufw denies inbound by default and allows only **22 and the tailnet-only ports (80, 443, 3900, 5000, 8080,
+8090, 8096, 13378) on `tailscale0`** (`ufw_allowed`). There is no public web port (80 and 443 are the tailnet-only links page): the Cloudflare Tunnel is an outbound
 connection. Outbound is unrestricted (image pulls,
 Cloudflare, Resend, Tailscale, NTP). The router forwards no port to the host, so even LAN 22
 is unreachable from the internet.
@@ -140,7 +140,7 @@ files into the library.
 
 Their data lives in volumes provisioning creates (`ollama-models`, `open-webui-data`, `comfyui-data`,
 `jellyfin-config`, `jellyfin-cache`, `audiobookshelf-config`, `audiobookshelf-metadata`,
-`kavita-config`, `home-tls-acme`), external
+`kavita-config`, `home-tls-acme`, `beszel-data`, `beszel-agent-data`, `garage-meta`), external
 to the stacks like `pgdata-v18`, so a release can never create an empty one in its place. Each
 volume's root is handed to its account, mode 0700, on every run; the stacks mount them with
 `nocopy`, because Docker otherwise copies the image's directory, root ownership included, onto

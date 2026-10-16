@@ -102,6 +102,13 @@ case "$1" in
         cat "$state/images/$name"
         exit 0
         ;;
+      *ExitCode*)
+        # A one-shot's end: state/oneshot/<name> (default "exited 0"); a
+        # state/oneshot-missing/<name> was never created.
+        [ ! -e "$state/oneshot-missing/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
+        cat "$state/oneshot/$name" 2>/dev/null || echo "exited 0"
+        exit 0
+        ;;
     esac
     [ -f "$state/running/$name" ] || { echo "Error: No such container: $name" >&2; exit 1; }
     case "$format" in
@@ -220,7 +227,7 @@ new_state() {
   count=$((count + 1))
   state="$work/state$count"
   mkdir -p "$state/stack" "$state/edge" "$state/logs" "$state/running" "$state/docker" "$state/images" "$state/imageinfo" "$state/known" \
-    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip" "$state/ports"
+    "$state/started" "$state/restarts" "$state/crashloop" "$state/vanished" "$state/vanished-once" "$state/ip" "$state/ports" "$state/oneshot" "$state/oneshot-missing"
   printf 'name: edge\n' >"$state/edge/docker-compose.yml"
   # infra-apply points DOCKER_CONFIG at $state/docker, which hides a Compose plugin installed in
   # ~/.docker/cli-plugins (CI installs the host's pinned version there). Link it in so every case
@@ -230,7 +237,9 @@ new_state() {
   fi
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 MEDIA_USER=2000:2000 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
-  # ollama-pull, webui-presets and comfyui-fetch are one-shots (restart: "no"): verify does not wait for them.
+  # ollama-pull, webui-presets, comfyui-fetch, beszel-pair, garage-config and garage-setup are one-shots
+  # (restart: "no"): verify does not wait for them to run, but checks that beszel-pair and garage-setup
+  # ended with status 0 (state/oneshot/<name>).
   printf '%s\n' \
     "c1 /postgresql running always healthy database" \
     "c2 /portfolio running always healthy portfolio" \
@@ -248,8 +257,14 @@ new_state() {
     "c14 /searxng running always healthy ai" \
     "c15 /comfyui running always healthy ai" \
     "c16 /webui-presets exited no none ai" \
-    "c17 /comfyui-fetch exited no none ai" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls; do
+    "c17 /comfyui-fetch exited no none ai" \
+    "c18 /beszel running always healthy media" \
+    "c19 /beszel-pair exited no none media" \
+    "c20 /beszel-agent running always healthy media" \
+    "c21 /garage-config exited no none media" \
+    "c22 /garage running always healthy media" \
+    "c23 /garage-setup exited no none media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls beszel beszel-agent garage; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
@@ -258,6 +273,8 @@ new_state() {
   tailnet_binding kavita 5000
   tailnet_binding home 80
   tailnet_binding home-tls 443
+  tailnet_binding beszel 8090
+  tailnet_binding garage 3900
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

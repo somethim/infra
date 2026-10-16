@@ -47,7 +47,8 @@ the server was off runs at the next boot. It writes only to the external USB dis
 | Path | What | Kept |
 | --- | --- | --- |
 | `postgres/<date>.sql.gz` | `pg_dumpall` of the shared PostgreSQL (every role and database), mode 0600 | the newest 14 |
-| `apps/<date>/<volume>.tar.gz` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage` | the newest 7 |
+| `apps/<date>/<volume>.tar.gz` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage`, `beszel-data` (the dashboard's history and alerts), `garage-meta` (Garage's configuration and metadata) | the newest 7 |
+| `media/s3/` | an `rsync --delete` mirror of Garage's objects (`/srv/media/s3`), taken while Garage is stopped so it matches that night's `garage-meta` | last night's |
 | `media/{audiobooks,books,podcasts}/` | an `rsync --delete` mirror of those library folders | last night's |
 
 Not copied: the Ollama models (`ollama-models`; they download again), Jellyfin's cache volume,
@@ -56,8 +57,8 @@ and the films and series (they would not fit; re-rip them).
 - **No disk, no writes.** If `/srv/backup` is not a mountpoint (the disk is unplugged, or
   `backup_disk_uuid` is empty) the script logs a warning and exits 0 without writing
   anything; the mountpoint itself is immutable while empty, so nothing can land on the SSD.
-- **Consistent copies.** Jellyfin, Audiobookshelf, Kavita and Open WebUI keep SQLite databases
-  in their volumes, so the script stops those of them that run (`docker stop`, up to 60 s),
+- **Consistent copies.** Jellyfin, Audiobookshelf, Kavita, Open WebUI, Beszel and Garage keep
+  SQLite databases in their volumes, so the script stops those of them that run (`docker stop`, up to 60 s),
   copies, and starts exactly those again, also when a copy fails. They are down for the
   minutes of the copy, in the night. The public sites are never stopped: PostgreSQL is dumped
   live (`pg_dumpall` is consistent), and their file volumes are copied as they are.

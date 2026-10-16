@@ -55,7 +55,14 @@ cat >"$work/bin/mountpoint" <<'SH'
 [ "$1" = -q ] || { echo "fake mountpoint: unsupported: $*" >&2; exit 2; }
 [ -f "$FAKE_STATE/mounted" ] && [ "$2" = "$FAKE_STATE/backup" ]
 SH
-chmod +x "$work/bin/docker" "$work/bin/mountpoint"
+# rsync is real; the wrapper records which folder each run mirrored, in order with the docker calls.
+real_rsync="$(command -v rsync)"
+cat >"$work/bin/rsync" <<SH
+#!/usr/bin/env bash
+printf 'rsync %s\n' "\${@: -2:1}" >>"\$FAKE_STATE/calls"
+exec "$real_rsync" "\$@"
+SH
+chmod +x "$work/bin/docker" "$work/bin/mountpoint" "$work/bin/rsync"
 
 count=0
 state=""
@@ -65,7 +72,7 @@ new_state() {
   state="$work/state$count"
   mkdir -p "$state/backup" "$state/running" "$state/stopped" "$state/volumes"
   touch "$state/mounted" "$state/calls"
-  for volume in jellyfin-config audiobookshelf-config audiobookshelf-metadata kavita-config open-webui-data portfolio-media hypernova_prizm-storage ollama-models; do
+  for volume in jellyfin-config audiobookshelf-config audiobookshelf-metadata kavita-config open-webui-data portfolio-media hypernova_prizm-storage ollama-models beszel-data garage-meta; do
     mkdir -p "$state/volumes/$volume"
     echo "$volume data" >"$state/volumes/$volume/data.db"
   done
@@ -82,7 +89,10 @@ new_state() {
   echo epub >"$state/media/books/novel.epub"
   echo episode >"$state/media/podcasts/Show/ep1.mp3"
   echo film >"$state/media/movies/film.mkv"
-  touch "$state/running/jellyfin" "$state/running/audiobookshelf" "$state/running/open-webui" "$state/stopped/kavita"
+  mkdir -p "$state/media/s3/ab/cd"
+  echo object >"$state/media/s3/ab/cd/abcdef"
+  touch "$state/running/jellyfin" "$state/running/audiobookshelf" "$state/running/open-webui" "$state/stopped/kavita" \
+    "$state/running/beszel" "$state/running/garage"
 }
 
 run_backup() {
@@ -132,7 +142,7 @@ for dir in "$state/backup" "$state/backup/postgres" "$state/backup/apps" "$state
 done
 echo "ok   PostgreSQL: pg_dumpall to postgres/<date>.sql.gz, 0600, in 0700 directories"
 apps="$state/backup/apps/2026-10-15"
-want_tars="$(printf '%s.tar.gz\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media | LC_ALL=C sort)"
+want_tars="$(printf '%s.tar.gz\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media beszel-data garage-meta | LC_ALL=C sort)"
 [ "$(find "$apps" -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$want_tars" ] || { find "$apps"; echo "FAIL the app backup does not hold exactly the app volumes"; exit 1; }
 grep -q 'ollama-models' "$state/calls" && { echo "FAIL the Ollama models were looked at"; exit 1; }
 [ "$(members "$apps/jellyfin-config.tar.gz")" = "$(printf '%s\n' data.db metadata metadata/poster.jpg)" ] || { members "$apps/jellyfin-config.tar.gz"; echo "FAIL jellyfin-config: logs left in, or data missing"; exit 1; }
@@ -140,7 +150,7 @@ grep -q 'ollama-models' "$state/calls" && { echo "FAIL the Ollama models were lo
 [ "$(members "$apps/kavita-config.tar.gz")" = data.db ] || { members "$apps/kavita-config.tar.gz"; echo "FAIL kavita-config: its cache was copied"; exit 1; }
 [ "$(members "$apps/audiobookshelf-metadata.tar.gz")" = data.db ] || { members "$apps/audiobookshelf-metadata.tar.gz"; echo "FAIL audiobookshelf-metadata: its cache was copied"; exit 1; }
 echo "ok   apps: one tar per app volume, caches and logs left out, never the Ollama models"
-for name in jellyfin audiobookshelf open-webui; do
+for name in jellyfin audiobookshelf open-webui beszel garage; do
   stop_line="$(grep -n "^stop --time 60 $name$" "$state/calls" | cut -d: -f1)"
   start_line="$(grep -n "^start $name$" "$state/calls" | cut -d: -f1)"
   first_volume="$(grep -n '^volume inspect' "$state/calls" | head -n 1 | cut -d: -f1)"
@@ -150,6 +160,12 @@ for name in jellyfin audiobookshelf open-webui; do
   [ -f "$state/running/$name" ] || { echo "FAIL $name does not run after the backup"; exit 1; }
 done
 grep -q '^start kavita$' "$state/calls" && { echo "FAIL a container that was not running was started"; exit 1; }
+diff -r "$state/media/s3" "$state/backup/media/s3" >/dev/null || { echo "FAIL Garage's objects are not mirrored"; exit 1; }
+s3_line="$(grep -n "^rsync $state/media/s3/$" "$state/calls" | cut -d: -f1)"
+[ -n "$s3_line" ] && [ "$s3_line" -gt "$(grep -n '^stop --time 60 garage$' "$state/calls" | cut -d: -f1)" ] &&
+  [ "$s3_line" -lt "$(grep -n '^start garage$' "$state/calls" | cut -d: -f1)" ] ||
+  { cat "$state/calls"; echo "FAIL Garage's objects were not mirrored while Garage was stopped"; exit 1; }
+echo "ok   Garage: its metadata volume tarred and its objects mirrored while it is stopped"
 echo "ok   apps: the running app containers are stopped for the copy and started again; a stopped one stays stopped"
 for name in audiobooks books podcasts; do
   diff -r "$state/media/$name" "$state/backup/media/$name" >/dev/null || { echo "FAIL $name is not mirrored"; exit 1; }

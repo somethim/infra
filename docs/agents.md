@@ -9,7 +9,8 @@ through a socket proxy of their own.
 
 Watchtower and autoheal (and Traefik, [edge.md](edge.md#the-socket-proxy)) never mount the
 Docker socket. Each talks to its own `wollomatic/socket-proxy` container over an internal
-network that only the two of them share (`watchtower-socket`, `autoheal-socket`). The proxy
+network that only the two of them share (`watchtower-socket`, `autoheal-socket`; Beszel's agent,
+which a release starts, uses `beszel-socket` from `roles/beszel`). The proxy
 mounts the socket read-only, accepts only its one client, and allows only the API calls that
 client needs:
 
@@ -17,6 +18,7 @@ client needs:
 | --- | --- |
 | `watchtower-socket-proxy` | `GET` ping, info, containers, image JSON; `POST` container create/stop/start/rename, image pull, network connect; `DELETE` containers and images |
 | `autoheal-socket-proxy` | `GET` the container list; `POST` a container restart |
+| `beszel-socket-proxy` | `GET` version, info, the container list and one container's stats (no inspect: environments hold secrets; no logs) |
 
 Everything else is refused and logged as `blocked request`. Provisioning and every release
 check that each proxy runs and refused none of its client's calls since the client started;
@@ -86,6 +88,14 @@ stays in the routing table and keeps taking traffic that it will never answer.
 `prizm-web` is deliberately not labelled: it defines no healthcheck, so there is nothing for
 autoheal to act on.
 
+## Beszel's socket proxy
+
+`roles/beszel` provisions only `beszel-socket-proxy` and the internal `beszel-socket` network;
+the hub and agent come with every release (`stack/media`, [stacks.md](stacks.md#media)). The
+role's verify checks the proxy runs; a release's verify checks it refused none of
+`beszel-agent`'s calls. Provision once (`--tags beszel`) before the first release with the
+agent, or that release fails to start the media stack (the network does not exist yet).
+
 ## The prune timer
 
 `docker-prune.timer` runs every Sunday at 03:00 (with up to 30 minutes of jitter, ahead of
@@ -112,11 +122,13 @@ Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: 
 (`stack/database/docker-compose.yml`), cloudflared (`stack/tunnel/docker-compose.yml`), Ollama,
 Open WebUI, SearXNG and ComfyUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for
 `ollama` and `ollama-pull`, Open WebUI's for `open-webui` and `webui-presets`, ComfyUI's for
-`comfyui` and `comfyui-fetch`), busybox and Traefik (`stack/media/docker-compose.yml`, for `home` and `home-tls`), Traefik,
+`comfyui` and `comfyui-fetch`), busybox, Traefik, Beszel (hub and the NVIDIA agent), curl and
+Garage (`stack/media/docker-compose.yml`: busybox for `home` and `garage-config`, Traefik for
+`home-tls`, curl for `beszel-pair` and `garage-setup`), Traefik,
 Watchtower, autoheal and the socket proxy
-(`roles/{edge,watchtower,autoheal}/files/docker-compose.yml`). `build-bundle.sh` refuses a
+(`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
-one in a stack on the host. One version per repository: the socket proxy appears in three files, with the same pin.
+one in a stack on the host. One version per repository: the socket proxy appears in four files, with the same pin.
 
 To move one:
 

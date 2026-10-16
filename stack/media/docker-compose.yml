@@ -1,5 +1,6 @@
-# Jellyfin, Audiobookshelf and Kavita, and a links page to them and Open WebUI,
-# for the owner over the tailnet only.
+# Jellyfin, Audiobookshelf and Kavita, the Beszel status dashboard, Garage S3
+# storage, and a links page to them and Open WebUI, for the owner over the
+# tailnet only.
 # See docs/stacks.md. Each publishes one port on the host's Tailscale address
 # and nowhere else (TAILSCALE_IP comes from /etc/infra/host.env, which
 # infra-apply exports); never through the tunnel or the edge Traefik
@@ -7,11 +8,15 @@
 # for the public; home-tls, the links page's https front, is its own Traefik on
 # the tailnet address). The
 # library is on the media disk (/srv/media), bind-mounted per folder: read-only,
-# except the audiobooks and podcasts Audiobookshelf manages. Every container
-# runs as the media account (.env, from production.yml), with no capability
-# and no new privileges. No Watchtower label: the images are pinned and move
-# only with a reviewed re-pin and a release. One secret: home-tls.env, the
-# Cloudflare DNS token home-tls alone reads for its certificate.
+# except the audiobooks and podcasts Audiobookshelf manages and Garage's
+# /srv/media/s3. Every container runs as the media account (.env, from
+# production.yml), with no capability and no new privileges. No Watchtower
+# label: the images are pinned and move only with a reviewed re-pin and a
+# release. Secrets, each read by its own container: home-tls.env (the
+# Cloudflare DNS token for the links page's certificate), beszel.env,
+# beszel-pair.env and beszel-agent.env (the dashboard's owner password and
+# agent token), garage.env and garage-setup.env (Garage's RPC secret, admin
+# token and the owner's S3 key).
 name: media
 
 services:
@@ -152,10 +157,11 @@ services:
     labels:
       - autoheal=true
 
-  # The links page: http://infra-host/ shows Open WebUI and the three services
-  # above as four tiles, so nobody has to remember a port. busybox httpd
-  # serves the page from tmpfs; the page itself is HOME_HTML below (no host
-  # file, no bind mount). Port 80 needs no capability: Docker lets any user
+  # The links page: http://infra-host/ shows Open WebUI, the three services
+  # above, the status dashboard and S3 storage as six tiles (two by three), so
+  # nobody has to remember a port; /files.html says how to reach Garage. busybox
+  # httpd serves both pages from tmpfs; they are HOME_HTML and FILES_HTML below
+  # (no host file, no bind mount). Port 80 needs no capability: Docker lets any user
   # bind low ports inside a container's own network namespace. No data, so
   # nothing to back up.
   home:
@@ -173,7 +179,7 @@ services:
     command:
       - sh
       - -c
-      - mkdir -p /tmp/www && printf '%s' "$$HOME_HTML" >/tmp/www/index.html && exec httpd -f -p 80 -h /tmp/www
+      - mkdir -p /tmp/www && printf '%s' "$$HOME_HTML" >/tmp/www/index.html && printf '%s' "$$FILES_HTML" >/tmp/www/files.html && exec httpd -f -p 80 -h /tmp/www
     ports:
       - "${TAILSCALE_IP}:80:80"
     environment:
@@ -197,7 +203,7 @@ services:
         html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
           font: 16px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
         main { height: 100vh; height: 100dvh; display: grid; gap: 12px;
-          grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+          grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr;
           padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
                    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
         a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
@@ -205,7 +211,7 @@ services:
           background: var(--tile); border: 1px solid var(--edge); border-radius: 20px; }
         a:hover, a:focus-visible { border-color: var(--c); outline: none; }
         a:active { transform: scale(0.98); }
-        svg { width: clamp(40px, 12vmin, 88px); height: auto; color: var(--c); }
+        svg { width: clamp(36px, 10vmin, 80px); height: auto; color: var(--c); }
         b { font-size: clamp(17px, 3.6vmin, 28px); font-weight: 600; }
         span { font-size: clamp(13px, 2.4vmin, 18px); color: var(--muted); }
         </style>
@@ -228,6 +234,72 @@ services:
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10 5 7 4.5 3 5v13c4-.5 7 0 9 1.5 2-1.5 5-2 9-1.5V5c-4-.5-7 0-9 1.5z"/><path d="M12 6.5v13"/></svg>
           <b>Kavita</b><span>Books</span>
         </a>
+        <a data-port="8090" href="http://infra-host:8090" style="--c: #e0457b">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></svg>
+          <b>Status</b><span>Server &amp; containers</span>
+        </a>
+        <a href="http://infra-host/files.html" style="--c: #c9a227">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+          <b>Files</b><span>S3 storage</span>
+        </a>
+        </main>
+        </body>
+        </html>
+      # How to reach Garage (http://infra-host:3900): an S3 endpoint, not a web
+      # app, so this page says how to connect instead of linking to a UI.
+      FILES_HTML: |
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="color-scheme" content="light dark">
+        <title>Files</title>
+        <style>
+        :root { --bg: #f3f4f6; --tile: #ffffff; --text: #111827; --muted: #6b7280; --edge: #e5e7eb; }
+        @media (prefers-color-scheme: dark) {
+          :root { --bg: #0b0d10; --tile: #171a1f; --text: #f3f4f6; --muted: #9ca3af; --edge: #262a31; }
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: var(--bg); color: var(--text);
+          font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+          padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                   max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+        main { max-width: 44rem; margin: 0 auto; }
+        section { background: var(--tile); border: 1px solid var(--edge); border-radius: 16px; padding: 4px 18px; margin: 12px 0; }
+        h1 { font-size: 1.5rem; margin: 8px 0 4px; } h2 { font-size: 1.05rem; margin: 14px 0 6px; }
+        p, li { color: var(--muted); } b { color: var(--text); }
+        pre { overflow-x: auto; background: var(--bg); border: 1px solid var(--edge); border-radius: 10px; padding: 10px; font-size: 0.85rem; color: var(--text); }
+        a { color: #c9a227; }
+        </style>
+        </head>
+        <body>
+        <main>
+        <p><a href="/">&larr; Home</a></p>
+        <h1>Files</h1>
+        <p>S3-compatible storage (Garage) on the server, over Tailscale only.</p>
+        <section>
+        <h2>Connection</h2>
+        <ul>
+        <li><b>Endpoint:</b> http://infra-host:3900 (path-style)</li>
+        <li><b>Region:</b> garage</li>
+        <li><b>Bucket:</b> files</li>
+        <li><b>Access key and secret:</b> 1Password, &ldquo;infra production secrets&rdquo;, fields GARAGE_OWNER_ACCESS_KEY_ID and GARAGE_OWNER_SECRET_KEY</li>
+        </ul>
+        </section>
+        <section>
+        <h2>rclone (laptop)</h2>
+        <pre>rclone config create home s3 provider=Other endpoint=http://infra-host:3900 \
+          region=garage force_path_style=true \
+          access_key_id="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
+          secret_access_key="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
+        rclone copy ~/Documents/report.pdf home:files/
+        rclone ls home:files</pre>
+        </section>
+        <section>
+        <h2>Phone or desktop app</h2>
+        <p>Any S3 client works (Cyberduck, S3 Files, FolderSync&hellip;): choose <b>Amazon S3 / S3-compatible</b>, server <b>infra-host</b>, port <b>3900</b>, <b>no TLS</b> (Tailscale encrypts the traffic), path-style addressing, and the key above.</p>
+        </section>
         </main>
         </body>
         </html>
@@ -335,9 +407,358 @@ services:
     labels:
       - autoheal=true
 
+  # Beszel, the status dashboard (http://infra-host:8090): CPU, memory, disks,
+  # temperatures, the GPU and every container's usage, with history. The hub
+  # stores its data in beszel-data. On its first start it creates the owner's
+  # login from BESZEL_HUB_USER_EMAIL (.env) and _PASSWORD (beszel.env), so
+  # there is no sign-up page to race for. No update checks.
+  beszel:
+    image: henrygd/beszel:0.21.0@sha256:6b39a8b64f9b15d00a25e7683e31a93c46161182a54f62713525107064e10599
+    container_name: beszel
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 192m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: beszel.env
+    environment:
+      BESZEL_HUB_USER_EMAIL: "${STATUS_OWNER_EMAIL}"
+      BESZEL_HUB_APP_URL: http://infra-host:8090
+      BESZEL_HUB_CHECK_UPDATES: "false"
+      GOMEMLIMIT: 160MiB
+    ports:
+      - "${TAILSCALE_IP}:8090:8090"
+    volumes:
+      - type: volume
+        source: beszel-data
+        target: /beszel_data
+        volume:
+          nocopy: true
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD", "/beszel", "health", "--url", "http://127.0.0.1:8090"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - autoheal=true
+
+  # One-shot, after the hub is healthy: signs in as the owner, makes the
+  # agent's token (beszel-pair.env) the owner's permanent universal token, so
+  # the agent is added as a system on its first connection, and writes the
+  # hub's public key into the agent's volume for it to check the hub with.
+  # Prints no secret.
+  beszel-pair:
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    container_name: beszel-pair
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 32m
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: beszel-pair.env
+    environment:
+      OWNER_EMAIL: "${STATUS_OWNER_EMAIL}"
+      PAIR_SH: |
+        set -eu
+        hub=http://beszel:8090
+        i=0
+        until [ "$$(curl -s -o /dev/null -w '%{http_code}' "$$hub/api/health")" = 200 ]; do
+          i=$$((i + 1)); [ "$$i" -lt 60 ] || { echo "beszel-pair: the hub did not answer within 2 minutes" >&2; exit 1; }
+          sleep 2
+        done
+        field() { tr -d '\n' | sed -n "s/.*\"$$1\": *\"\([^\"]*\)\".*/\1/p" | head -n 1; }
+        auth="$$(curl -sS -f -H 'Content-Type: application/json' \
+          --data "{\"identity\":\"$$OWNER_EMAIL\",\"password\":\"$$OWNER_PASSWORD\"}" \
+          "$$hub/api/collections/users/auth-with-password" | field token)" ||
+          { echo "beszel-pair: the hub refused the owner's login (BESZEL_PASSWORD changed after the hub's first start? RUNBOOK.md, \"Rotating a secret\")" >&2; exit 1; }
+        [ -n "$$auth" ] || { echo "beszel-pair: no session token in the hub's login answer" >&2; exit 1; }
+        curl -sS -f -o /dev/null -H "Authorization: $$auth" \
+          "$$hub/api/beszel/universal-token?enable=1&permanent=1&token=$$AGENT_TOKEN"
+        key="$$(curl -sS -f -H "Authorization: $$auth" "$$hub/api/beszel/info" | field key)"
+        case "$$key" in
+          ssh-ed25519\ *) printf '%s\n' "$$key" >/agent/hub.pub.tmp && mv -f /agent/hub.pub.tmp /agent/hub.pub ;;
+          *) echo "beszel-pair: the hub returned no ed25519 public key" >&2; exit 1 ;;
+        esac
+        echo "beszel-pair: the agent's token is the owner's universal token; the hub's key is in place"
+    command: [sh, -c, "printf '%s' \"$$PAIR_SH\" >/tmp/pair.sh && exec sh /tmp/pair.sh"]
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: volume
+        source: beszel-agent-data
+        target: /agent
+        volume:
+          nocopy: true
+    depends_on:
+      beszel:
+        condition: service_healthy
+    networks:
+      - media
+
+  # The agent: host CPU, memory and temperatures (/proc and /sys are the
+  # host's for these), the SSD (its own root), the media disk and the backup
+  # disk (each read through an empty or root-only folder bound read-only: it
+  # only asks the filesystem for its size), the GPU (NVML, through the
+  # reservation), and each container's usage through beszel-socket-proxy
+  # (roles/beszel: four read-only Docker calls). It dials the hub over the
+  # media network (TOKEN, KEY_FILE from beszel-pair); no SSH listener, no
+  # host network, so the host's own network totals are not shown, only each
+  # container's. No image update checks (they would ask registries and the
+  # proxy for image details).
+  beszel-agent:
+    image: henrygd/beszel-agent-nvidia:0.21.0@sha256:07554f812db9553fb6e84aff0cd9f02c8797b4f705eb94292c1e7f23a24789e7
+    container_name: beszel-agent
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 128m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: beszel-agent.env
+    environment:
+      HUB_URL: http://beszel:8090
+      KEY_FILE: /var/lib/beszel-agent/hub.pub
+      DATA_DIR: /var/lib/beszel-agent
+      DISABLE_SSH: "true"
+      SYSTEM_NAME: infra-host
+      DOCKER_HOST: tcp://beszel-socket-proxy:2375
+      DOCKER_IMAGE_CHECK: "false"
+      NVIDIA_DRIVER_CAPABILITIES: utility
+      GOMEMLIMIT: 96MiB
+    volumes:
+      - type: volume
+        source: beszel-agent-data
+        target: /var/lib/beszel-agent
+        volume:
+          nocopy: true
+      - type: bind
+        source: /srv/media/.beszel
+        target: /extra-filesystems/media
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/backup
+        target: /extra-filesystems/backup
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      beszel-pair:
+        condition: service_completed_successfully
+    networks:
+      - media
+      - beszel-socket
+    healthcheck:
+      test: ["CMD", "/agent", "health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - autoheal=true
+
+  # Garage's configuration, written into its metadata volume before it starts
+  # (its image has no shell). The secrets are not in it: Garage reads
+  # GARAGE_RPC_SECRET and GARAGE_ADMIN_TOKEN from garage.env.
+  garage-config:
+    image: busybox:1.37.0-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
+    container_name: garage-config
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 16m
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GARAGE_TOML: |
+        # Written by garage-config on every release (stack/media). One node,
+        # one copy of every object: the nightly backup is the second copy.
+        metadata_dir = "/meta/db"
+        data_dir = "/data"
+        db_engine = "sqlite"
+        replication_factor = 1
+        rpc_bind_addr = "[::]:3901"
+        rpc_public_addr = "127.0.0.1:3901"
+
+        [s3_api]
+        s3_region = "garage"
+        api_bind_addr = "[::]:3900"
+
+        [admin]
+        api_bind_addr = "[::]:3903"
+    command: [sh, -c, "mkdir -p /meta/db && printf '%s' \"$$GARAGE_TOML\" >/meta/garage.toml.tmp && mv -f /meta/garage.toml.tmp /meta/garage.toml"]
+    volumes:
+      - type: volume
+        source: garage-meta
+        target: /meta
+        volume:
+          nocopy: true
+    networks:
+      - media
+
+  # Garage, S3-compatible storage (http://infra-host:3900, region garage,
+  # path-style). Objects live on the media disk (/srv/media/s3, the media
+  # account's, 0700); the metadata (SQLite) on the SSD in garage-meta. The
+  # admin API (3903) and RPC (3901) stay on the media network.
+  garage:
+    image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+    container_name: garage
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 512m
+    restart: always
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: garage.env
+    environment:
+      GARAGE_CONFIG_FILE: /meta/garage.toml
+      RUST_LOG: garage=info
+    command: [/garage, server]
+    ports:
+      - "${TAILSCALE_IP}:3900:3900"
+    volumes:
+      - type: volume
+        source: garage-meta
+        target: /meta
+        volume:
+          nocopy: true
+      - type: bind
+        source: /srv/media/s3
+        target: /data
+        bind:
+          create_host_path: false
+    depends_on:
+      garage-config:
+        condition: service_completed_successfully
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - autoheal=true
+
+  # One-shot, after Garage is healthy, through its admin API: assigns the
+  # single node its role (once), imports the owner's access key from
+  # GARAGE_OWNER_ACCESS_KEY_ID and _SECRET_KEY (garage-setup.env; a new
+  # secret needs a new key ID, and keys named owner under another ID are
+  # deleted), creates the files bucket and lets the key read, write and own
+  # it. Idempotent; prints no secret.
+  garage-setup:
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    container_name: garage-setup
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 32m
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: garage-setup.env
+    environment:
+      # Garage only places data by capacity; one node takes it all.
+      GARAGE_CAPACITY: "800000000000"
+      GARAGE_BUCKETS: files
+      SETUP_SH: |
+        set -eu
+        api=http://garage:3903
+        call() {
+          if [ $$# -ge 3 ]; then
+            curl -sS -f -X "$$1" -H "Authorization: Bearer $$GARAGE_ADMIN_TOKEN" -H 'Content-Type: application/json' --data "$$3" "$$api$$2"
+          else
+            curl -sS -f -X "$$1" -H "Authorization: Bearer $$GARAGE_ADMIN_TOKEN" "$$api$$2"
+          fi
+        }
+        status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $$GARAGE_ADMIN_TOKEN" "$$api$$1"; }
+        field() { tr -d '\n' | sed -n "s/.*\"$$1\": *\"\([^\"]*\)\".*/\1/p" | head -n 1; }
+        i=0
+        until [ "$$(status /v2/GetClusterStatus)" = 200 ]; do
+          i=$$((i + 1)); [ "$$i" -lt 60 ] || { echo "garage-setup: Garage's admin API did not answer within 2 minutes (GARAGE_ADMIN_TOKEN?)" >&2; exit 1; }
+          sleep 2
+        done
+        node="$$(call GET /v2/GetClusterStatus | tr -d '\n' | sed -n 's/.*"nodes": *\[ *{ *"id": *"\([0-9a-f]*\)".*/\1/p')"
+        [ -n "$$node" ] || { echo "garage-setup: no node id in Garage's cluster status" >&2; exit 1; }
+        if call GET /v2/GetClusterLayout | tr -d '\n' | grep -q "\"roles\": *\[ *{[^]]*\"id\": *\"$$node\""; then
+          echo "garage-setup: the layout already holds this node"
+        else
+          call POST /v2/UpdateClusterLayout "{\"roles\":[{\"id\":\"$$node\",\"zone\":\"home\",\"capacity\":$$GARAGE_CAPACITY,\"tags\":[]}]}" >/dev/null
+          version="$$(call GET /v2/GetClusterLayout | tr -d '\n' | sed -n 's/.*"version": *\([0-9]*\).*/\1/p' | head -n 1)"
+          call POST /v2/ApplyClusterLayout "{\"version\":$$((version + 1))}" >/dev/null
+          echo "garage-setup: layout version $$((version + 1)) applied: one node, zone home"
+        fi
+        if [ "$$(status "/v2/GetKeyInfo?id=$$OWNER_ACCESS_KEY_ID")" = 200 ]; then
+          if [ "$$(call GET "/v2/GetKeyInfo?id=$$OWNER_ACCESS_KEY_ID&showSecretKey=true" | field secretAccessKey)" != "$$OWNER_SECRET_ACCESS_KEY" ]; then
+            echo "garage-setup: the key $$OWNER_ACCESS_KEY_ID exists with another secret; rotate GARAGE_OWNER_ACCESS_KEY_ID together with GARAGE_OWNER_SECRET_KEY (RUNBOOK.md, \"Rotating a secret\")" >&2
+            exit 1
+          fi
+          echo "garage-setup: the owner's key is in place"
+        else
+          code="$$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $$GARAGE_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+            --data "{\"accessKeyId\":\"$$OWNER_ACCESS_KEY_ID\",\"secretAccessKey\":\"$$OWNER_SECRET_ACCESS_KEY\",\"name\":\"owner\"}" "$$api/v2/ImportKey")"
+          case "$$code" in
+            200) echo "garage-setup: the owner's key $$OWNER_ACCESS_KEY_ID was imported" ;;
+            409) echo "garage-setup: the key ID $$OWNER_ACCESS_KEY_ID was used before and deleted; Garage never reuses one, so generate a new GARAGE_OWNER_ACCESS_KEY_ID" >&2; exit 1 ;;
+            *) echo "garage-setup: importing the owner's key answered $$code (the ID must be GK and 24 hex digits, the secret 64 hex digits)" >&2; exit 1 ;;
+          esac
+        fi
+        for old in $$(call GET /v2/ListKeys | tr -d '\n' | sed 's/},/}\n/g' | grep '"name": *"owner"' | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p'); do
+          [ "$$old" = "$$OWNER_ACCESS_KEY_ID" ] && continue
+          call POST "/v2/DeleteKey?id=$$old" >/dev/null
+          echo "garage-setup: deleted the rotated-out key $$old"
+        done
+        for bucket in $$GARAGE_BUCKETS; do
+          if [ "$$(status "/v2/GetBucketInfo?globalAlias=$$bucket")" = 200 ]; then
+            id="$$(call GET "/v2/GetBucketInfo?globalAlias=$$bucket" | field id)"
+          else
+            id="$$(call POST /v2/CreateBucket "{\"globalAlias\":\"$$bucket\"}" | field id)"
+            echo "garage-setup: created the bucket $$bucket"
+          fi
+          [ -n "$$id" ] || { echo "garage-setup: no id for the bucket $$bucket" >&2; exit 1; }
+          call POST /v2/AllowBucketKey "{\"bucketId\":\"$$id\",\"accessKeyId\":\"$$OWNER_ACCESS_KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":true}}" >/dev/null
+          echo "garage-setup: the owner may read, write and own $$bucket"
+        done
+    command: [sh, -c, "printf '%s' \"$$SETUP_SH\" >/tmp/setup.sh && exec sh /tmp/setup.sh"]
+    depends_on:
+      garage:
+        condition: service_healthy
+    networks:
+      - media
+
 networks:
   media:
     name: media
+    external: true
+  # Created by provisioning (roles/beszel), internal: only beszel-agent and its
+  # socket proxy are on it.
+  beszel-socket:
+    name: beszel-socket
     external: true
 
 volumes:
@@ -358,4 +779,13 @@ volumes:
     external: true
   home-tls-acme:
     name: home-tls-acme
+    external: true
+  beszel-data:
+    name: beszel-data
+    external: true
+  beszel-agent-data:
+    name: beszel-agent-data
+    external: true
+  garage-meta:
+    name: garage-meta
     external: true

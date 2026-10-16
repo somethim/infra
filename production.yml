@@ -69,6 +69,9 @@ hypernova_domain: hypernova.arbikullakshi.com
 # Let's Encrypt has for its certificate.
 home_domain: home.arbikullakshi.com
 acme_email: contact@arbikullakshi.com
+# The owner's login on the Beszel status dashboard (http://infra-host:8090);
+# its password is the BESZEL_PASSWORD secret.
+status_owner_email: contact@arbikullakshi.com
 
 portfolio_image_repo: ghcr.io/somethim/portfolio
 hypernova_provider_image_repo: ghcr.io/hypernova3643725/hypernova-provider

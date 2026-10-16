@@ -13,8 +13,9 @@ only address a port may be published on, and only by the services TAILNET_PORTS
 names, as "${TAILSCALE_IP}:<port>:<port>". --service-user is the account the
 host made for a hardened stack (ai, media): every service there runs as it,
 with a mem_limit, cap_drop ALL and no-new-privileges. Bind mounts: only the
-BIND_MOUNTS library folders under /srv/media, each at its fixed target, read-only
-except Audiobookshelf's audiobooks and podcasts.
+BIND_MOUNTS folders (the library folders under /srv/media, Garage's /srv/media/s3,
+and the two folders Beszel's agent reads disk sizes through), each at its fixed
+target, read-only except Audiobookshelf's audiobooks and podcasts and Garage's s3.
 infra-apply runs this on every stack of a bundle before anything changes.
 Prints one summary line on success; prints `docker-compose.yml: <reason>` and
 exits 1 on a refusal. Installed as /usr/local/libexec/infra-compose-guard.
@@ -38,17 +39,25 @@ TAILNET_PORTS = {
     ("media", "kavita"): 5000,
     ("media", "home"): 80,
     ("media", "home-tls"): 443,
+    ("media", "beszel"): 8090,
+    ("media", "garage"): 3900,
 }
 TAILNET_PORT_FORM = "${{TAILSCALE_IP}}:{port}:{port}"
 TAILSCALE_IPV4 = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$")
 # The only services that may reserve a device: the NVIDIA GPU, all of it, nothing else.
-GPU_SERVICES = {("ai", "ollama"), ("ai", "comfyui"), ("media", "jellyfin")}
+GPU_SERVICES = {("ai", "ollama"), ("ai", "comfyui"), ("media", "jellyfin"), ("media", "beszel-agent")}
 GPU_DEVICE = {"driver": "nvidia", "count": -1, "capabilities": ["gpu"]}
 # The only bind mounts: (stack, service) -> {host source: (container target, read-only)}.
 BIND_MOUNTS = {
     ("media", "jellyfin"): {"/srv/media/shows": ("/media/shows", True), "/srv/media/movies": ("/media/movies", True)},
     ("media", "audiobookshelf"): {"/srv/media/audiobooks": ("/audiobooks", False), "/srv/media/podcasts": ("/podcasts", False)},
     ("media", "kavita"): {"/srv/media/books": ("/books", True)},
+    # Garage's objects; its metadata is in the garage-meta volume.
+    ("media", "garage"): {"/srv/media/s3": ("/data", False)},
+    # Only for the filesystems' sizes: an empty folder on the media disk, and the
+    # backup disk's mountpoint (root-only inside, 0700).
+    ("media", "beszel-agent"): {"/srv/media/.beszel": ("/extra-filesystems/media", True),
+                                "/srv/backup": ("/extra-filesystems/backup", True)},
 }
 
 STACKS = {
@@ -98,19 +107,28 @@ STACKS = {
         "container_env_files": {"open-webui": {"open-webui.env"}, "searxng": {"searxng.env"}},
         "hardened": True,
     },
-    # The owner's media, reachable only over the tailnet. One secret: the
-    # Cloudflare DNS token home-tls alone reads for its certificate.
+    # The owner's media, status dashboard and S3 storage, reachable only over
+    # the tailnet. Each secret is read by its one container: the Cloudflare DNS
+    # token (home-tls), the dashboard's password and agent token (beszel,
+    # beszel-pair, beszel-agent), Garage's RPC secret, admin token and the
+    # owner's S3 key (garage, garage-setup). beszel-socket is the internal
+    # network to roles/beszel's socket proxy, for beszel-agent alone.
     "media": {
-        "networks": {"media"},
+        "networks": {"media", "beszel-socket"},
         "volumes": {name: {"name": name, "external": True} for name in
                     ("jellyfin-config", "jellyfin-cache", "audiobookshelf-config", "audiobookshelf-metadata", "kavita-config",
-                     "home-tls-acme")},
-        "containers": {"jellyfin", "audiobookshelf", "kavita", "home", "home-tls"},
-        "env_files": ("home-tls.env",),
+                     "home-tls-acme", "beszel-data", "beszel-agent-data", "garage-meta")},
+        "containers": {"jellyfin", "audiobookshelf", "kavita", "home", "home-tls", "beszel", "beszel-pair", "beszel-agent",
+                       "garage-config", "garage", "garage-setup"},
+        "env_files": ("home-tls.env", "beszel.env", "beszel-pair.env", "beszel-agent.env", "garage.env", "garage-setup.env"),
         "labels": AUTOHEAL_LABEL,
         "container_networks": {"jellyfin": {"media"}, "audiobookshelf": {"media"}, "kavita": {"media"}, "home": {"media"},
-                               "home-tls": {"media"}},
-        "container_env_files": {"home-tls": {"home-tls.env"}},
+                               "home-tls": {"media"}, "beszel": {"media"}, "beszel-pair": {"media"},
+                               "beszel-agent": {"media", "beszel-socket"}, "garage-config": {"media"}, "garage": {"media"},
+                               "garage-setup": {"media"}},
+        "container_env_files": {"home-tls": {"home-tls.env"}, "beszel": {"beszel.env"}, "beszel-pair": {"beszel-pair.env"},
+                                "beszel-agent": {"beszel-agent.env"}, "garage": {"garage.env"},
+                                "garage-setup": {"garage-setup.env"}},
         "hardened": True,
     },
 }

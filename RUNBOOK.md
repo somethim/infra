@@ -127,7 +127,7 @@ it cannot do.
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
    (the links page 80 and 443, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
-   [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
+   the Beszel status dashboard 8090, Garage's S3 API 3900, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
    ```json
@@ -138,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -335,6 +335,8 @@ gh secret set PORTFOLIO_TOTP_ENCRYPTION_KEY --env production --body "$(openssl r
 gh secret set HYPERNOVA_SESSION_SECRET --env production --body "$(openssl rand -hex 24)"
 gh secret set WEBUI_SECRET_KEY --env production --body "$(openssl rand -hex 32)"
 gh secret set SEARXNG_SECRET --env production --body "$(openssl rand -hex 32)"
+# The status dashboard and S3 storage: run the block in section 12, "The status dashboard and
+# S3 secrets" (it keeps the values in 1Password: the dashboard password and the S3 key are yours to use)
 # HOME_TLS_CF_DNS_TOKEN: a Cloudflare API token, created as in "The links page" (section 12)
 
 # Apps: the two operator passwords you will log in with; store each in your password manager first
@@ -380,7 +382,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 5000, 8080, 8096, 13378/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 3900, 5000, 8080, 8090, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -399,8 +401,8 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: compose model accepted: 5 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
-infra-apply: bundle accepted: 20 files, manifest checksums match
+infra-apply: compose model accepted: 11 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, beszel 100.x.y.z:8090, garage 100.x.y.z:3900, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
+infra-apply: bundle accepted: 26 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -414,9 +416,10 @@ infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 are bound to 100.x.y.z alone
 infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on 100.x.y.z
-infra-apply: Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls
+infra-apply: beszel-pair garage-setup finished: the dashboard's agent is paired, and S3 has its layout, the owner's key and the files bucket
+infra-apply: Traefik, Watchtower, autoheal and Beszel's agent reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
 
@@ -594,6 +597,18 @@ most values:
   sessions, so everyone is signed out and nothing else changes.
 - **`SEARXNG_SECRET`**: `openssl rand -hex 32` (saved to "infra production secrets" in
   1Password as in section 12), then `release`. Nothing else changes.
+- **`BESZEL_PASSWORD`** creates the dashboard login only on the hub's first start. To change
+  it: change it in the dashboard (top right → Settings → Password), store the same value in
+  1Password and here, then `release` (`beszel-pair` signs in with it; a mismatch fails the
+  release at "beszel-pair exited with status 1").
+- **`BESZEL_AGENT_TOKEN`**: `openssl rand -hex 24`, then `release`; `beszel-pair` makes the new
+  value the universal token, and the agent, recognised by its fingerprint, keeps its history.
+- **`GARAGE_ADMIN_TOKEN`**: `openssl rand -hex 32`, then `release`. Only the admin API uses it.
+- **`GARAGE_RPC_SECRET`**: `openssl rand -hex 32`, then `release`. A single node only talks to itself.
+- **`GARAGE_OWNER_ACCESS_KEY_ID` and `GARAGE_OWNER_SECRET_KEY`**: rotate **both together**
+  (Garage never reuses a deleted key ID): `GK$(openssl rand -hex 12)` and `openssl rand -hex 32`,
+  as in section 12, then `release`. `garage-setup` imports the new key, gives it the `files`
+  bucket and deletes the old one; update rclone and your S3 apps.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
@@ -659,8 +674,9 @@ major is a dump and restore, [docs/database.md](docs/database.md#upgrades)) and 
 The external disk holds, under `/srv/backup` (root only): `postgres/<date>.sql.gz` (the newest
 14 nights of `pg_dumpall`), `apps/<date>/<volume>.tar.gz` (the newest 7 nights of the apps'
 own volumes: Jellyfin's config, Audiobookshelf's config and metadata, Kavita's config, Open
-WebUI's data, `portfolio-media`, hypernova's storage) and `media/` (a mirror of
-`audiobooks`, `books` and `podcasts`, as of the last night). Movies, shows and the Ollama models
+WebUI's data, `portfolio-media`, hypernova's storage, Beszel's history and Garage's metadata)
+and `media/` (a mirror of `audiobooks`, `books`, `podcasts` and Garage's objects `s3`, as of
+the last night). Movies, shows and the Ollama models
 are not backed up: re-rip or re-download them. Check last night's run with
 `ssh admin@infra-host journalctl -u infra-backup.service --since yesterday`; a failed one also
 logs "the nightly backup FAILED" at error priority.
@@ -677,6 +693,18 @@ v="$(sudo docker volume inspect --format '{{.Mountpoint}}' jellyfin-config)"
 sudo find "$v" -mindepth 1 -delete
 sudo tar -xzpf /srv/backup/apps/<date>/jellyfin-config.tar.gz -C "$v"
 sudo docker start jellyfin
+```
+
+**Garage's storage** (the S3 `files` bucket): its metadata and objects must come from the same
+night, and the `s3` mirror is always the last night's, so restore the newest `garage-meta`:
+
+```bash
+sudo docker stop garage
+v="$(sudo docker volume inspect --format '{{.Mountpoint}}' garage-meta)"
+sudo find "$v" -mindepth 1 -delete
+sudo tar -xzpf /srv/backup/apps/<newest date>/garage-meta.tar.gz -C "$v"
+sudo rsync -a --delete /srv/backup/media/s3/ /srv/media/s3/
+sudo docker start garage
 ```
 
 **The database**, all roles and databases at once, into the running cluster (a dump of the
@@ -719,11 +747,13 @@ check it.
 
 | Service | Address (on the tailnet) | Port |
 | --- | --- | --- |
-| Links page (the four below as tiles) | `http://infra-host/` | 80 |
+| Links page (the six below as tiles) | `https://home.arbikullakshi.com/`, `http://infra-host/` | 443, 80 |
 | Open WebUI | `http://infra-host:8080` | 8080 |
 | Jellyfin | `http://infra-host:8096` | 8096 |
 | Audiobookshelf | `http://infra-host:13378` | 13378 |
 | Kavita | `http://infra-host:5000` | 5000 |
+| Beszel (server status) | `http://infra-host:8090` | 8090 |
+| Garage (S3 storage) | `http://infra-host:3900` (an S3 endpoint, not a web page; see `http://infra-host/files.html`) | 3900 |
 
 ### Disks
 
@@ -772,8 +802,11 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:8080", "tcp:8096", "tcp:13378", "tcp:5000"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
+
+An existing policy gets the ports it lacks from `~/.cache/infra-tailscale-setup.sh links`
+(shows the diff, asks before saving).
 
 `tag:infra-ci` gets no new port. Check from the laptop once the release below is done:
 `nc -z -w 5 infra-host 8096` succeeds, and `nc -z -w 5 192.168.1.50 8096` (the LAN address)
@@ -834,7 +867,7 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
 "the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443
-are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
+beszel:8090 garage:3900 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
 the first pull takes a while. In the background, after the release:
 
 - `ollama-pull` downloads `ollama_models` in order: `qwen3:4b` (2.6 GB, so **Quick** works
@@ -881,6 +914,9 @@ password from your password manager for each.
    (media type Podcasts, folder `/podcasts`).
 4. **Kavita**, `http://infra-host:5000`: create the admin account; **Server settings →
    Libraries → Add library**: type Book (or Comic/Manga for those), folder `/books`.
+5. **Beszel**, `http://infra-host:8090`: nothing to set up. Sign in with `status_owner_email`
+   (`production.yml`) and `BESZEL_PASSWORD`; `infra-host` is already listed
+   ([The status dashboard](#the-status-dashboard)).
 
 Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/audiobooks` and
 `/podcasts` (podcast downloads, covers).
@@ -888,8 +924,10 @@ Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/aud
 ### The links page
 
 `https://home.arbikullakshi.com/` (or `http://infra-host/`) on any device on the tailnet shows
-the four services as four tiles (two by two, on a phone too), so nobody has to remember a
-port; bookmark it or add it to the home screen. The tiles always open `http://infra-host:<port>`.
+six tiles (two columns, three rows, on a phone too): Open WebUI, Jellyfin, Audiobookshelf,
+Kavita, Status (Beszel) and Files (how to reach Garage's S3, `http://infra-host/files.html`),
+so nobody has to remember a port; bookmark it or add it to the home screen. The tiles always
+open `http://infra-host:<port>`.
 
 Two containers in the media stack serve it, each on the Tailscale address only, like the
 others:
@@ -940,6 +978,77 @@ Provisioning opens 443 in ufw and creates the `home-tls-acme` volume, so provisi
 the release that brings `home-tls`. The release then waits up to 5 minutes for the
 certificate ("serves the links page with a trusted certificate"); a refused token shows in
 `ssh admin@infra-host sudo docker logs home-tls`.
+
+### The status dashboard and S3 secrets
+
+Six new secrets, generated here and kept in the "infra production secrets" item in 1Password
+(the dashboard password and the S3 key are the ones you use); none is printed:
+
+```bash
+item="infra production secrets"
+set_secret() { op item edit "$item" --vault Personal "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
+set_secret BESZEL_PASSWORD "$(openssl rand -hex 16)"
+set_secret BESZEL_AGENT_TOKEN "$(openssl rand -hex 24)"
+set_secret GARAGE_RPC_SECRET "$(openssl rand -hex 32)"
+set_secret GARAGE_ADMIN_TOKEN "$(openssl rand -hex 32)"
+set_secret GARAGE_OWNER_ACCESS_KEY_ID "GK$(openssl rand -hex 12)"
+set_secret GARAGE_OWNER_SECRET_KEY "$(openssl rand -hex 32)"
+unset -f set_secret; unset item
+```
+
+A release refuses to render without all six. Then provision (it creates the `beszel-data`,
+`beszel-agent-data` and `garage-meta` volumes, `/srv/media/s3` and `/srv/media/.beszel`, the
+`beszel` role's socket proxy, and opens 3900 and 8090 in ufw), then `release`.
+
+### The status dashboard
+
+Beszel at `http://infra-host:8090` (the Status tile): CPU, memory, load, temperatures, the GPU
+(use, memory, power), the SSD, the media disk and the backup disk, and every container's CPU,
+memory and network, with history. Sign in with `status_owner_email` from `production.yml` and
+`BESZEL_PASSWORD`:
+
+```bash
+op item get "infra production secrets" --vault Personal --fields label=BESZEL_PASSWORD --reveal
+```
+
+Everything is code: the hub (`beszel`) creates that login on its first start; `beszel-pair`
+makes `BESZEL_AGENT_TOKEN` your universal token and hands the agent the hub's key; the agent
+(`beszel-agent`) connects and appears as `infra-host`. It sees Docker only through
+`beszel-socket-proxy` (`roles/beszel`), which allows four reads (version, engine info, the
+container list, one container's stats): no inspect, so no container's environment, and no
+logs, which is why the dashboard's container "details" and "logs" buttons show nothing. The
+agent is not on the host network, so the host's own network totals are not shown, only each
+container's. The backup disk's size shows once it is mounted; after mounting it by hand,
+`ssh admin@infra-host sudo docker restart beszel-agent`. Alerts (e-mail or a webhook) can be set
+in the dashboard; they live in `beszel-data`, which the nightly backup copies.
+
+### Files (S3 storage)
+
+Garage at `http://infra-host:3900`: S3-compatible storage, region `garage`, path-style
+addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).
+Objects are on the media disk (`/srv/media/s3`), the metadata on the SSD (`garage-meta`); the
+nightly backup stops Garage, copies `garage-meta` and mirrors `/srv/media/s3`, so the two match.
+`http://infra-host/files.html` (the Files tile) shows the same instructions.
+
+The key is the one in 1Password; with rclone on the laptop:
+
+```bash
+rclone config create home s3 provider=Other endpoint=http://infra-host:3900 \
+  region=garage force_path_style=true \
+  access_key_id="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
+  secret_access_key="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
+rclone copy ~/Documents/report.pdf home:files/
+rclone ls home:files
+rclone mount home:files ~/S3 --vfs-cache-mode writes     # optional: as a folder
+```
+
+Any S3 app works the same way (Cyberduck, S3 Files, FolderSync, …): S3-compatible, server
+`infra-host`, port 3900, no TLS, path-style. `garage-setup` assigns the node's layout once,
+imports your key (`garage-setup.env`) and gives it read, write and owner rights on `files` on
+every release; `ssh admin@infra-host sudo docker logs garage-setup` shows what it did. More
+buckets: add their names to `GARAGE_BUCKETS` in `stack/media/docker-compose.yml` and release.
+There is no web interface: the one community UI for Garage has had no release in a year and
+would need Garage's full admin token.
 
 ### Copying media in
 

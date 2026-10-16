@@ -64,6 +64,11 @@ SECRET_PREFIX_FILES = {
     "webui_": {"ai/open-webui.env"},
     "searxng_": {"ai/searxng.env"},
     "home_tls_": {"media/home-tls.env"},
+    "beszel_password": {"media/beszel.env", "media/beszel-pair.env"},
+    "beszel_agent_": {"media/beszel-pair.env", "media/beszel-agent.env"},
+    "garage_rpc_": {"media/garage.env"},
+    "garage_admin_": {"media/garage.env", "media/garage-setup.env"},
+    "garage_owner_": {"media/garage-setup.env"},
 }
 # Set at apply time from /etc/infra/host.env (infra-apply exports them), never by a bundle file.
 HOST_VARIABLES = {"TAILSCALE_IP"}
@@ -75,9 +80,11 @@ TAILNET_PORTS = {
     ("media", "kavita"): 5000,
     ("media", "home"): 80,
     ("media", "home-tls"): 443,
+    ("media", "beszel"): 8090,
+    ("media", "garage"): 3900,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
-SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy"}
+SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy", "beszel-socket-proxy"}
 PINNED_IMAGE = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
 APP_IMAGE = re.compile(r"^\$\{([A-Z][A-Z0-9_]*_IMAGE)\}$")
 INTERPOLATION = re.compile(r"(?<!\$)\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
@@ -474,8 +481,8 @@ def self_test() -> None:
                 m(tmp)
         return mutate
 
-    jq_last = "            searxng_secret: env.SEARXNG_SECRET\n"
-    env_last = "          SEARXNG_SECRET: ${{ secrets.SEARXNG_SECRET }}\n"
+    jq_last = "            garage_owner_secret_key: env.GARAGE_OWNER_SECRET_KEY\n"
+    env_last = "          GARAGE_OWNER_SECRET_KEY: ${{ secrets.GARAGE_OWNER_SECRET_KEY }}\n"
     dead_secret = both(
         edit(WORKFLOW, jq_last, jq_last.rstrip("\n") + ",\n            crm_db_password: env.CRM_DB_PASSWORD\n"),
         edit(WORKFLOW, env_last, env_last + "          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}\n"),

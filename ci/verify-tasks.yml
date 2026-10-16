@@ -18,6 +18,9 @@
     - name: Autoheal verify
       ansible.builtin.import_tasks: ../roles/autoheal/tasks/verify.yml
       when: verify_role == 'autoheal'
+    - name: Beszel verify
+      ansible.builtin.import_tasks: ../roles/beszel/tasks/verify.yml
+      when: verify_role == 'beszel'
     - name: Docker verify
       ansible.builtin.import_tasks: ../roles/docker/tasks/verify.yml
       when: verify_role == 'docker'

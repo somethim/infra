@@ -1,0 +1,36 @@
+# Beszel's read-only window on Docker. See docs/agents.md. The agent itself
+# runs in the release (stack/media, beszel-agent) and joins the internal
+# beszel-socket network this file creates; it reaches Docker only through this
+# proxy, which answers the four reads its container stats need (the version,
+# the engine info, the container list and one container's stats) and nothing
+# else: no inspect (environments hold secrets), no logs, no image or write calls.
+name: beszel
+
+services:
+  beszel-socket-proxy:
+    image: wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
+    container_name: beszel-socket-proxy
+    mem_limit: 32m
+    restart: always
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges
+    command:
+      - -loglevel=info
+      - -listenip=0.0.0.0
+      - -allowfrom=beszel-agent
+      - -allowGET=(/v1\.\d+)?/(version|info|containers/json|containers/[^/]+/stats)(\?\S*)?
+      - -shutdowngracetime=5
+      - -watchdoginterval=10
+      - -stoponwatchdog
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - beszel-socket
+
+networks:
+  beszel-socket:
+    name: beszel-socket
+    internal: true

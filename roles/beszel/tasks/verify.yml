@@ -1,0 +1,23 @@
+---
+# The proxy alone: the agent it serves comes with a release, which checks
+# (infra-apply, check_socket_clients) that the proxy refused none of its calls.
+- name: Read Beszel's socket proxy state
+  ansible.builtin.command: >-
+    docker container inspect
+    --format '{% raw %}{{.State.Running}} {{.State.Restarting}}{% endraw %}'
+    beszel-socket-proxy
+  register: bp_state
+  changed_when: false
+  failed_when: false
+
+- name: Assert Beszel's socket proxy is up
+  ansible.builtin.assert:
+    that:
+      - bp_state.rc == 0
+      - "'true false' in bp_state.stdout"
+    fail_msg: >-
+      beszel-socket-proxy is not running, so the status dashboard's agent has no
+      path to the Docker API (and a release cannot start it: beszel-agent joins
+      the beszel-socket network this role creates). `docker logs beszel-socket-proxy`
+      on the host shows why (a bad -allow rule refuses to start).
+    quiet: true

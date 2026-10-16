@@ -203,6 +203,12 @@ jobs:
           HOME_TLS_CF_DNS_TOKEN: ${{ secrets.HOME_TLS_CF_DNS_TOKEN }}
           WEBUI_SECRET_KEY: ${{ secrets.WEBUI_SECRET_KEY }}
           SEARXNG_SECRET: ${{ secrets.SEARXNG_SECRET }}
+          BESZEL_PASSWORD: ${{ secrets.BESZEL_PASSWORD }}
+          BESZEL_AGENT_TOKEN: ${{ secrets.BESZEL_AGENT_TOKEN }}
+          GARAGE_RPC_SECRET: ${{ secrets.GARAGE_RPC_SECRET }}
+          GARAGE_ADMIN_TOKEN: ${{ secrets.GARAGE_ADMIN_TOKEN }}
+          GARAGE_OWNER_ACCESS_KEY_ID: ${{ secrets.GARAGE_OWNER_ACCESS_KEY_ID }}
+          GARAGE_OWNER_SECRET_KEY: ${{ secrets.GARAGE_OWNER_SECRET_KEY }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -220,7 +226,13 @@ jobs:
             cf_tunnel_token: env.CF_TUNNEL_TOKEN,
             home_tls_cf_dns_token: env.HOME_TLS_CF_DNS_TOKEN,
             webui_secret_key: env.WEBUI_SECRET_KEY,
-            searxng_secret: env.SEARXNG_SECRET
+            searxng_secret: env.SEARXNG_SECRET,
+            beszel_password: env.BESZEL_PASSWORD,
+            beszel_agent_token: env.BESZEL_AGENT_TOKEN,
+            garage_rpc_secret: env.GARAGE_RPC_SECRET,
+            garage_admin_token: env.GARAGE_ADMIN_TOKEN,
+            garage_owner_access_key_id: env.GARAGE_OWNER_ACCESS_KEY_ID,
+            garage_owner_secret_key: env.GARAGE_OWNER_SECRET_KEY
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 

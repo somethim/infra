@@ -86,7 +86,7 @@ jobs:
       - name: Validate the edge, Watchtower and autoheal compose files
         run: |
           set -euo pipefail
-          for role in edge watchtower autoheal; do
+          for role in edge watchtower autoheal beszel; do
             out="$(docker compose --file "roles/${role}/files/docker-compose.yml" config --quiet 2>&1)" || { echo "$out"; exit 1; }
             if grep -q 'variable is not set' <<<"$out"; then
               echo "$out"

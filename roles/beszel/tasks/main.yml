@@ -1,0 +1,26 @@
+---
+# See docs/agents.md — Beszel. Only the socket proxy is provisioned here; the
+# hub and agent ship with every release (stack/media).
+- name: Create the beszel deploy directory
+  ansible.builtin.file:
+    path: /opt/beszel
+    state: directory
+    mode: "0755"
+
+- name: Ship the beszel compose file
+  ansible.builtin.copy:
+    src: docker-compose.yml
+    dest: /opt/beszel/docker-compose.yml
+    mode: "0644"
+
+- name: Bring up Beszel's socket proxy
+  ansible.builtin.command: docker compose up -d --remove-orphans
+  args:
+    chdir: /opt/beszel
+  register: beszel_up
+  changed_when: >-
+    'Started' in beszel_up.stderr or 'Created' in beszel_up.stderr
+    or 'Recreated' in beszel_up.stderr
+
+- name: Verify Beszel's socket proxy
+  ansible.builtin.import_tasks: verify.yml

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the verify tasks of edge, watchtower, autoheal, docker, gpu and host
+# Runs the verify tasks of edge, watchtower, autoheal, beszel, docker, gpu and host
 # (roles/*/tasks/verify.yml) on localhost against fake docker, iptables,
 # swapon, systemctl, sysctl and nvidia-smi that answer from per-case state files, and the provision
 # SSH route (tasks/ssh-route.yml) for LAN, other and tailnet SSH_CONNECTION
@@ -98,7 +98,7 @@ ts_ip=100.101.102.103
 scenario() {
   local name
   rm -rf "${work:?}/state"/*
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal; do
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy; do
     echo "true false" >"$work/state/$name.running"
   done
   for name in edge-socket-proxy watchtower-socket-proxy autoheal-socket-proxy; do
@@ -112,7 +112,8 @@ scenario() {
   echo 2147483648 >"$work/state/swap"
   echo 1 >"$work/state/nonlocal_bind"
   printf '%s\n' "open-webui $ts_ip:8080->8080/tcp, 8080/tcp" "ollama 11434/tcp" "ollama-pull " "edge-traefik 80/tcp" "postgresql 5432/tcp" \
-    "jellyfin $ts_ip:8096->8096/tcp" "audiobookshelf $ts_ip:13378->13378/tcp" "kavita $ts_ip:5000->5000/tcp" "home $ts_ip:80->80/tcp" "home-tls $ts_ip:443->443/tcp, 80/tcp" >"$work/state/docker.ps"
+    "jellyfin $ts_ip:8096->8096/tcp" "audiobookshelf $ts_ip:13378->13378/tcp" "kavita $ts_ip:5000->5000/tcp" "home $ts_ip:80->80/tcp" "home-tls $ts_ip:443->443/tcp, 80/tcp" \
+    "beszel $ts_ip:8090->8090/tcp" "beszel-agent " "garage $ts_ip:3900->3900/tcp, 3901/tcp, 3903/tcp" >"$work/state/docker.ps"
 }
 run() {
   local role="$1"
@@ -201,6 +202,19 @@ expect_fail "autoheal: proxy restart-looping" "autoheal-socket-proxy is not runn
 scenario
 echo "${blocked/containers\/3f4e5d6c7b8a\/stop/containers\/3f4e5d6c7b8a\/restart}" >>"$work/state/autoheal-socket-proxy.log"
 expect_fail "autoheal: proxy logged a blocked request" "/v1.51/containers/3f4e5d6c7b8a/restart" autoheal
+
+### beszel (the socket proxy alone; the agent comes with a release)
+
+scenario
+expect_pass "beszel: the socket proxy is up" beszel
+
+scenario
+echo "true true" >"$work/state/beszel-socket-proxy.running"
+expect_fail "beszel: proxy restart-looping" "beszel-socket-proxy is not running" beszel
+
+scenario
+rm "$work/state/beszel-socket-proxy.running"
+expect_fail "beszel: no proxy at all" "beszel-socket-proxy is not running" beszel
 
 ### docker
 

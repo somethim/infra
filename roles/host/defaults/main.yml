@@ -14,6 +14,8 @@ tailnet_ports:
   - { container: kavita, port: 5000 }
   - { container: home, port: 80 }
   - { container: home-tls, port: 443 }
+  - { container: beszel, port: 8090 }
+  - { container: garage, port: 3900 }
 
 # Accounts the hardened stacks run as (no login, no home), and the external
 # volumes they own: provisioning creates each volume once and hands its root to
@@ -31,6 +33,9 @@ service_volumes:
   - { name: audiobookshelf-metadata, account: media }
   - { name: kavita-config, account: media }
   - { name: home-tls-acme, account: media }
+  - { name: beszel-data, account: media }
+  - { name: beszel-agent-data, account: media }
+  - { name: garage-meta, account: media }
 
 # The disks, by filesystem UUID (production.yml): the internal HDD with the
 # library, and the external USB HDD the nightly backup writes to. Mounted with

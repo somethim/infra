@@ -209,8 +209,9 @@ refuse to render, since the stack could not start.
 
 ## media
 
-Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), for
-the owner alone, and `home`, a links page (`http://infra-host/`) with a tile for each of them and Open WebUI,
+Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), the
+Beszel status dashboard, Garage (S3 storage), for the owner alone, and `home`, a links page
+(`http://infra-host/`) with a tile for each of them and Open WebUI (six tiles, two by three),
 with `home-tls` in front of it for `https://home.arbikullakshi.com/`. Like `ai`, nothing here is
 public: no `edge`, no label for the edge Traefik, never behind the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
 the tailnet is faster: a phone or TV on Tailscale talks to the server directly (or through a
@@ -223,6 +224,45 @@ relay when it must), WireGuard-encrypted.
 | `kavita` | 5000 | `/srv/media/books` → `/books`, read-only | `kavita-config` (`/kavita/config`) |
 | `home` | 80 | none | none (the links page is `HOME_HTML` in the compose file, written to tmpfs and served by busybox `httpd`) |
 | `home-tls` | 443 | none | `home-tls-acme` (`/acme`: the Let's Encrypt account and certificate) |
+| `beszel` | 8090 | none | `beszel-data` (`/beszel_data`: the hub's database, history, alerts) |
+| `beszel-pair` | none (one-shot) | none | writes the hub's public key into `beszel-agent-data` |
+| `beszel-agent` | none | `/srv/media/.beszel` → `/extra-filesystems/media` and `/srv/backup` → `/extra-filesystems/backup`, read-only, for the disks' sizes only | `beszel-agent-data` (`/var/lib/beszel-agent`: its fingerprint, the hub's key) |
+| `garage-config` | none (one-shot) | none | writes `garage.toml` into `garage-meta` |
+| `garage` | 3900 (S3; admin 3903 and RPC 3901 on the `media` network only) | `/srv/media/s3` → `/data`, read-write (the objects) | `garage-meta` (`/meta`: the config and the SQLite metadata) |
+| `garage-setup` | none (one-shot) | none | none (Garage's admin API) |
+
+**`beszel`, `beszel-pair`, `beszel-agent`** (Beszel 0.21). The hub creates the owner's login on
+its first start from `BESZEL_HUB_USER_EMAIL` (`status_owner_email`, `media/.env`) and
+`BESZEL_HUB_USER_PASSWORD` (`beszel.env`, the `BESZEL_PASSWORD` secret), so there is no sign-up
+page. After it is healthy, `beszel-pair` (curl) signs in as the owner, makes
+`BESZEL_AGENT_TOKEN` the owner's permanent *universal token* and writes the hub's ed25519 public
+key into the agent's volume; the agent starts only after that (`service_completed_successfully`),
+dials `http://beszel:8090` with the token, checks the hub with the key (`KEY_FILE`) and is added
+as the system `infra-host` on its first connection, then recognised by its fingerprint. The agent
+uses the `beszel-agent-nvidia` image and the GPU reservation for NVML (the GPU's use, memory and
+power), reads CPU, memory and temperatures from the host's `/proc` and `/sys`, the SSD from its
+own root, and the media and backup disks through two bind mounts that show it nothing (an empty
+root-owned folder, and the backup disk's root-only mountpoint). Container stats come through
+`beszel-socket-proxy` (`roles/beszel`, on the internal `beszel-socket` network, the only other
+network the agent joins): `GET` version, info, the container list and one container's stats,
+nothing else, so the dashboard's container details and logs stay empty (inspect would show
+every container's environment, secrets included). No host network, so no host network totals;
+no SSH listener (`DISABLE_SSH`); no image update checks; no update checks in the hub.
+
+**`garage-config`, `garage`, `garage-setup`** (Garage 2.4). Garage's image has no shell, so
+`garage-config` (busybox) writes its configuration (`GARAGE_TOML` in the compose file: one
+node, `replication_factor = 1`, SQLite metadata in `/meta/db`, S3 on 3900 with region
+`garage`) into `garage-meta` before it starts; the RPC secret and admin token come from
+`garage.env` as environment variables, never into a file. After Garage is healthy (`garage
+status`), `garage-setup` (curl) uses the admin API: it assigns the node its layout role once,
+imports the owner's key (`GARAGE_OWNER_ACCESS_KEY_ID` and `_SECRET_KEY`, `garage-setup.env`;
+Garage never reuses a deleted key ID, so a new secret needs a new ID, and keys named `owner`
+under another ID are deleted), creates the buckets in `GARAGE_BUCKETS` (`files`) and grants the
+key read, write and owner on them. It prints no secret and fails the release
+(`check_one_shots`) when anything is refused. The objects are on the media disk, the metadata on
+the SSD (Garage recommends fast storage for it). There is no web interface: the only community
+one has had no release in a year and would need the full admin token; S3 clients and
+`http://infra-host/files.html` cover it.
 
 **`home-tls`** is a second Traefik (the edge image and digest) that terminates TLS for
 `home.arbikullakshi.com` and proxies to `home:80` over the `media` network. The apex sends HSTS
@@ -251,21 +291,27 @@ unit at boot.
 `mem_limit`; the guard refuses the stack otherwise. Jellyfin and Audiobookshelf run with a
 read-only root filesystem and a tmpfs `/tmp`. Kavita does not: its entrypoint copies a default
 `appsettings.json` from the image's `/tmp/config` on first start, which a tmpfs `/tmp` would
-hide; as a non-root user it cannot write anything root owns in the image anyway. The stack has
-no secret and reads no env file; `media/.env` holds only the uid and gid.
+hide; as a non-root user it cannot write anything root owns in the image anyway. Each secret is in
+its own env file, read by its one container (`home-tls.env`, `beszel.env`, `beszel-pair.env`,
+`beszel-agent.env`, `garage.env`, `garage-setup.env`); `media/.env` holds only the uid and gid,
+the links page's name and ACME contact and the dashboard's login name.
 
-**GPU.** Jellyfin reserves the GPU like Ollama (the guard allows exactly these two) for
-NVENC/NVDEC transcodes; turn it on in Jellyfin's **Dashboard → Playback → Transcoding**
+**GPU.** Jellyfin reserves the GPU like Ollama for NVENC/NVDEC transcodes, and `beszel-agent`
+for reading the GPU's state through NVML (the guard allows exactly `ollama`, `comfyui`,
+`jellyfin` and `beszel-agent`); turn it on in Jellyfin's **Dashboard → Playback → Transcoding**
 ([RUNBOOK.md](../RUNBOOK.md#first-logins)). The 12 GB are shared with Ollama
 ([ai](#ai)): a transcode takes a few hundred MB, so a 7B model and two or three streams fit
 together. Consumer drivers allow a handful of concurrent NVENC sessions, plenty for one home.
 
-**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB, `home` 32 MiB, `home-tls` 128 MiB.
+**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB, `garage` 512 MiB,
+`beszel` 192 MiB, `beszel-agent` 128 MiB, `home-tls` 128 MiB, `home` 32 MiB, the one-shots 16–32 MiB.
 With `ollama` at 8 GiB and the rest, the stacks fit a 16 GB machine with the swap file as a
 buffer; give Ollama less if the server has less RAM.
 
 **Updates and backups.** Pinned images, no Watchtower label, as in `ai`: Jellyfin migrates its
 database irreversibly on a major upgrade. Re-pin, read the release notes, make sure last
 night's backup ran, then release. The nightly backup copies each app's volumes (not
-Jellyfin's cache) and mirrors `audiobooks`, `books` and `podcasts`; films and series are not
+Jellyfin's cache; Beszel's history and Garage's metadata included, with both stopped) and
+mirrors `audiobooks`, `books`, `podcasts` and Garage's `s3` (while Garage is stopped, so the
+objects match that night's metadata); films and series are not
 copied (they would not fit, and can be re-ripped) ([operations.md](operations.md#backups)).

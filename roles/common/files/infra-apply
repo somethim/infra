@@ -52,14 +52,18 @@ readonly bundle_files=(
   tunnel/docker-compose.yml tunnel/tunnel.env
   ai/docker-compose.yml ai/.env ai/open-webui.env ai/searxng.env
   media/docker-compose.yml media/.env media/home-tls.env
+  media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env
 )
 readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env)
 readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env manifest.sha256)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
-readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443")
+readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443" "beszel 8090" "garage 3900")
+# One-shots whose work a release depends on: each must exit 0 (the dashboard's
+# pairing and Garage's layout, key and bucket).
+readonly checked_one_shots=(beszel-pair garage-setup)
 readonly tailscale_ip_pattern='^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
 readonly service_user_pattern='^[1-9][0-9]*:[1-9][0-9]*$'
 # Traefik and cloudflared, by container name, on the shared edge network.
@@ -251,6 +255,24 @@ validate_env_files() {
   if ! grep -qE '^CF_DNS_API_TOKEN=[A-Za-z0-9_-]{40,}$' "$dir/media/home-tls.env" || [ "$(grep -c . "$dir/media/home-tls.env")" -ne 1 ]; then
     untouched "media/home-tls.env must set exactly CF_DNS_API_TOKEN"
   fi
+  require_env "$dir" media/beszel.env '^BESZEL_HUB_USER_PASSWORD=[A-Za-z0-9]{16,}$'
+  require_env "$dir" media/beszel-pair.env '^OWNER_PASSWORD=[A-Za-z0-9]{16,}$' '^AGENT_TOKEN=[A-Za-z0-9-]{32,}$'
+  require_env "$dir" media/beszel-agent.env '^TOKEN=[A-Za-z0-9-]{32,}$'
+  require_env "$dir" media/garage.env '^GARAGE_RPC_SECRET=[0-9a-f]{64}$' '^GARAGE_ADMIN_TOKEN=[A-Za-z0-9]{32,}$'
+  require_env "$dir" media/garage-setup.env '^GARAGE_ADMIN_TOKEN=[A-Za-z0-9]{32,}$' '^OWNER_ACCESS_KEY_ID=GK[0-9a-f]{24}$' \
+    '^OWNER_SECRET_ACCESS_KEY=[0-9a-f]{64}$'
+}
+
+# require_env <bundle dir> <file> <line pattern>...: the file holds exactly one
+# line per pattern, each matching it.
+require_env() {
+  local dir="$1" file="$2" pattern names
+  shift 2
+  names="$(printf '%s\n' "$@" | sed -E 's/^\^([A-Z_]+)=.*/\1/' | paste -sd ' ' -)"
+  for pattern in "$@"; do
+    grep -qE "$pattern" "$dir/$file" || untouched "$file must set exactly $names"
+  done
+  [ "$(grep -c . "$dir/$file")" -eq "$#" ] || untouched "$file must set exactly $names"
 }
 
 validate_release_env() {
@@ -592,6 +614,30 @@ check_home_tls() {
   log "https://$domain/ serves the links page with a trusted certificate on $tailscale_ip"
 }
 
+# The one-shots the dashboard and S3 storage depend on finished with exit
+# status 0: beszel-pair registered the agent's token and wrote the hub's key
+# (the agent starts only after it), garage-setup assigned the layout,
+# imported the owner's key and created the files bucket. Each prints why it
+# failed, never a secret.
+check_one_shots() {
+  local name state deadline=$((SECONDS + route_wait_seconds))
+  for name in "${checked_one_shots[@]}"; do
+    while :; do
+      state="$(docker container inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$name" 2>/dev/null || echo missing)"
+      case "$state" in
+        "exited 0") break ;;
+        exited\ *) fail "$name exited with status ${state#exited }; docker logs $name on the host says why" ;;
+        missing) fail "$name was never created; docker compose did not run it" ;;
+      esac
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        fail "$name is still $state after ${route_wait_seconds}s; docker logs $name on the host shows where it waits"
+      fi
+      sleep "$poll_seconds"
+    done
+  done
+  log "${checked_one_shots[*]} finished: the dashboard's agent is paired, and S3 has its layout, the owner's key and the files bucket"
+}
+
 # Each tailnet-only port is bound to the Tailscale address and nothing else, as
 # Docker applied it (the guard checked the compose model before the start).
 check_tailnet_ports() {
@@ -646,13 +692,14 @@ check_socket_clients() {
   check_proxy edge-socket-proxy edge-traefik
   check_proxy watchtower-socket-proxy watchtower
   check_proxy autoheal-socket-proxy autoheal
+  check_proxy beszel-socket-proxy beszel-agent
   started="$(docker container inspect --format '{{.State.StartedAt}}' watchtower)"
   errors="$(docker logs --since "$started" watchtower 2>&1 |
     grep -Ei 'too old|minimum supported API version|Cannot connect to the Docker daemon|Error response from daemon: (Forbidden|Method Not Allowed)' || true)"
   if [ -n "$errors" ]; then
     fail "Watchtower cannot use the Docker API: $(tail -n 3 <<<"$errors" | tr '\n' ' ')"
   fi
-  log "Traefik, Watchtower and autoheal reach Docker through their socket proxies with no refused calls"
+  log "Traefik, Watchtower, autoheal and Beszel's agent reach Docker through their socket proxies with no refused calls"
 }
 
 # Prints "<ref>|<digest or unknown>|<created or unknown>" for a running container.
@@ -691,6 +738,7 @@ verify_release() {
   check_tunnel
   check_tailnet_ports
   check_home_tls "$stack_dir/current"
+  check_one_shots
   check_socket_clients
   record_running_images "$id"
   touch "$releases_dir/$id/.verified"

@@ -154,6 +154,8 @@ Two audiences, two ways in, and nothing else:
 | Jellyfin (`stack/media`) | the owner | Tailscale, tcp 8096 | `http://infra-host:8096` |
 | Audiobookshelf (`stack/media`) | the owner | Tailscale, tcp 13378 | `http://infra-host:13378` |
 | Kavita (`stack/media`) | the owner | Tailscale, tcp 5000 | `http://infra-host:5000` |
+| Beszel, the status dashboard (`stack/media`) | the owner | Tailscale, tcp 8090 | `http://infra-host:8090` |
+| Garage, S3 storage (`stack/media`) | the owner | Tailscale, tcp 3900 | `http://infra-host:3900` (S3, region `garage`) |
 | Ollama, PostgreSQL, Traefik | containers only | Docker networks (`llm`, `data`, `edge`) | none on the host |
 
 A tailnet-only service publishes its port on the host's **Tailscale IPv4 alone**

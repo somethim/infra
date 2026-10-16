@@ -15,6 +15,11 @@
 #   ai/open-webui.env       Open WebUI session key  (open-webui)
 #   ai/searxng.env          SearXNG secret key      (searxng)
 #   media/home-tls.env      Cloudflare DNS token    (home-tls, for its certificate)
+#   media/beszel.env        dashboard password      (beszel, the hub: the owner's login)
+#   media/beszel-pair.env   password, agent token   (beszel-pair, registers the token)
+#   media/beszel-agent.env  agent token             (beszel-agent)
+#   media/garage.env        RPC secret, admin token (garage)
+#   media/garage-setup.env  admin token, S3 key     (garage-setup, imports the owner's key)
 #   ghcr.env                registry login          (infra-apply's docker login)
 # The <stack>/.env files hold only image references, domains, uids and the models.
 - name: Render the infra release bundle on the runner
@@ -44,6 +49,12 @@
       - home_tls_cf_dns_token
       - webui_secret_key
       - searxng_secret
+      - beszel_password
+      - beszel_agent_token
+      - garage_rpc_secret
+      - garage_admin_token
+      - garage_owner_access_key_id
+      - garage_owner_secret_key
 
   pre_tasks:
     - name: Require deploy secrets
@@ -63,14 +74,23 @@
           - webui_secret_key | default('') is match('^[A-Za-z0-9]{32,}$')
           - home_tls_cf_dns_token | default('') is match('^[A-Za-z0-9_-]{40,}$')
           - searxng_secret | default('') is match('^[A-Za-z0-9]{32,}$')
+          - beszel_password | default('') is match('^[A-Za-z0-9]{16,}$')
+          - beszel_agent_token | default('') is match('^[A-Za-z0-9-]{32,}$')
+          - garage_rpc_secret | default('') is match('^[0-9a-f]{64}$')
+          - garage_admin_token | default('') is match('^[A-Za-z0-9]{32,}$')
+          - garage_owner_access_key_id | default('') is match('^GK[0-9a-f]{24}$')
+          - garage_owner_secret_key | default('') is match('^[0-9a-f]{64}$')
         fail_msg: >-
           Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
           32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, the portfolio and
           hypernova admin passwords and session secret, CF_TUNNEL_TOKEN as the token Cloudflare shows for
           the tunnel (base64, starting eyJ), WEBUI_SECRET_KEY of at least 32 letters and digits
           (openssl rand -hex 32), HOME_TLS_CF_DNS_TOKEN as the Cloudflare API token that may edit the
-          zone's DNS (40 or more letters, digits, _ and -), and SEARXNG_SECRET of at least 32 letters and
-          digits (openssl rand -hex 32) (RUNBOOK.md, "Rotating a secret").
+          zone's DNS (40 or more letters, digits, _ and -), SEARXNG_SECRET of at least 32 letters and
+          digits (openssl rand -hex 32), BESZEL_PASSWORD of at least 16 letters and digits, BESZEL_AGENT_TOKEN
+          of at least 32 letters, digits and -, GARAGE_RPC_SECRET as 64 hex digits, GARAGE_ADMIN_TOKEN of at
+          least 32 letters and digits, GARAGE_OWNER_ACCESS_KEY_ID as GK and 24 hex digits and
+          GARAGE_OWNER_SECRET_KEY as 64 hex digits (RUNBOOK.md, "Rotating a secret").
         quiet: true
 
     - name: Refuse deploy values the Compose env files would rewrite
@@ -167,6 +187,11 @@
         - { src: ai/searxng.env.j2, dest: ai/searxng.env }
         - { src: media/env.j2, dest: media/.env }
         - { src: media/home-tls.env.j2, dest: media/home-tls.env }
+        - { src: media/beszel.env.j2, dest: media/beszel.env }
+        - { src: media/beszel-pair.env.j2, dest: media/beszel-pair.env }
+        - { src: media/beszel-agent.env.j2, dest: media/beszel-agent.env }
+        - { src: media/garage.env.j2, dest: media/garage.env }
+        - { src: media/garage-setup.env.j2, dest: media/garage-setup.env }
         - { src: ghcr.env.j2, dest: ghcr.env }
       loop_control:
         label: "{{ item.dest }}"

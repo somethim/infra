@@ -80,6 +80,11 @@ leading or trailing spaces, which Compose would rewrite.
 | `CF_TUNNEL_TOKEN` | The token of the remotely managed Cloudflare Tunnel `infra-host` (base64, starts with `eyJ`; Zero Trust → Networks → Tunnels → the tunnel's connector install command). Rendered only into `tunnel/tunnel.env`, read only by `cloudflared` ([edge.md](edge.md#why-the-tunnel-is-a-release-stack)) |
 | `HOME_TLS_CF_DNS_TOKEN` | Cloudflare API token with Zone Read and DNS Edit on arbikullakshi.com only, for `home-tls`'s Let's Encrypt DNS-01 challenge ([RUNBOOK.md](../RUNBOOK.md#the-links-page)). Rendered only into `media/home-tls.env`, read only by `home-tls`. Rotating it changes nothing but the next renewal's credentials |
 | `WEBUI_SECRET_KEY` | Signs Open WebUI's login sessions (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/open-webui.env`, read only by `open-webui`. Rotating it signs everyone out; nothing else is lost ([stacks.md](stacks.md#ai)) |
+| `BESZEL_PASSWORD` | The owner's Beszel dashboard password (`openssl rand -hex 16`, at least 16 letters and digits). Creates the login on the hub's first start only (`media/beszel.env`, `beszel`); `beszel-pair` signs in with it (`media/beszel-pair.env`). Change it in the dashboard first, then here |
+| `BESZEL_AGENT_TOKEN` | The token Beszel's agent presents (`openssl rand -hex 24`, at least 32 letters, digits and `-`). Rendered into `media/beszel-agent.env` and `media/beszel-pair.env` (which registers it as the owner's universal token) |
+| `GARAGE_RPC_SECRET` | Garage's RPC secret (`openssl rand -hex 32`, exactly 64 hex digits). Only in `media/garage.env`, read by `garage` |
+| `GARAGE_ADMIN_TOKEN` | Garage's admin API token (`openssl rand -hex 32`, at least 32 letters and digits). In `media/garage.env` and `media/garage-setup.env` |
+| `GARAGE_OWNER_ACCESS_KEY_ID` / `GARAGE_OWNER_SECRET_KEY` | The owner's S3 key (`GK` + `openssl rand -hex 12`; `openssl rand -hex 32`), imported by `garage-setup` (`media/garage-setup.env`). Rotate both together: Garage never reuses a deleted key ID |
 | `SEARXNG_SECRET` | SearXNG's secret key (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/searxng.env`, read only by `searxng`. Rotating it changes nothing visible ([stacks.md](stacks.md#ai)) |
 
 The three database passwords must be at least 32 letters and digits (`[A-Za-z0-9]{32,}`)
@@ -88,7 +93,7 @@ them, and the hypernova session secret, with `openssl rand -hex 24`.
 `PORTFOLIO_TOTP_ENCRYPTION_KEY` must be base64 of 32 bytes (`[A-Za-z0-9+/]{43}=`).
 `CF_TUNNEL_TOKEN` must look like a token Cloudflare issues (`eyJ` and at least 40 more
 base64 characters). `WEBUI_SECRET_KEY` and `SEARXNG_SECRET` must be at least 32 letters and digits. `HOME_TLS_CF_DNS_TOKEN` must be 40 or
-more letters, digits, `_` and `-`. [RUNBOOK.md](../RUNBOOK.md#7-the-production-environment) generates every
+more letters, digits, `_` and `-`. The Beszel and Garage secrets' formats are in their rows above. [RUNBOOK.md](../RUNBOOK.md#7-the-production-environment) generates every
 value.
 
 ### Variables
@@ -122,8 +127,13 @@ mode 0644, the rest 0600:
 | `ai/open-webui.env` | `WEBUI_SECRET_KEY`, Open WebUI's session key | `open-webui` |
 | `ai/searxng.env` | `SEARXNG_SECRET`, SearXNG's secret key | `searxng` |
 | `media/home-tls.env` | `CF_DNS_API_TOKEN`, the Cloudflare DNS token for the links page's certificate | `home-tls` |
+| `media/beszel.env` | `BESZEL_HUB_USER_PASSWORD`, the dashboard login's password | `beszel` |
+| `media/beszel-pair.env` | `OWNER_PASSWORD`, `AGENT_TOKEN` | `beszel-pair` |
+| `media/beszel-agent.env` | `TOKEN`, the agent's token | `beszel-agent` |
+| `media/garage.env` | `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN` | `garage` |
+| `media/garage-setup.env` | `GARAGE_ADMIN_TOKEN`, `OWNER_ACCESS_KEY_ID`, `OWNER_SECRET_ACCESS_KEY` | `garage-setup` |
 | `ghcr.env` | GHCR login | `infra-apply`'s `docker login` |
-| `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama models and the ACME contact only | Compose interpolation |
+| `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama models, the ACME contact and the dashboard's login name only | Compose interpolation |
 | `release.env`, `manifest.sha256`, `<stack>/docker-compose.yml` | no secrets | `infra-apply` |
 
 See [architecture.md](architecture.md#env-files) for why the `.env` files carry no secrets.
@@ -137,12 +147,13 @@ anything changes ("…; the running release is untouched") unless all of this ho
    Tailscale IPv4 (`TAILSCALE_IP`, in `100.64.0.0/10`) and the `ai` and `media` accounts
    (`AI_USER`, `MEDIA_USER`, never root), no other release or status holds the lock, and `/opt/edge/docker-compose.yml` (Traefik, written by
    provisioning) exists.
-2. The bundle is at most 1 MiB, a gzip tar of exactly the 21 expected names, regular files
+2. The bundle is at most 1 MiB, a gzip tar of exactly the 26 expected names, regular files
    only, each at most 256 KiB.
 3. `manifest.sha256` lists exactly those files, and every checksum matches.
 4. Every env file is `KEY=value` lines only; `ghcr.env` sets exactly `GHCR_USERNAME` and
    `GHCR_TOKEN`; `tunnel/tunnel.env` sets exactly `TUNNEL_TOKEN`; `ai/open-webui.env` sets
-   exactly `WEBUI_SECRET_KEY`; `ai/searxng.env` sets exactly `SEARXNG_SECRET`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; `release.env` sets exactly
+   exactly `WEBUI_SECRET_KEY`; `ai/searxng.env` sets exactly `SEARXNG_SECRET`; `media/home-tls.env` sets exactly `CF_DNS_API_TOKEN`; each Beszel and Garage env file sets
+   exactly its keys in the formats of the secrets above; `release.env` sets exactly
    `RELEASE_MODE` and `RELEASE_COMMIT`.
 5. Each app image is `<repo>:latest` in a `latest` release, or `<repo>:<tag>@sha256:<digest>`
    in a `pinned` one, for the repository `/etc/infra/host.env` names.
@@ -151,12 +162,15 @@ anything changes ("…; the running release is untouched") unless all of this ho
    name, container names, volumes and existing networks only (and, where it says so, per
    container: only hypernova's provider joins `llm`); no privileged settings, added
    capabilities, devices, host namespaces or Docker socket; no host port but the tailnet-only
-   ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000, `home` 80), each
+   ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000, `home` 80,
+   `home-tls` 443, `beszel` 8090, `garage` 3900), each
    written exactly `"${TAILSCALE_IP}:<port>:<port>"` and resolved to the address `host.env`
-   names; no bind mount but the media library folders, each in its own container at its fixed
-   path, read-only except Audiobookshelf's audiobooks and podcasts, `create_host_path: false`;
-   a GPU reservation only for `ollama` and `jellyfin`, and only the whole NVIDIA GPU; only the
-   stack's own env file (in `ai`, only `open-webui` reads one; `media` reads none); in `ai` and
+   names; no bind mount but the media library folders, Garage's `/srv/media/s3` and the two
+   folders Beszel's agent sizes disks through, each in its own container at its fixed path,
+   read-only except Audiobookshelf's audiobooks and podcasts and Garage's objects,
+   `create_host_path: false`; a GPU reservation only for `ollama`, `comfyui`, `jellyfin` and
+   `beszel-agent`, and only the whole NVIDIA GPU; only the stack's own env files, each read by
+   its one container; in `ai` and
    `media`, every service is named after its container and runs as `AI_USER` or `MEDIA_USER`
    with a `mem_limit`, `cap_drop: [ALL]` and `no-new-privileges`; third-party images pinned by
    digest; no routing or agent labels on the database, and only `autoheal` on the tunnel, `ai`

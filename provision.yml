@@ -41,6 +41,8 @@
       tags: [watchtower]
     - role: autoheal
       tags: [autoheal]
+    - role: beszel
+      tags: [beszel]
 
   post_tasks:
     - name: Check account access and set the SSH login policy

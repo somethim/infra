@@ -6,7 +6,8 @@ through a **Cloudflare Tunnel** the server dials out to; SSH works only over **T
 provisions the host, runs the edge Traefik proxy and the autonomous agents, and releases every
 stack: the shared `database`, two applications, `portfolio` and `hypernova`, the `tunnel`, and
 for the owner alone, over the tailnet only, `ai` (Ollama, Open WebUI, SearXNG web search and ComfyUI image generation on the GPU) and `media`
-(Jellyfin, Audiobookshelf, Kavita). It also mounts the library and backup disks and backs up
+(Jellyfin, Audiobookshelf, Kavita, the Beszel status dashboard, Garage S3 storage, and a links
+page to all of them). It also mounts the library and backup disks and backs up
 every night.
 
 The app repos (`hypernova`, `portfolio`) are **build-only** — their CI builds images and
@@ -27,7 +28,7 @@ portfolio ─┘  build :latest → GHCR ┘   digest → docker pull + recreate
 
 - **Provisioning** — `provision.yml`, from the owner's laptop, as `admin` with a sudo
   password, over the tailnet. Packages, firewall, accounts, sshd, Tailscale, Docker, the
-  NVIDIA driver and Container Toolkit, power settings, the edge proxy (no published port), Watchtower and autoheal. No secrets. The very
+  NVIDIA driver and Container Toolkit, power settings, the edge proxy (no published port), Watchtower, autoheal and Beszel's socket proxy. No secrets. The very
   first run bootstraps a fresh Ubuntu install over the LAN as the installer's account
   ([RUNBOOK.md](RUNBOOK.md#5-first-provision-over-the-lan)).
 
@@ -62,7 +63,7 @@ build-bundle.sh        deterministic bundle + manifest; refuses unpinned third-p
 release-images.sh      turns rollback targets into digest pins
 ansible.cfg            auto-loaded; points at inventory/hosts, checks host keys
 inventory/             hosts.example only — inventory/hosts is gitignored
-roles/                 common · tailscale · docker · gpu · host · edge · watchtower · autoheal
+roles/                 common · tailscale · docker · gpu · host · edge · watchtower · autoheal · beszel
 roles/common/files/    infra-deploy-gate · infra-apply · infra-compose-guard (the host side of a release)
 stack/                 database · portfolio · hypernova · tunnel · ai · media (compose files and env templates)
 tasks/                 placeholder-guards · provision-checks · ssh-route
@@ -83,5 +84,5 @@ docs/                  why any of it is the way it is
 - [stacks.md](docs/stacks.md) — what is peculiar about each application, and the tailnet-only `ai` and `media` stacks
 - [edge.md](docs/edge.md) — the Cloudflare Tunnel, Traefik, its socket proxy, client IPs, routing conventions
 - [host.md](docs/host.md) — Tailscale-only SSH, accounts and the LAN bootstrap, sshd, firewall, fail2ban, patching, power, Docker, the GPU, the disks
-- [agents.md](docs/agents.md) — Watchtower, autoheal, the prune timer, re-pinning images
+- [agents.md](docs/agents.md) — Watchtower, autoheal, Beszel's socket proxy, the prune timer, re-pinning images
 - [operations.md](docs/operations.md) — short recipes outside the runbook, the nightly backup

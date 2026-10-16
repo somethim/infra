@@ -171,6 +171,28 @@
   loop: "{{ media_libraries }}"
   when: media_writable
 
+# Garage's objects: the media account's alone (its metadata is in the
+# garage-meta volume on the SSD). Nobody browses this folder; S3 clients do.
+- name: Create Garage's object folder, private to the media account
+  ansible.builtin.file:
+    path: "{{ media_root }}/s3"
+    state: directory
+    owner: "{{ media_uid }}"
+    group: "{{ media_gid }}"
+    mode: "0700"
+  when: media_writable
+
+# Beszel's agent reads the media disk's size through this empty folder (bound
+# read-only), so it sees none of the library.
+- name: Create the empty folder Beszel's agent sizes the media disk through
+  ansible.builtin.file:
+    path: "{{ media_root }}/.beszel"
+    state: directory
+    owner: root
+    group: root
+    mode: "0555"
+  when: media_writable
+
 - name: Keep the backup disk root-only
   ansible.builtin.file:
     path: "{{ item }}"
