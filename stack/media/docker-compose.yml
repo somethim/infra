@@ -942,6 +942,16 @@ services:
       SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_ADMIN: "false"
       SFTPGO_HTTPD__BINDINGS__0__ENABLE_REST_API: "false"
       SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_CLIENT: "true"
+      # home-tls (on the media network) forwards https; trusting its
+      # X-Forwarded-Proto gives the session cookie the Secure flag there.
+      # Tailnet clients on 8091 keep their 100.x source address, outside these.
+      SFTPGO_HTTPD__BINDINGS__0__PROXY_ALLOWED: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+      # Sign-ins last 12 hours, renewed while in use (SFTPGo's maximum: it
+      # ignores more than 720 minutes), and survive closing the browser and a
+      # restart or release: the key that signs them is made once into
+      # sftpgo-data instead of being regenerated at every start.
+      SFTPGO_HTTPD__COOKIE_LIFETIME: "720"
+      SFTPGO_HTTPD__SIGNING_PASSPHRASE_FILE: /var/lib/sftpgo/web-signing.key
       SFTPGO_HTTPD__BACKUPS_PATH: /var/lib/sftpgo/backups
       SFTPGO_WEBDAVD__BINDINGS__0__PORT: "8092"
       SFTPGO_WEBDAVD__BINDINGS__0__PREFIX: /dav
@@ -959,6 +969,9 @@ services:
         # exists. The admin UI and REST API are off, so nobody can use this
         # one; its password is new random at every start and never kept.
         admin_password="$$(tr -dc A-Za-z0-9 </dev/urandom | head -c 40)"
+        # The session signing key: made once, kept in sftpgo-data, never printed.
+        key=/var/lib/sftpgo/web-signing.key
+        [ -s "$$key" ] || (umask 077 && tr -dc A-Za-z0-9 </dev/urandom | head -c 64 >"$$key")
         printf '{"admins":[{"username":"admin","status":1,"password":"%s","permissions":["*"]}],"users":[{"username":"owner","status":1,"password":"%s","home_dir":"/var/lib/sftpgo/owner","permissions":{"/":["*"]},"filesystem":{"provider":1,"s3config":{"bucket":"files","region":"garage","endpoint":"http://garage:3900","force_path_style":true,"access_key":"%s","access_secret":{"status":"Plain","payload":"%s"}}}}]}' \
           "$$admin_password" "$$FILES_PASSWORD" "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY" >/tmp/owner.json
     command: [sh, -c, "printf '%s' \"$$OWNER_JSON_SH\" >/tmp/owner.sh && sh /tmp/owner.sh && exec sftpgo serve"]

@@ -1094,7 +1094,9 @@ in the dashboard; they live in `beszel-data`, which the nightly backup copies.
 
 **The file manager.** `https://files.home.arbikullakshi.com/web/client` (the Files tile) is SFTPGo's web
 client on the `files` bucket: upload (drag and drop), folders, rename, move, delete, preview,
-download, and share links. Sign in as `owner` with `FILES_PASSWORD`:
+download, and share links. Sign in as `owner` with `FILES_PASSWORD`. A sign-in lasts 12 hours,
+renewed while you use it (SFTPGo allows no longer), and survives closing the browser and
+releases; signing out, or 12 hours without opening the page, ends it:
 
 ```bash
 op item get "infra production secrets" --vault Personal --fields label=FILES_PASSWORD --reveal
@@ -1112,8 +1114,8 @@ Everything is code: `sftpgo` loads its user from the compose file on every start
 or updated to match), so the password follows `FILES_PASSWORD` and the storage is always the
 `files` bucket with the owner's S3 key. SFTP, FTP, the admin web UI and the REST API are off; an
 admin account exists only because SFTPGo requires one, with a random password made new at every
-start. Share links and sessions live in `sftpgo-data`, which the nightly backup copies (SFTPGo
-stopped). `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
+start. Share links, sessions and the key that signs them (`web-signing.key`, made once) live in
+`sftpgo-data`, which the nightly backup copies (SFTPGo stopped). `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
 
 **Straight to S3.** Garage at `https://s3.home.arbikullakshi.com` (or `http://infra-host:3900`): S3-compatible storage, region `garage`, path-style
 addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).

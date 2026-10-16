@@ -288,6 +288,14 @@ page until an admin exists, so the same file adds one with a fresh random passwo
 start; the admin web UI and the REST API are off, so nobody can use it. SFTP and FTP are off. It
 starts after `garage-setup` has created the bucket and imported the key.
 
+Sessions: `SFTPGO_HTTPD__COOKIE_LIFETIME=720` is SFTPGo's maximum (it ignores more than 720
+minutes), renewed once half has passed, so a sign-in lasts 12 hours from the last visit. The
+cookie has `Expires`/`Max-Age` (it outlives the browser), `HttpOnly`, `SameSite=Strict`, and
+`Secure` under https: `PROXY_ALLOWED` (the private ranges Docker networks use) makes SFTPGo trust
+`home-tls`'s `X-Forwarded-Proto`; a tailnet client on 8091 keeps its 100.x address and is not
+trusted. `SFTPGO_HTTPD__SIGNING_PASSPHRASE_FILE` is `web-signing.key` in `sftpgo-data`, made once
+by `OWNER_JSON_SH`, so a restart or release no longer signs everyone out.
+
 **Immich** (v3.2.4: `immich-server`, `immich-machine-learning`, `immich-postgres`,
 `immich-valkey`, and the one-shot `immich-admin`) is the photo library, a self-hosted Google
 Photos: a timeline, albums, a map, face recognition and smart search, and phone apps that back
