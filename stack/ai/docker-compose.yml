@@ -126,6 +126,9 @@ services:
       # dropped at the next start. Change a setting here and release.
       ENABLE_PERSISTENT_CONFIG: "false"
       WEBUI_AUTH: "true"
+      # Its public address: home-tls serves it there over https on the
+      # Tailscale address (links in mail, the PWA, the OAuth-less login redirect).
+      WEBUI_URL: "https://${HOST_AI}"
       # The owner's account exists; nobody else may sign up. A sign-up that
       # got through anyway would wait as "pending" for the admin's approval.
       ENABLE_SIGNUP: "false"

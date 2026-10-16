@@ -183,11 +183,15 @@ for secret in "${secrets[@]}"; do
   [ "$found" = "$want" ] || { echo "FAIL a secret is in '$found', expected only '$want'"; exit 1; }
 done
 for file in portfolio/.env hypernova/.env ai/.env media/.env; do
-  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODELS|MEDIA_UID|MEDIA_GID|HOME_DOMAIN|ACME_EMAIL|STATUS_OWNER_EMAIL)=' "$work/good/$file"; then
+  if grep -vqE '^(PORTFOLIO_IMAGE|PROVIDER_IMAGE|WEB_IMAGE|APEX_DOMAIN|WWW_DOMAIN|WEB_DOMAIN|AI_UID|AI_GID|OLLAMA_MODELS|MEDIA_UID|MEDIA_GID|HOME_DOMAIN|HOST_[A-Z0-9]+|ACME_EMAIL|STATUS_OWNER_EMAIL)=' "$work/good/$file"; then
     cat "$work/good/$file"; echo "FAIL $file holds more than image references, domains, the service accounts, the models and the contact addresses"; exit 1
   fi
 done
 grep -qx 'OLLAMA_MODELS=qwen3:4b qwen2.5-coder:14b qwen3:14b' "$work/good/ai/.env" || { echo "FAIL ai/.env does not list production.yml's ollama_models"; exit 1; }
+grep -qx 'HOST_AI=ai.home.arbikullakshi.com' "$work/good/ai/.env" || { cat "$work/good/ai/.env"; echo "FAIL ai/.env does not name Open WebUI's https host from production.yml's home_hosts"; exit 1; }
+for want in HOST_AI=ai HOST_PHOTOS=photos HOST_JELLYFIN=jellyfin HOST_AUDIOBOOKS=audiobooks HOST_BOOKS=books HOST_FILES=files HOST_STATUS=status HOST_S3=s3; do
+  grep -qx "$want.home.arbikullakshi.com" "$work/good/media/.env" || { cat "$work/good/media/.env"; echo "FAIL media/.env lacks $want.home.arbikullakshi.com"; exit 1; }
+done
 grep -qx 'OLLAMA_MODEL=qwen3:4b' "$work/good/hypernova/provider.env" || { echo "FAIL hypernova's provider does not ask for production.yml's hypernova_ollama_model"; exit 1; }
 grep -qx 'OLLAMA_HOST=http://ollama:11434' "$work/good/hypernova/provider.env" || { echo "FAIL hypernova's provider does not reach Ollama on llm"; exit 1; }
 echo "ok   bundle: each secret is only in the env file of the container that reads it"
@@ -241,6 +245,12 @@ render_refused "a tunnel token that is not one Cloudflare issues" '.cf_tunnel_to
 render_refused "no Open WebUI key" 'del(.webui_secret_key)'
 render_refused "a short Open WebUI key" '.webui_secret_key = "short"'
 render_refused "no Cloudflare DNS token for home-tls" 'del(.home_tls_cf_dns_token)'
+render_refused "home_hosts without the S3 name" '.home_hosts = {"ai": "ai", "photos": "photos", "jellyfin": "jellyfin", "audiobooks": "audiobooks", "books": "books", "files": "files", "status": "status"}'
+grep -q "home_hosts must map exactly" "$work/build.log" || { cat "$work/build.log"; echo "FAIL home_hosts without s3 was refused for another reason"; exit 1; }
+render_refused "two services sharing one https name" '.home_hosts = {"ai": "ai", "photos": "ai", "jellyfin": "jellyfin", "audiobooks": "audiobooks", "books": "books", "files": "files", "status": "status", "s3": "s3"}'
+grep -q "home_hosts must map exactly" "$work/build.log" || { cat "$work/build.log"; echo "FAIL a shared https name was refused for another reason"; exit 1; }
+render_refused "an https name with a dot" '.home_hosts = {"ai": "a.i", "photos": "photos", "jellyfin": "jellyfin", "audiobooks": "audiobooks", "books": "books", "files": "files", "status": "status", "s3": "s3"}'
+grep -q "home_hosts must map exactly" "$work/build.log" || { cat "$work/build.log"; echo "FAIL a dotted label was refused for another reason"; exit 1; }
 render_refused "a Cloudflare DNS token that is too short" '.home_tls_cf_dns_token = "short"'
 render_refused "no SearXNG key" 'del(.searxng_secret)'
 render_refused "a short SearXNG key" '.searxng_secret = "short"'
@@ -308,8 +318,10 @@ done
 [ "$(grep -c '^curl \(route\|ready\) ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
 [ "$(grep -c '^curl public ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL the public check asked other than the four routes and the http redirect"; exit 1; }
 grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 immich-server:2283 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
-grep -qxF "curl tls home.arbikullakshi.com:443:$tailscale_ip https://home.arbikullakshi.com/" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not ask home-tls by name on the tailnet address"; exit 1; }
-grep -qF "infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on $tailscale_ip" "$work/out" || { cat "$work/out"; echo "FAIL verify did not report home-tls's certificate"; exit 1; }
+for name in home ai.home photos.home jellyfin.home audiobooks.home books.home files.home status.home s3.home; do
+  grep -qxF "curl tls $name.arbikullakshi.com:443:$tailscale_ip https://$name.arbikullakshi.com/" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not ask home-tls for $name.arbikullakshi.com on the tailnet address"; exit 1; }
+done
+grep -qF "infra-apply: home-tls serves https with a trusted certificate on $tailscale_ip for home.arbikullakshi.com ai.home.arbikullakshi.com photos.home.arbikullakshi.com jellyfin.home.arbikullakshi.com audiobooks.home.arbikullakshi.com books.home.arbikullakshi.com files.home.arbikullakshi.com status.home.arbikullakshi.com s3.home.arbikullakshi.com" "$work/out" || { cat "$work/out"; echo "FAIL verify did not report home-tls's certificate for every name"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
 printf '%s\n' "portfolio=$portfolio_repo@$(d 11)" "prizm-provider=$provider_repo@$(d 21)" "prizm-web=$web_repo@$(d 31)" |
   cmp -s - "$state/stack/current/running-images.env" || { cat "$state/stack/current/running-images.env"; echo "FAIL running-images.env does not record the running digests"; exit 1; }
@@ -411,13 +423,30 @@ echo "ok   the public check requires each route's status through Cloudflare, aft
 new_state
 printf '000' >"$state/curl.tls.home.arbikullakshi.com"
 echo 60 >"$state/curl.tls.home.arbikullakshi.com.rc"
-expect_refused "home-tls without a trusted certificate" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 000, expected 200 with a trusted certificate \\(000: no certificate yet: HOME_TLS_CF_DNS_TOKEN" "$work/good.tgz" release
+expect_refused "home-tls without a trusted certificate" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 000, expected 200 with a trusted certificate \\(000: no certificate for it yet: HOME_TLS_CF_DNS_TOKEN" "$work/good.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release whose links page has no certificate was marked verified"; exit 1; }
 grep -q '^curl public ' "$state/calls" && { echo "FAIL the public hosts were asked before home-tls had its certificate"; exit 1; }
 
 new_state
 printf '502' >"$state/curl.tls.home.arbikullakshi.com"
 expect_refused "home-tls that cannot reach the links page" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 502" "$work/good.tgz" release
+
+new_state
+printf '502' >"$state/curl.tls.photos.home.arbikullakshi.com"
+expect_refused "home-tls that cannot reach Immich" "https://photos\\.home\\.arbikullakshi\\.com/ on $tailscale_ip answered 502, expected 2xx, 3xx, 401 or 403 with a trusted certificate" "$work/good.tgz" release
+
+new_state
+printf '404' >"$state/curl.tls.home.arbikullakshi.com"
+expect_refused "the links page answering 404" "https://home\\.arbikullakshi\\.com/ on $tailscale_ip answered 404" "$work/good.tgz" release
+
+new_state
+printf '404' >"$state/curl.tls.books.home.arbikullakshi.com"
+expect_refused "a service name home-tls has no route for" "https://books\\.home\\.arbikullakshi\\.com/ on $tailscale_ip answered 404, expected 2xx, 3xx, 401 or 403" "$work/good.tgz" release
+
+new_state
+printf '403' >"$state/curl.tls.s3.home.arbikullakshi.com"
+printf '302' >"$state/curl.tls.files.home.arbikullakshi.com"
+expect_ok "S3 refusing an unsigned request and the file manager redirecting to its login count as routed" "home-tls serves https with a trusted certificate" "$work/good.tgz" release
 echo "ok   verify requires https://home.arbikullakshi.com/ with a trusted certificate on the Tailscale address"
 
 new_state
@@ -750,8 +779,9 @@ compose_case "the podcasts folder in Kavita" media 'service kavita has a "bind" 
 compose_case "the host's /etc in Audiobookshelf" media 'service audiobookshelf has a "bind" mount of "/etc"' "text = text.replace('        source: /srv/media/podcasts\n', '        source: /etc\n')"
 compose_case "Kavita as root" media 'service kavita runs as "0:0"; it must run as 2000:2000' "text = text.replace('    container_name: kavita\n    user: \"\${MEDIA_UID}:\${MEDIA_GID}\"\n', '    container_name: kavita\n    user: \"0:0\"\n')"
 compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only beszel-agent, comfyui, immich-machine-learning, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
-compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) beszel-socket and immich and media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
+compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) ai and beszel-socket and immich and media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
 compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
+compose_case "Jellyfin on the ai network" media 'service jellyfin joins ai; jellyfin may only join media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - ai\n    labels:', 1)"
 compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read home-tls.env' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
 compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack beszel, beszel-agent, beszel-pair, garage, garage-setup, home-tls, immich-admin, immich-postgres, immich-server, sftpgo may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
 # The guard on its own, against the resolved models of the checked-in stacks.

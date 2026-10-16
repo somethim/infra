@@ -159,7 +159,7 @@ services:
     labels:
       - autoheal=true
 
-  # The links page: http://infra-host/ shows Open WebUI, Immich, the three
+  # The links page: https://home.<domain> (and http://infra-host/) shows Open WebUI, Immich, the three
   # services above, the file manager and the status dashboard as seven tiles
   # (two columns, the last across the bottom row), so nobody has to remember a port; /files.html lists the other ways
   # into the files bucket (WebDAV, rclone, S3 apps). busybox
@@ -186,9 +186,11 @@ services:
     ports:
       - "${TAILSCALE_IP}:80:80"
     environment:
-      # The tiles always link to http://infra-host:<port>: under
-      # home.arbikullakshi.com the apex's HSTS (includeSubDomains) would turn a
-      # link built from the page's own name into https, which the apps do not serve.
+      # The tiles link to each service's https name (<label>.<home domain>,
+      # production.yml's home_hosts), which home-tls serves with a trusted
+      # certificate on the Tailscale address: browsers allow the clipboard,
+      # microphone and installable apps only over https, and the apex's HSTS
+      # (includeSubDomains) rules out plain http under home.<domain> anyway.
       HOME_HTML: |
         <!doctype html>
         <html lang="en">
@@ -223,31 +225,31 @@ services:
         </head>
         <body>
         <main>
-        <a data-port="8080" href="http://infra-host:8080" style="--c: #10a37f">
+        <a href="https://${HOST_AI}" style="--c: #10a37f">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>
           <b>Open WebUI</b><span>AI chat</span>
         </a>
-        <a data-port="2283" href="http://infra-host:2283" style="--c: #4250af">
+        <a href="https://${HOST_PHOTOS}" style="--c: #4250af">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
           <b>Photos</b><span>Immich</span>
         </a>
-        <a data-port="8096" href="http://infra-host:8096" style="--c: #7c5cff">
+        <a href="https://${HOST_JELLYFIN}" style="--c: #7c5cff">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/></svg>
           <b>Jellyfin</b><span>Films &amp; shows</span>
         </a>
-        <a data-port="13378" href="http://infra-host:13378" style="--c: #e0892b">
+        <a href="https://${HOST_AUDIOBOOKS}" style="--c: #e0892b">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="5" height="7" rx="1.5"/><rect x="16" y="14" width="5" height="7" rx="1.5"/></svg>
           <b>Audiobookshelf</b><span>Audiobooks &amp; podcasts</span>
         </a>
-        <a data-port="5000" href="http://infra-host:5000" style="--c: #2b8be0">
+        <a href="https://${HOST_BOOKS}" style="--c: #2b8be0">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10 5 7 4.5 3 5v13c4-.5 7 0 9 1.5 2-1.5 5-2 9-1.5V5c-4-.5-7 0-9 1.5z"/><path d="M12 6.5v13"/></svg>
           <b>Kavita</b><span>Books</span>
         </a>
-        <a data-port="8091" href="http://infra-host:8091/web/client" style="--c: #c9a227">
+        <a href="https://${HOST_FILES}/web/client" style="--c: #c9a227">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
           <b>Files</b><span>Upload, browse &amp; share</span>
         </a>
-        <a data-port="8090" href="http://infra-host:8090" style="--c: #e0457b">
+        <a href="https://${HOST_STATUS}" style="--c: #e0457b">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></svg>
           <b>Status</b><span>Server &amp; containers</span>
         </a>
@@ -255,7 +257,7 @@ services:
         </body>
         </html>
       # The other ways into the files bucket, besides the web file manager
-      # (sftpgo, http://infra-host:8091): WebDAV, rclone and S3 apps.
+      # (sftpgo, https://files.<home domain>): WebDAV, rclone and S3 apps.
       FILES_HTML: |
         <!doctype html>
         <html lang="en">
@@ -287,19 +289,19 @@ services:
         <p><a href="/">&larr; Home</a></p>
         <h1>Files</h1>
         <p>Your files live in the <b>files</b> bucket on the server, reachable over Tailscale only. The easiest way in is the
-        <a href="http://infra-host:8091/web/client">file manager</a> (upload, folders, preview, share links). These are the other ways in.</p>
+        <a href="https://${HOST_FILES}/web/client">file manager</a> (upload, folders, preview, share links). These are the other ways in.</p>
         <section>
         <h2>Mount it as a drive (WebDAV)</h2>
         <ul>
-        <li><b>Address:</b> https://${HOME_DOMAIN}/dav</li>
+        <li><b>Address:</b> https://${HOST_FILES}/dav</li>
         <li><b>User:</b> owner &middot; <b>Password:</b> 1Password, &ldquo;infra production secrets&rdquo;, field FILES_PASSWORD</li>
-        <li><b>Linux file manager:</b> Other Locations &rarr; <b>davs://${HOME_DOMAIN}/dav</b></li>
+        <li><b>Linux file manager:</b> Other Locations &rarr; <b>davs://${HOST_FILES}/dav</b></li>
         <li><b>Android:</b> a WebDAV-capable file manager (Material Files, Solid Explorer&hellip;) with the address above</li>
         </ul>
         </section>
         <section>
         <h2>rclone (laptop)</h2>
-        <pre>rclone config create home s3 provider=Other endpoint=http://infra-host:3900 \
+        <pre>rclone config create home s3 provider=Other endpoint=https://${HOST_S3} \
           region=garage force_path_style=true \
           access_key_id="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
           secret_access_key="$$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
@@ -308,7 +310,7 @@ services:
         </section>
         <section>
         <h2>S3 apps</h2>
-        <p>Any S3 client works (Cyberduck, S3 Files, FolderSync&hellip;): choose <b>Amazon S3 / S3-compatible</b>, server <b>infra-host</b>, port <b>3900</b>, <b>no TLS</b> (Tailscale encrypts the traffic), path-style addressing, region <b>garage</b>, and the key in 1Password (GARAGE_OWNER_ACCESS_KEY_ID and GARAGE_OWNER_SECRET_KEY).</p>
+        <p>Any S3 client works (Cyberduck, S3 Files, FolderSync&hellip;): choose <b>Amazon S3 / S3-compatible</b>, server <b>${HOST_S3}</b>, port <b>443</b> with <b>TLS</b>, path-style addressing, region <b>garage</b>, and the key in 1Password (GARAGE_OWNER_ACCESS_KEY_ID and GARAGE_OWNER_SECRET_KEY).</p>
         </section>
         </main>
         </body>
@@ -324,10 +326,15 @@ services:
     labels:
       - autoheal=true
 
-  # https://home.arbikullakshi.com: the apex sends HSTS with includeSubDomains,
-  # so browsers only open home. over https. A second Traefik (the edge image)
-  # terminates TLS on the Tailscale address and proxies to home:80 over the
-  # media network. Its certificate comes from Let's Encrypt by DNS-01 through
+  # https://home.arbikullakshi.com and one https name per tailnet service under
+  # it (<label>.home.arbikullakshi.com, production.yml's home_hosts): the apex
+  # sends HSTS with includeSubDomains, so browsers open these names over https
+  # only, and the apps' clipboard, microphone and install features need https
+  # anyway. A second Traefik (the edge image) terminates TLS on the Tailscale
+  # address and routes each name to its container over the media network (and
+  # the ai network, for open-webui alone): no buffering, no compression, no
+  # read or write deadline, so big uploads and streams pass. One certificate
+  # covers home.<domain> and *.home.<domain>; it comes from Let's Encrypt by DNS-01 through
   # Cloudflare's API (home-tls.env: a token that may edit only this zone's DNS),
   # so nothing on the internet has to reach the host. No Docker socket: the
   # static and dynamic configuration are written to tmpfs from the variables
@@ -365,6 +372,15 @@ services:
             http:
               # Drop headers that alias one Traefik sets (X_Forwarded_For).
               aliasHeadersStrategy: delete
+            transport:
+              # Large uploads (Immich, the file manager, S3, Jellyfin) and long
+              # streams (websockets, video) must not be cut: no read or write
+              # deadline (Traefik's 60 s read timeout would end a big upload),
+              # and idle keep-alive connections close after 10 minutes.
+              respondingTimeouts:
+                readTimeout: 0s
+                writeTimeout: 0s
+                idleTimeout: 600s
           ping:
             address: "127.0.0.1:8082"
             http:
@@ -393,14 +409,102 @@ services:
               service: home
               tls:
                 certResolver: letsencrypt
-            files-dav:
-              # WebDAV for the files bucket (sftpgo), so a laptop or phone can
-              # mount it as a drive at https://<home domain>/dav.
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            # WebDAV for the files bucket (sftpgo) on the links page's own name,
+            # kept for mounts made before files.<home domain> existed.
+            home-dav:
               rule: "Host(`${HOME_DOMAIN}`) && PathPrefix(`/dav`)"
               entryPoints: [websecure]
               service: files-dav
               tls:
                 certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            ai:
+              rule: "Host(`${HOST_AI}`)"
+              entryPoints: [websecure]
+              service: ai
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            photos:
+              rule: "Host(`${HOST_PHOTOS}`)"
+              entryPoints: [websecure]
+              service: photos
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            jellyfin:
+              rule: "Host(`${HOST_JELLYFIN}`)"
+              entryPoints: [websecure]
+              service: jellyfin
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            audiobooks:
+              rule: "Host(`${HOST_AUDIOBOOKS}`)"
+              entryPoints: [websecure]
+              service: audiobooks
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            books:
+              rule: "Host(`${HOST_BOOKS}`)"
+              entryPoints: [websecure]
+              service: books
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            files:
+              rule: "Host(`${HOST_FILES}`)"
+              entryPoints: [websecure]
+              service: files
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            status:
+              rule: "Host(`${HOST_STATUS}`)"
+              entryPoints: [websecure]
+              service: status
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            s3:
+              rule: "Host(`${HOST_S3}`)"
+              entryPoints: [websecure]
+              service: s3
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
+            # WebDAV under the file manager's own name.
+            files-dav:
+              rule: "Host(`${HOST_FILES}`) && PathPrefix(`/dav`)"
+              entryPoints: [websecure]
+              service: files-dav
+              tls:
+                certResolver: letsencrypt
+                domains:
+                  - main: "${HOME_DOMAIN}"
+                    sans: ["*.${HOME_DOMAIN}"]
           services:
             home:
               loadBalancer:
@@ -410,6 +514,38 @@ services:
               loadBalancer:
                 servers:
                   - url: "http://sftpgo:8092"
+            ai:
+              loadBalancer:
+                servers:
+                  - url: "http://open-webui:8080"
+            photos:
+              loadBalancer:
+                servers:
+                  - url: "http://immich-server:2283"
+            jellyfin:
+              loadBalancer:
+                servers:
+                  - url: "http://jellyfin:8096"
+            audiobooks:
+              loadBalancer:
+                servers:
+                  - url: "http://audiobookshelf:13378"
+            books:
+              loadBalancer:
+                servers:
+                  - url: "http://kavita:5000"
+            files:
+              loadBalancer:
+                servers:
+                  - url: "http://sftpgo:8091"
+            status:
+              loadBalancer:
+                servers:
+                  - url: "http://beszel:8090"
+            s3:
+              loadBalancer:
+                servers:
+                  - url: "http://garage:3900"
     volumes:
       # The ACME account and certificate (acme.json, 0600), so a restart does
       # not ask Let's Encrypt again. Not backed up: a lost one is reissued.
@@ -420,6 +556,8 @@ services:
           nocopy: true
     networks:
       - media
+      # Open WebUI is on the ai stack's network; home-tls joins it only to reach open-webui.
+      - ai
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/ping"]
       interval: 30s
@@ -429,7 +567,7 @@ services:
     labels:
       - autoheal=true
 
-  # Beszel, the status dashboard (http://infra-host:8090): CPU, memory, disks,
+  # Beszel, the status dashboard (https://status.<home domain>, also http://infra-host:8090): CPU, memory, disks,
   # temperatures, the GPU and every container's usage, with history. The hub
   # stores its data in beszel-data. On its first start it creates the owner's
   # login from BESZEL_HUB_USER_EMAIL (.env) and _PASSWORD (beszel.env), so
@@ -449,7 +587,7 @@ services:
     env_file: beszel.env
     environment:
       BESZEL_HUB_USER_EMAIL: "${STATUS_OWNER_EMAIL}"
-      BESZEL_HUB_APP_URL: http://infra-host:8090
+      BESZEL_HUB_APP_URL: "https://${HOST_STATUS}"
       BESZEL_HUB_CHECK_UPDATES: "false"
       GOMEMLIMIT: 160MiB
     ports:
@@ -639,7 +777,7 @@ services:
     networks:
       - media
 
-  # Garage, S3-compatible storage (http://infra-host:3900, region garage,
+  # Garage, S3-compatible storage (https://s3.<home domain> or http://infra-host:3900, region garage,
   # path-style). Objects live on the media disk (/srv/media/s3, the media
   # account's, 0700); the metadata (SQLite) on the SSD in garage-meta. The
   # admin API (3903) and RPC (3901) stay on the media network.
@@ -773,7 +911,7 @@ services:
     networks:
       - media
 
-  # SFTPGo, the file manager for the files bucket (http://infra-host:8091):
+  # SFTPGo, the file manager for the files bucket (https://files.<home domain>, also http://infra-host:8091):
   # a web client to upload (drag and drop), make folders, rename, move,
   # delete, preview, download and share files, and WebDAV for mounting it as
   # a drive, served at https://<home domain>/dav through home-tls
@@ -846,7 +984,7 @@ services:
     labels:
       - autoheal=true
 
-  # Immich, the photo library (http://infra-host:2283; the phone app backs up
+  # Immich, the photo library (https://photos.<home domain>, also http://infra-host:2283; the phone app backs up
   # to it over Tailscale). Four services from the pinned release's own compose
   # file (immich-app/immich v3.2.4: docker-compose.yml and its rootless
   # variant), run the hardened way: the media account, read-only root,
@@ -963,7 +1101,7 @@ services:
           },
           "storageTemplate": {"enabled": true, "template": "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"},
           "newVersionCheck": {"enabled": false},
-          "server": {"externalDomain": "http://infra-host:2283", "publicUsers": false},
+          "server": {"externalDomain": "https://${HOST_PHOTOS}", "publicUsers": false},
           "oauth": {"enabled": false},
           "passwordLogin": {"enabled": true},
           "backup": {"database": {"enabled": true, "cronExpression": "0 1 * * *", "keepLastAmount": 7}}
@@ -1094,6 +1232,10 @@ networks:
   # Created by provisioning (roles/host), internal: Immich's database and queue.
   immich:
     name: immich
+    external: true
+  # The ai stack's network, joined only by home-tls to reach open-webui.
+  ai:
+    name: ai
     external: true
 
 volumes:

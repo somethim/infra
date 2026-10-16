@@ -99,8 +99,10 @@ on every release: the owner configures nothing in the GUI.
   (restart `"no"`). `sudo docker logs ollama-pull` shows each pull and removal.
 - **`open-webui`** is the chat UI, `OLLAMA_BASE_URL=http://ollama:11434`, with its data
   (accounts, chats, presets, its RAG embedding model, downloaded on first use) in the external
-  `open-webui-data` volume. It publishes **8080 on the host's Tailscale address only**
-  ([architecture.md](architecture.md#public-and-tailnet-only)). `WEBUI_AUTH=true`: every page
+  `open-webui-data` volume. Its address is `https://ai.home.arbikullakshi.com` (`WEBUI_URL`,
+  from `home_hosts` in `production.yml`): the media stack's `home-tls` serves it there over
+  https, joining the `ai` network for that alone. It also publishes **8080 on the host's
+  Tailscale address only** ([architecture.md](architecture.md#public-and-tailnet-only)). `WEBUI_AUTH=true`: every page
   needs a login. `ENABLE_PERSISTENT_CONFIG=false`: the environment is the whole configuration,
   read on every start; what the admin panel saves lasts until the next restart, so a setting
   is changed in the compose file and released. Sign-up is off (`ENABLE_SIGNUP=false`; the
@@ -214,8 +216,9 @@ Beszel status dashboard, Garage (S3 storage) with SFTPGo as its file manager, th
 library, for the owner alone, and `home`, a links page
 (`http://infra-host/`) with a tile for each of them and Open WebUI (seven tiles in two columns,
 the last across the bottom row),
-with `home-tls` in front of it for `https://home.arbikullakshi.com/` (and the file manager's
-WebDAV at `/dav`). Like `ai`, nothing here is
+with `home-tls` in front of it and of every service here and Open WebUI, each at its own https
+name (`https://home.arbikullakshi.com/`, `https://photos.home.arbikullakshi.com`, …, from
+`home_hosts` in `production.yml`). Like `ai`, nothing here is
 public: no `edge`, no label for the edge Traefik, never behind the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
 the tailnet is faster: a phone or TV on Tailscale talks to the server directly (or through a
 relay when it must), WireGuard-encrypted.
@@ -273,9 +276,9 @@ the SSD (Garage recommends fast storage for it). Garage's own community web UI i
 release in a year, and it would need the full admin token); `sftpgo` is the interface.
 
 **`sftpgo`** (SFTPGo 2.7, the `-alpine` image) is the file manager on the `files` bucket: its
-web client (`http://infra-host:8091/web/client`, the Files tile) uploads by drag and drop, makes
+web client (`https://files.home.arbikullakshi.com/web/client`, the Files tile) uploads by drag and drop, makes
 folders, renames, moves, deletes, previews, downloads and makes share links, and its WebDAV
-server (8092, on the `media` network only) is published at `https://home.arbikullakshi.com/dav`
+server (8092, on the `media` network only) is published at `https://files.home.arbikullakshi.com/dav` (and, for older mounts, `https://home.arbikullakshi.com/dav`)
 by `home-tls`, with the real certificate, so a laptop or phone mounts the bucket as a drive. Its
 one user, `owner`, is code: at every start `OWNER_JSON_SH` (compose file) writes it to tmpfs and
 SFTPGo loads it with `LOADDATA_MODE=0` (added, or updated to match), with the password from
@@ -288,7 +291,7 @@ starts after `garage-setup` has created the bucket and imported the key.
 **Immich** (v3.2.4: `immich-server`, `immich-machine-learning`, `immich-postgres`,
 `immich-valkey`, and the one-shot `immich-admin`) is the photo library, a self-hosted Google
 Photos: a timeline, albums, a map, face recognition and smart search, and phone apps that back
-up the camera roll (`http://infra-host:2283`, the Photos tile). The four services are exactly
+up the camera roll (`https://photos.home.arbikullakshi.com`, the Photos tile). The four services are exactly
 the images the release's own `docker-compose.yml` names (Immich's PostgreSQL 14 build with the
 VectorChord and pgvecto.rs extensions, not the shared PostgreSQL 18; Valkey 9 by Immich's
 digest), run the way its rootless variant does and then some: the media account, read-only
@@ -303,7 +306,7 @@ Its settings are code: `IMMICH_CONFIG_JSON` in the compose file, written to tmpf
 named by `IMMICH_CONFIG_FILE`, so the admin UI shows them read-only (machine learning on through
 `http://immich-machine-learning:3003` with face recognition, smart search, duplicate detection
 and OCR; the storage template `{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}`; no version check; the
-external domain `http://infra-host:2283`; OAuth off; its own nightly database dump at 01:00,
+external domain `https://photos.home.arbikullakshi.com`; OAuth off; its own nightly database dump at 01:00,
 7 kept, under `/srv/media/photos/backups`). Anything not in that JSON keeps Immich's default.
 `immich-admin` (curl) creates the owner's admin once, after the server is healthy, through the
 admin sign-up API (`status_owner_email`, `IMMICH_ADMIN_PASSWORD`); Immich asks for a new password
@@ -316,16 +319,25 @@ jobs. A big import (a Google Takeout) keeps it busy for hours: chats then run sl
 CPU for that answer. Transcoding of uploaded videos stays on the CPU.
 
 **`home-tls`** is a second Traefik (the edge image and digest) that terminates TLS for
-`home.arbikullakshi.com` and proxies to `home:80` over the `media` network. The apex sends HSTS
-with `includeSubDomains`, so browsers only open `home.` over https. It has no Docker socket: its
+`home.arbikullakshi.com` and every `<label>.home.arbikullakshi.com` and routes each name to its
+container: `home:80` (and `/dav` to `sftpgo:8092`), `ai.` to `open-webui:8080` over the `ai`
+network (which `home-tls` joins for that alone), and `photos.`, `jellyfin.`, `audiobooks.`,
+`books.`, `files.` (with `/dav`), `status.` and `s3.` to Immich, Jellyfin, Audiobookshelf,
+Kavita, SFTPGo, Beszel and Garage over `media`. The apex sends HSTS with `includeSubDomains`, so
+browsers only open these names over https, and the apps' clipboard, microphone and install
+features need https anyway. The entrypoint has no read or write timeout (idle connections close
+after 10 minutes) and no buffering or compression, so multi-gigabyte uploads, video and
+websockets pass. The apps that know their own address are told it: Immich's `externalDomain`,
+Open WebUI's `WEBUI_URL` and Beszel's `APP_URL` are the https names. It has no Docker socket: its
 static and dynamic configuration are `HOME_TLS_STATIC` and `HOME_TLS_DYNAMIC` in the compose file,
-written to tmpfs at start. The certificate comes from Let's Encrypt by DNS-01 through
+written to tmpfs at start. One certificate, for `home.` and `*.home.`, comes from Let's Encrypt by DNS-01 through
 Cloudflare's API with `CF_DNS_API_TOKEN` from `home-tls.env` (the `HOME_TLS_CF_DNS_TOKEN`
 secret, Zone Read and DNS Edit on the zone only), the stack's one secret, which no other
 container reads; nothing on the internet has to reach the host. Port 443 needs no capability
 (Docker lets any user bind low ports inside the container's network namespace), so it runs as
-the media account like the rest. `infra-apply` verify asks `https://home.arbikullakshi.com/`
-pinned to the Tailscale address and requires a trusted certificate.
+the media account like the rest. `infra-apply` verify asks every name over https pinned to the
+Tailscale address and requires a trusted certificate: 200 from the links page, and 2xx, 3xx, 401
+or 403 from each service (a 404 is a missing route, a 502 a container `home-tls` cannot reach).
 
 **The library** is on the internal 1 TB HDD at `/srv/media` ([host.md](host.md#disks)); the
 apps' own databases, artwork and caches are in volumes on the SSD. Each container mounts only
@@ -346,7 +358,8 @@ hide; as a non-root user it cannot write anything root owns in the image anyway.
 its own env file, read by its one container (`home-tls.env`, `beszel.env`, `beszel-pair.env`,
 `beszel-agent.env`, `garage.env`, `garage-setup.env`, `sftpgo.env`, `immich-postgres.env`,
 `immich-server.env`, `immich-admin.env`); `media/.env` holds only the uid and gid,
-the links page's name and ACME contact and the dashboard's login name.
+the links page's name, each service's https name (`HOST_*`), the ACME contact and the
+dashboard's login name.
 
 **GPU.** Jellyfin reserves the GPU like Ollama for NVENC/NVDEC transcodes, and `beszel-agent`
 for reading the GPU's state through NVML, and `immich-machine-learning` for face recognition,

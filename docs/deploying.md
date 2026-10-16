@@ -109,9 +109,9 @@ value.
 | `SERVER_USER` | *(optional)* The forced-command account; defaults to `deploy`. The workflow refuses `root` and `admin` |
 | `PORTFOLIO_GOOGLE_CLIENT_ID` | *(optional)* The client ID half of the Google OAuth pair in the secrets table; a variable, not a secret |
 
-The domains, the app image repositories, the `ai` and `media` accounts' uids and gids, the
-Ollama model and the disks' UUIDs are in [`production.yml`](../production.yml), not in the
-Environment. The tunnel's Public Hostnames are in Cloudflare
+The domains (including `home_hosts`, the tailnet services' https names under `home_domain`),
+the app image repositories, the `ai` and `media` accounts' uids and gids, the Ollama models and
+the disks' UUIDs are in [`production.yml`](../production.yml), not in the Environment. The tunnel's Public Hostnames are in Cloudflare
 ([edge.md](edge.md#why-the-tunnel-is-a-release-stack)).
 
 ## Where each secret lands

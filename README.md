@@ -8,7 +8,7 @@ stack: the shared `database`, two applications, `portfolio` and `hypernova`, the
 for the owner alone, over the tailnet only, `ai` (Ollama, Open WebUI, SearXNG web search and ComfyUI image generation on the GPU) and `media`
 (Jellyfin, Audiobookshelf, Kavita, the Immich photo library, the Beszel status dashboard, Garage
 S3 storage with the SFTPGo file manager on top, and a links
-page to all of them). It also mounts the library and backup disks and backs up
+page to all of them), each at its own https name under `home.arbikullakshi.com` on the tailnet. It also mounts the library and backup disks and backs up
 every night.
 
 The app repos (`hypernova`, `portfolio`) are **build-only** — their CI builds images and

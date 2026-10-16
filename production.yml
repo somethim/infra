@@ -64,12 +64,25 @@ public_ports: []
 apex_domain: arbikullakshi.com
 www_domain: www.arbikullakshi.com
 hypernova_domain: hypernova.arbikullakshi.com
-# The tailnet-only links page's https name: an unproxied A record to the
-# server's Tailscale address (RUNBOOK.md, "The links page"), and the contact
-# Let's Encrypt has for its certificate.
+# The tailnet-only links page's https name, and under it one https name per
+# tailnet service (<label>.<home_domain>), all on one Let's Encrypt
+# certificate (home_domain and *.home_domain) that home-tls serves on the
+# Tailscale address. DNS: unproxied A records home and *.home to the server's
+# Tailscale address (RUNBOOK.md, "The links page"). The keys are fixed (the
+# stacks refer to them); the values are the names' first labels. acme_email
+# is the contact Let's Encrypt has for the certificate.
 home_domain: home.arbikullakshi.com
+home_hosts:
+  ai: ai                  # Open WebUI
+  photos: photos          # Immich
+  jellyfin: jellyfin      # Jellyfin
+  audiobooks: audiobooks  # Audiobookshelf
+  books: books            # Kavita
+  files: files            # SFTPGo, the file manager (and WebDAV at /dav)
+  status: status          # Beszel
+  s3: s3                  # Garage's S3 API (path-style, region garage)
 acme_email: contact@arbikullakshi.com
-# The owner's login on the Beszel status dashboard (http://infra-host:8090);
+# The owner's login on the Beszel status dashboard (https://status.<home_domain>);
 # its password is the BESZEL_PASSWORD secret.
 status_owner_email: contact@arbikullakshi.com
 

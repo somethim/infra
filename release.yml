@@ -136,6 +136,20 @@
           again), and hypernova_ollama_model must be one of them.
         quiet: true
 
+    - name: Require one https name per tailnet service under the links page's name
+      ansible.builtin.assert:
+        that:
+          - home_domain is string and home_domain is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+          - home_hosts is mapping
+          - home_hosts.keys() | sort == ['ai', 'audiobooks', 'books', 'files', 'jellyfin', 'photos', 's3', 'status']
+          - home_hosts.values() | map('string') | select('match', '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$') | list | length == 8
+          - home_hosts.values() | unique | length == 8
+        fail_msg: >-
+          production.yml's home_hosts must map exactly ai, audiobooks, books, files, jellyfin, photos, s3 and
+          status to distinct single DNS labels (each becomes <label>.{{ home_domain }}, covered by the
+          *.{{ home_domain }} certificate), and home_domain must be a DNS name.
+        quiet: true
+
     - name: Require the GPU the ai and media stacks reserve
       ansible.builtin.assert:
         that:

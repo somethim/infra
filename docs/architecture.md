@@ -149,16 +149,21 @@ Two audiences, two ways in, and nothing else:
 | portfolio (`arbikullakshi.com`, `www.`) | anyone | Cloudflare → tunnel → Traefik | the public hostnames |
 | hypernova (`hypernova.arbikullakshi.com`) | anyone | Cloudflare → tunnel → Traefik | the public hostname |
 | SSH | the owner (`admin`), the Deploy workflow (`deploy`) | Tailscale, tcp 22 | `infra-host` |
-| Links page (`stack/media`, `home`, `home-tls`) | the owner | Tailscale, tcp 80 and 443 | `http://infra-host/`, `https://home.arbikullakshi.com/` |
-| Open WebUI (`stack/ai`) | the owner | Tailscale, tcp 8080 | `http://infra-host:8080` |
-| Jellyfin (`stack/media`) | the owner | Tailscale, tcp 8096 | `http://infra-host:8096` |
-| Audiobookshelf (`stack/media`) | the owner | Tailscale, tcp 13378 | `http://infra-host:13378` |
-| Kavita (`stack/media`) | the owner | Tailscale, tcp 5000 | `http://infra-host:5000` |
-| Beszel, the status dashboard (`stack/media`) | the owner | Tailscale, tcp 8090 | `http://infra-host:8090` |
-| Garage, S3 storage (`stack/media`) | the owner | Tailscale, tcp 3900 | `http://infra-host:3900` (S3, region `garage`) |
-| SFTPGo, the file manager on Garage's `files` bucket (`stack/media`) | the owner | Tailscale, tcp 8091; WebDAV through `home-tls` (443) | `http://infra-host:8091/web/client`, `https://home.arbikullakshi.com/dav` |
-| Immich, the photo library (`stack/media`) | the owner (browser and phone app) | Tailscale, tcp 2283 | `http://infra-host:2283` |
+| Links page (`stack/media`, `home`, `home-tls`) | the owner | Tailscale, tcp 443 (and 80) | `https://home.arbikullakshi.com/`, `http://infra-host/` |
+| Open WebUI (`stack/ai`) | the owner | Tailscale, tcp 443 through `home-tls` (and 8080) | `https://ai.home.arbikullakshi.com` |
+| Jellyfin (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 8096) | `https://jellyfin.home.arbikullakshi.com` |
+| Audiobookshelf (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 13378) | `https://audiobooks.home.arbikullakshi.com` |
+| Kavita (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 5000) | `https://books.home.arbikullakshi.com` |
+| Beszel, the status dashboard (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 8090) | `https://status.home.arbikullakshi.com` |
+| Garage, S3 storage (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 3900) | `https://s3.home.arbikullakshi.com` (S3, path-style, region `garage`) |
+| SFTPGo, the file manager on Garage's `files` bucket (`stack/media`) | the owner | Tailscale, tcp 443 through `home-tls` (and 8091) | `https://files.home.arbikullakshi.com/web/client`, WebDAV at `/dav` |
+| Immich, the photo library (`stack/media`) | the owner (browser and phone app) | Tailscale, tcp 443 through `home-tls` (and 2283) | `https://photos.home.arbikullakshi.com` |
 | Ollama, PostgreSQL, Traefik | containers only | Docker networks (`llm`, `data`, `edge`) | none on the host |
+
+Each tailnet service's https name is `<label>.home.arbikullakshi.com` (`home_hosts` in
+`production.yml`), all on one Let's Encrypt certificate for `home.` and `*.home.` that `home-tls`
+serves on the Tailscale address; DNS-only records point both at that address. The plain
+`http://infra-host:<port>` addresses still answer, for apps set up before the names existed.
 
 A tailnet-only service publishes its port on the host's **Tailscale IPv4 alone**
 (`"${TAILSCALE_IP}:<port>:<port>"`, the address provisioning reads with `tailscale ip -4` into

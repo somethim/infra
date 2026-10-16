@@ -602,24 +602,35 @@ check_public() {
   log "Cloudflare serves ${checked[*]}"
 }
 
-# home-tls answers https for the links page's name on the Tailscale address
-# with a certificate curl trusts: Let's Encrypt has issued it through
-# Cloudflare's DNS. Asked by name, pinned to the tailnet address, the way a
-# tailnet browser reaches it.
+# home-tls answers https on the Tailscale address for the links page's name
+# and every tailnet service's name under it (media/.env: HOME_DOMAIN and the
+# HOST_* lines from production.yml's home_hosts), with a certificate curl
+# trusts: Let's Encrypt has issued it through Cloudflare's DNS. Each is asked
+# by name, pinned to the tailnet address, the way a tailnet browser reaches
+# it; the links page must answer 200, a service 2xx, 3xx, 401 or 403 (a login
+# redirect, or 403 from S3 without a key, proves the route reaches the app; a
+# 404 is Traefik without a route).
 check_home_tls() {
-  local release="$1" domain code deadline
-  domain="$(sed -n 's/^HOME_DOMAIN=//p' "$release/media/.env")"
-  [[ "$domain" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected HOME_DOMAIN $(printf '%q' "$domain") in media/.env"
-  deadline=$((SECONDS + home_tls_wait_seconds))
-  while :; do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$domain:443:$tailscale_ip" "https://$domain/" || true)"
-    [ "${code:-000}" != 200 ] || break
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      fail "https://$domain/ on $tailscale_ip answered ${code:-000}, expected 200 with a trusted certificate (000: no certificate yet: HOME_TLS_CF_DNS_TOKEN must be a Cloudflare API token with Zone DNS Edit on the zone, and docker logs home-tls shows Let's Encrypt's answer; 404 or 502: home-tls cannot route to home:80)"
-    fi
-    sleep "$poll_seconds"
+  local release="$1" name code deadline want want_text
+  local -a names checked=()
+  mapfile -t names < <(sed -n -e 's/^HOME_DOMAIN=//p' -e 's/^HOST_[A-Z0-9]*=//p' "$release/media/.env")
+  [ "${#names[@]}" -ge 2 ] || fail "media/.env names no https hosts (HOME_DOMAIN and HOST_* from production.yml's home_hosts)"
+  for name in "${names[@]}"; do
+    [[ "$name" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || fail "unexpected https name $(printf '%q' "$name") in media/.env"
+    want='^(2[0-9][0-9]|3[0-9][0-9]|401|403)$' want_text="2xx, 3xx, 401 or 403"
+    [ "$name" != "${names[0]}" ] || { want='^200$'; want_text=200; }
+    deadline=$((SECONDS + home_tls_wait_seconds))
+    while :; do
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$name:443:$tailscale_ip" "https://$name/" || true)"
+      [[ ! "${code:-000}" =~ $want ]] || break
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        fail "https://$name/ on $tailscale_ip answered ${code:-000}, expected $want_text with a trusted certificate (000: no certificate for it yet: HOME_TLS_CF_DNS_TOKEN must be a Cloudflare API token with Zone DNS Edit on the zone, and docker logs home-tls shows Let's Encrypt's answer; 404: home-tls has no route for the name; 502 or 504: home-tls cannot reach the container behind it)"
+      fi
+      sleep "$poll_seconds"
+    done
+    checked+=("$name")
   done
-  log "https://$domain/ serves the links page with a trusted certificate on $tailscale_ip"
+  log "home-tls serves https with a trusted certificate on $tailscale_ip for ${checked[*]}"
 }
 
 # The one-shots the dashboard and S3 storage depend on finished with exit

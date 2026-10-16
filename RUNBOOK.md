@@ -417,7 +417,7 @@ infra-apply: every container is running and healthy, and has run for at least 30
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
 infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 immich-server:2283 are bound to 100.x.y.z alone
-infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on 100.x.y.z
+infra-apply: home-tls serves https with a trusted certificate on 100.x.y.z for home.arbikullakshi.com ai.home.arbikullakshi.com photos.home.arbikullakshi.com jellyfin.home.arbikullakshi.com audiobooks.home.arbikullakshi.com books.home.arbikullakshi.com files.home.arbikullakshi.com status.home.arbikullakshi.com s3.home.arbikullakshi.com
 infra-apply: beszel-pair garage-setup immich-admin finished: the dashboard's agent is paired, S3 has its layout, the owner's key and the files bucket, and Immich has its admin
 infra-apply: Traefik, Watchtower, autoheal and Beszel's agent reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
@@ -771,17 +771,26 @@ server's Tailscale address, and only by the Tailscale accounts the policy names 
 never goes through the Cloudflare Tunnel. Do the steps in this order; each one says how to
 check it.
 
-| Service | Address (on the tailnet) | Port |
-| --- | --- | --- |
-| Links page (the seven below as tiles) | `https://home.arbikullakshi.com/`, `http://infra-host/` | 443, 80 |
-| Open WebUI | `http://infra-host:8080` | 8080 |
-| Jellyfin | `http://infra-host:8096` | 8096 |
-| Audiobookshelf | `http://infra-host:13378` | 13378 |
-| Kavita | `http://infra-host:5000` | 5000 |
-| Beszel (server status) | `http://infra-host:8090` | 8090 |
-| Files (SFTPGo, the file manager) | `http://infra-host:8091/web/client`; WebDAV at `https://home.arbikullakshi.com/dav` | 8091 (WebDAV through 443) |
-| Photos (Immich) | `http://infra-host:2283`; the phone app with the same address | 2283 |
-| Garage (S3 storage behind Files) | `http://infra-host:3900` (an S3 endpoint for rclone and S3 apps; see `http://infra-host/files.html`) | 3900 |
+Every service has an https name under `home.arbikullakshi.com` with a real certificate, served by
+`home-tls` on the Tailscale address (443). Use these: browsers allow the clipboard, the microphone
+and installing a site as an app only over https. The old `http://infra-host:<port>` addresses
+still work (apps set up with them keep running) and may be retired later.
+
+| Service | Address (on the tailnet) | Also, older | Container port |
+| --- | --- | --- | --- |
+| Links page (the seven below as tiles) | `https://home.arbikullakshi.com/` | `http://infra-host/` | 80 |
+| Open WebUI | `https://ai.home.arbikullakshi.com` | `http://infra-host:8080` | 8080 |
+| Photos (Immich) | `https://photos.home.arbikullakshi.com` (the phone app too) | `http://infra-host:2283` | 2283 |
+| Jellyfin | `https://jellyfin.home.arbikullakshi.com` | `http://infra-host:8096` | 8096 |
+| Audiobookshelf | `https://audiobooks.home.arbikullakshi.com` | `http://infra-host:13378` | 13378 |
+| Kavita | `https://books.home.arbikullakshi.com` | `http://infra-host:5000` | 5000 |
+| Files (SFTPGo, the file manager) | `https://files.home.arbikullakshi.com` (web client at `/web/client`, WebDAV at `/dav`) | `http://infra-host:8091/web/client` | 8091, 8092 |
+| Beszel (server status) | `https://status.home.arbikullakshi.com` | `http://infra-host:8090` | 8090 |
+| Garage (S3 behind Files) | `https://s3.home.arbikullakshi.com` (path-style, region `garage`) | `http://infra-host:3900` | 3900 |
+
+The names come from one map, `home_hosts` in `production.yml` (key: the service; value: the first
+label). Changing a label there changes the tile, the route, the app's own public URL and the
+release check together.
 
 ### Disks
 
@@ -922,7 +931,7 @@ on.
 Right after the release, before anyone else could, from the laptop (on the tailnet). Use a
 password from your password manager for each.
 
-1. **Open WebUI**, `http://infra-host:8080`: **sign up**; the first account becomes the
+1. **Open WebUI**, `https://ai.home.arbikullakshi.com`: **sign up**; the first account becomes the
    admin. Nothing else to set: sign-up, web search, image generation and the presets come from
    `stack/ai/docker-compose.yml` on every start, and the admin panel's changes last only until
    the next restart ([docs/stacks.md](docs/stacks.md#ai)). `ENABLE_SIGNUP=false` still lets
@@ -930,24 +939,24 @@ password from your password manager for each.
    more after signing up: the first run's `webui-presets` found no admin to own the presets.
    The picker shows **Quick** (the default), **MCU Coder**, **Robotics**, **Research** and
    **Image** once `ollama-pull` has fetched their models.
-2. **Jellyfin**, `http://infra-host:8096`: the setup wizard. Create the admin user; add two
+2. **Jellyfin**, `https://jellyfin.home.arbikullakshi.com`: the setup wizard. Create the admin user; add two
    libraries: **Shows** (content type Shows, folder `/media/shows`) and **Movies** (Movies,
    `/media/movies`); leave "Allow remote connections" on (the tailnet is "remote" to Jellyfin)
    and finish. Then **Dashboard → Playback → Transcoding**: Hardware acceleration **NVIDIA
    NVENC**, enable hardware decoding for H.264, HEVC, VC-1, VP9 (the RTX 2060 has no AV1
    decoder), and **Allow encoding in HEVC format**; save. A transcoded film shows the
    `ffmpeg` process in `nvidia-smi` on the server.
-3. **Audiobookshelf**, `http://infra-host:13378`: create the root user. **Settings →
+3. **Audiobookshelf**, `https://audiobooks.home.arbikullakshi.com`: create the root user. **Settings →
    Libraries → Add**: **Audiobooks** (media type Books, folder `/audiobooks`) and **Podcasts**
    (media type Podcasts, folder `/podcasts`).
-4. **Kavita**, `http://infra-host:5000`: create the admin account; **Server settings →
+4. **Kavita**, `https://books.home.arbikullakshi.com`: create the admin account; **Server settings →
    Libraries → Add library**: type Book (or Comic/Manga for those), folder `/books`.
-5. **Beszel**, `http://infra-host:8090`: nothing to set up. Sign in with `status_owner_email`
+5. **Beszel**, `https://status.home.arbikullakshi.com`: nothing to set up. Sign in with `status_owner_email`
    (`production.yml`) and `BESZEL_PASSWORD`; `infra-host` is already listed
    ([The status dashboard](#the-status-dashboard)).
-6. **Files**, `http://infra-host:8091/web/client` (the Files tile): nothing to set up. Sign in as
+6. **Files**, `https://files.home.arbikullakshi.com/web/client` (the Files tile): nothing to set up. Sign in as
    `owner` with `FILES_PASSWORD` ([Files](#files-s3-storage)).
-7. **Photos**, `http://infra-host:2283` (the Photos tile): sign in with `status_owner_email` and
+7. **Photos**, `https://photos.home.arbikullakshi.com` (the Photos tile): sign in with `status_owner_email` and
    `IMMICH_ADMIN_PASSWORD`; Immich asks for a new password straight away (keep it in 1Password)
    and walks through a short onboarding (theme, privacy, storage template: leave its choices,
    the settings are code). Then the phone app and the Google Takeout ([Photos](#photos-immich)).
@@ -960,28 +969,31 @@ Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/aud
 `https://home.arbikullakshi.com/` (or `http://infra-host/`) on any device on the tailnet shows
 seven tiles (two columns on a phone too, Status across the bottom row): Open WebUI, Photos
 (Immich), Jellyfin, Audiobookshelf, Kavita, Files (the file manager; other ways in at
-`http://infra-host/files.html`) and Status (Beszel),
-so nobody has to remember a port; bookmark it or add it to the home screen. The tiles always
-open `http://infra-host:<port>`.
+`https://home.arbikullakshi.com/files.html`) and Status (Beszel), so nobody has to remember an
+address; bookmark it or add it to the home screen. Each tile opens the service's https name
+from the table above.
 
 Two containers in the media stack serve it, each on the Tailscale address only, like the
 others:
 
 - `home` (busybox `httpd`, the page is in `stack/media/docker-compose.yml`) on port 80, for
   `http://infra-host/`.
-- `home-tls` (Traefik, the edge image) on port 443, for `https://home.arbikullakshi.com/`. The
-  apex sends HSTS with `includeSubDomains`, so a browser that has seen arbikullakshi.com only
-  ever opens `home.` over https. `home-tls` gets a Let's Encrypt certificate by the DNS-01
-  challenge through Cloudflare's API, so nothing on the internet has to reach the server, and
-  keeps it in the `home-tls-acme` volume (not backed up: a lost one is simply reissued).
+- `home-tls` (Traefik, the edge image) on port 443, for `https://home.arbikullakshi.com/` and
+  every `<label>.home.arbikullakshi.com`: it routes each name to its container over the media
+  network (and the ai network, for Open WebUI alone), with no read or write timeout, so big
+  uploads and long streams pass. The apex sends HSTS with `includeSubDomains`, so a browser
+  that has seen arbikullakshi.com only ever opens these names over https. `home-tls` gets one
+  Let's Encrypt certificate for `home.arbikullakshi.com` and `*.home.arbikullakshi.com` by the
+  DNS-01 challenge through Cloudflare's API, so nothing on the internet has to reach the server,
+  and keeps it in the `home-tls-acme` volume (not backed up: a lost one is simply reissued).
 
-`home.arbikullakshi.com` is a DNS-only record (grey cloud, not proxied) to the server's
-Tailscale address. Off the tailnet that address leads nowhere, so the record reveals nothing
-usable:
+`home` and `*.home` are DNS-only records (grey cloud, not proxied) to the server's Tailscale
+address. Off the tailnet that address leads nowhere, so the records reveal nothing usable:
 
 ```bash
 Z=b548cd8d33527abe0bc4f3fc106096d1
 cf dns records create -z $Z --body '{"type":"A","name":"home","content":"100.126.107.95","proxied":false,"comment":"tailnet-only links page"}'
+cf dns records create -z $Z --body '{"type":"A","name":"*.home","content":"100.126.107.95","proxied":false,"comment":"tailnet-only service names (home-tls)"}'
 ```
 
 **The certificate's token.** `home-tls` needs a Cloudflare API token that may read the zone and
@@ -1010,8 +1022,11 @@ op item create --category password --vault Personal --title "Cloudflare DNS toke
 A tailnet whose policy predates the page needs `tcp:80` and `tcp:443` added to the admins' grant
 to `tag:infra-server` ([Tailscale grants](#tailscale-grants)); until then the page times out.
 Provisioning opens 443 in ufw and creates the `home-tls-acme` volume, so provision once before
-the release that brings `home-tls`. The release then waits up to 5 minutes for the
-certificate ("serves the links page with a trusted certificate"); a refused token shows in
+the release that brings `home-tls`. The release then asks every name over https on the
+Tailscale address and waits up to 5 minutes each for the certificate ("home-tls serves https
+with a trusted certificate on 100.x.y.z for home.arbikullakshi.com ai.home… s3.home…"): the
+links page must answer 200, a service 2xx, 3xx, 401 or 403 (a 404 means no route, 502 a
+container home-tls cannot reach). A refused token shows in
 `ssh admin@infra-host sudo docker logs home-tls`.
 
 ### The status dashboard and S3 secrets
@@ -1055,7 +1070,7 @@ A release refuses to render without all nine. Then provision (it creates the `be
 
 ### The status dashboard
 
-Beszel at `http://infra-host:8090` (the Status tile): CPU, memory, load, temperatures, the GPU
+Beszel at `https://status.home.arbikullakshi.com` (the Status tile): CPU, memory, load, temperatures, the GPU
 (use, memory, power), the SSD, the media disk and the backup disk, and every container's CPU,
 memory and network, with history. Sign in with `status_owner_email` from `production.yml` and
 `BESZEL_PASSWORD`:
@@ -1077,7 +1092,7 @@ in the dashboard; they live in `beszel-data`, which the nightly backup copies.
 
 ### Files (S3 storage)
 
-**The file manager.** `http://infra-host:8091/web/client` (the Files tile) is SFTPGo's web
+**The file manager.** `https://files.home.arbikullakshi.com/web/client` (the Files tile) is SFTPGo's web
 client on the `files` bucket: upload (drag and drop), folders, rename, move, delete, preview,
 download, and share links. Sign in as `owner` with `FILES_PASSWORD`:
 
@@ -1085,10 +1100,11 @@ download, and share links. Sign in as `owner` with `FILES_PASSWORD`:
 op item get "infra production secrets" --vault Personal --fields label=FILES_PASSWORD --reveal
 ```
 
-**As a drive (WebDAV).** `https://home.arbikullakshi.com/dav` (through `home-tls`, so with the
-real certificate), user `owner`, the same password. On the laptop: Nautilus, Other Locations,
-`davs://home.arbikullakshi.com/dav`, or `rclone config create homedav webdav
-url=https://home.arbikullakshi.com/dav vendor=other user=owner pass="$(rclone obscure "$(op item
+**As a drive (WebDAV).** `https://files.home.arbikullakshi.com/dav` (through `home-tls`, so with
+the real certificate; `https://home.arbikullakshi.com/dav` still works for older mounts), user
+`owner`, the same password. On the laptop: Nautilus, Other Locations,
+`davs://files.home.arbikullakshi.com/dav`, or `rclone config create homedav webdav
+url=https://files.home.arbikullakshi.com/dav vendor=other user=owner pass="$(rclone obscure "$(op item
 get 'infra production secrets' --vault Personal --fields label=FILES_PASSWORD --reveal)")"`. On
 Android: a WebDAV-capable file manager (Material Files, Solid Explorer) with that address.
 
@@ -1099,7 +1115,7 @@ admin account exists only because SFTPGo requires one, with a random password ma
 start. Share links and sessions live in `sftpgo-data`, which the nightly backup copies (SFTPGo
 stopped). `ssh admin@infra-host sudo docker logs sftpgo` shows sign-ins and transfers.
 
-**Straight to S3.** Garage at `http://infra-host:3900`: S3-compatible storage, region `garage`, path-style
+**Straight to S3.** Garage at `https://s3.home.arbikullakshi.com` (or `http://infra-host:3900`): S3-compatible storage, region `garage`, path-style
 addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).
 Objects are on the media disk (`/srv/media/s3`), the metadata on the SSD (`garage-meta`); the
 nightly backup stops Garage, copies `garage-meta` and mirrors `/srv/media/s3`, so the two match.
@@ -1108,7 +1124,7 @@ nightly backup stops Garage, copies `garage-meta` and mirrors `/srv/media/s3`, s
 The key is the one in 1Password; with rclone on the laptop:
 
 ```bash
-rclone config create home s3 provider=Other endpoint=http://infra-host:3900 \
+rclone config create home s3 provider=Other endpoint=https://s3.home.arbikullakshi.com \
   region=garage force_path_style=true \
   access_key_id="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)" \
   secret_access_key="$(op item get 'infra production secrets' --vault Personal --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
@@ -1127,7 +1143,7 @@ need Garage's full admin token); the file manager above is the interface.
 
 ### Photos (Immich)
 
-Immich at `http://infra-host:2283` (the Photos tile) is the photo library: a timeline, albums,
+Immich at `https://photos.home.arbikullakshi.com` (the Photos tile) is the photo library: a timeline, albums,
 a map, people (face recognition) and smart search ("beach at sunset"), on the GPU. The originals
 are on the media disk under `/srv/media/photos/library/<user>/<year>/<year>-<month>-<day>/`,
 its database on the SSD, and both reach the backup disk every night (the database dumped first,
@@ -1141,7 +1157,7 @@ op item get "infra production secrets" --vault Personal --fields label=IMMICH_AD
 ```
 
 **The phone.** Install the Immich app (Play Store, F-Droid or the APK on Immich's GitHub
-release), keep Tailscale on, and enter the server address `http://infra-host:2283`. Sign in, then
+release), keep Tailscale on, and enter the server address `https://photos.home.arbikullakshi.com`. Sign in, then
 **Backup** (the cloud icon) → pick the albums (Camera at least) → **Enable backup**; turn on
 background backup in its settings. Once your photos are in Immich, switch off Google Photos'
 own backup on the phone.
@@ -1168,7 +1184,7 @@ own backup on the phone.
 
    ```bash
    ~/.local/share/immich-go/immich-go upload from-google-photos \
-     --server=http://infra-host:2283 \
+     --server=https://photos.home.arbikullakshi.com \
      --api-key="$(op item get 'Immich API key (immich-go)' --vault Personal --fields label=password --reveal)" \
      --concurrent-tasks=4 --client-timeout=60m --on-errors=continue --session-tag \
      ~/Downloads/takeout/takeout-*.zip
@@ -1206,8 +1222,19 @@ new files on their next scan (or **Scan library** now).
 
 Install Tailscale on the device (App Store / Play Store; Android TV and Apple TV have it too)
 and sign in with the same account as the laptop, so it is one of `autogroup:admin`'s devices.
-Then open `http://infra-host/` (the links page) or the addresses in the table above, or the server's `100.x.y.z` address (`tailscale ip
--4 infra-host` on the laptop) where the app wants an IP: the Jellyfin app (server
-`http://infra-host:8096`), the Audiobookshelf app (`http://infra-host:13378`), Kavita in the
-browser or an OPDS reader, and Open WebUI in the browser. Nothing works from a device that is
-not on the tailnet, by design.
+Then open `https://home.arbikullakshi.com/` (the links page) or the https names in the table
+above. In the apps, use the https names as the server address:
+
+- Immich: `https://photos.home.arbikullakshi.com`
+- Jellyfin: `https://jellyfin.home.arbikullakshi.com`
+- Audiobookshelf: `https://audiobooks.home.arbikullakshi.com`
+- Kavita in the browser, or an OPDS reader with the OPDS link from Kavita's user settings (it
+  starts with `https://books.home.arbikullakshi.com`)
+- Open WebUI in the browser (`https://ai.home.arbikullakshi.com`; add it to the home screen)
+- S3 apps: server `s3.home.arbikullakshi.com`, port 443, TLS on, path-style, region `garage`
+
+The phone resolves these names through public DNS (the records point at the Tailscale address),
+so Tailscale's own DNS setting does not matter. A device that is not on the tailnet gets
+nothing, by design. Apps already set up with `http://infra-host:<port>` keep working; switch them
+when convenient. A TV app that cannot use a name can still use the server's `100.x.y.z` address
+(`tailscale ip -4 infra-host` on the laptop) with the old port.

@@ -90,7 +90,7 @@ through neither sshd nor the tailnet, and takes `admin`'s password.
 ## Firewall
 
 ufw denies inbound by default and allows only **22 and the tailnet-only ports (80, 443, 2283, 3900, 5000, 8080,
-8090, 8091, 8096, 13378) on `tailscale0`** (`ufw_allowed`). There is no public web port (80 and 443 are the tailnet-only links page): the Cloudflare Tunnel is an outbound
+8090, 8091, 8096, 13378) on `tailscale0`** (`ufw_allowed`). There is no public web port (80 and 443 are the tailnet-only links page and `home-tls`, which serves every tailnet service's https name): the Cloudflare Tunnel is an outbound
 connection. Outbound is unrestricted (image pulls,
 Cloudflare, Resend, Tailscale, NTP). The router forwards no port to the host, so even LAN 22
 is unreachable from the internet.
