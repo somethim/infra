@@ -946,6 +946,12 @@ services:
       # X-Forwarded-Proto gives the session cookie the Secure flag there.
       # Tailnet clients on 8091 keep their 100.x source address, outside these.
       SFTPGO_HTTPD__BINDINGS__0__PROXY_ALLOWED: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+      # A sign-in is bound to the client's address. Behind home-tls that must be
+      # the device's (stable) Tailscale address from X-Forwarded-For, not
+      # home-tls's own container address, which changes when a release
+      # recreates it and so signed everyone out.
+      SFTPGO_HTTPD__BINDINGS__0__CLIENT_IP_PROXY_HEADER: X-Forwarded-For
+      SFTPGO_HTTPD__BINDINGS__0__CLIENT_IP_HEADER_DEPTH: "0"
       # Sign-ins last 12 hours, renewed while in use (SFTPGo's maximum: it
       # ignores more than 720 minutes), and survive closing the browser and a
       # restart or release: the key that signs them is made once into
