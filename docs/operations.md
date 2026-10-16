@@ -42,16 +42,40 @@ Old releases need no cleanup: `infra-apply` keeps only `current` and `previous`.
 every night at `backup_time` (02:30 UTC, plus up to 15 minutes of jitter), at least an hour
 before the 04:00 reboot window and clear of the Sunday 03:00 image prune; a night missed while
 the server was off runs at the next boot. It writes only to the external USB disk at
-`/srv/backup`:
+`/srv/backup`, one dated snapshot per night:
 
-| Path | What | Kept |
-| --- | --- | --- |
-| `postgres/<date>.sql.gz` | `pg_dumpall` of the shared PostgreSQL (every role and database), mode 0600 | the newest 14 |
-| `immich/<date>.sql.gz` | `pg_dumpall --clean --if-exists` of Immich's own PostgreSQL (`immich-postgres`), mode 0600, taken before its photos are mirrored; skipped until a release has started Immich | the newest 14 |
-| `apps/<date>/<volume>.tar.gz` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage`, `beszel-data` (the dashboard's history and alerts), `garage-meta` (Garage's configuration and metadata), `sftpgo-data` (the file manager's database: share links, sessions) | the newest 7 |
-| `media/s3/` | an `rsync --delete` mirror of Garage's objects (`/srv/media/s3`), taken while Garage is stopped so it matches that night's `garage-meta` | last night's |
-| `media/{audiobooks,books,podcasts}/` | an `rsync --delete` mirror of those library folders | last night's |
-| `media/photos/` | an `rsync --delete` mirror of Immich's `/srv/media/photos` (originals, profile pictures, Immich's own nightly database dumps in `backups/`), without `thumbs/` and `encoded-video/`, which Immich rebuilds | last night's |
+| Path | What |
+| --- | --- |
+| `snapshots/<date>/postgres.sql.gz` | `pg_dumpall` of the shared PostgreSQL (every role and database), mode 0600 |
+| `snapshots/<date>/immich.sql.gz` | `pg_dumpall --clean --if-exists` of Immich's own PostgreSQL (`immich-postgres`), mode 0600, taken before its photos are copied; skipped until a release has started Immich |
+| `snapshots/<date>/volumes/<volume>/` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage`, `beszel-data` (the dashboard's history and alerts), `garage-meta` (Garage's configuration and metadata), `sftpgo-data` (the file manager's database: share links, sessions), as plain trees |
+| `snapshots/<date>/media/s3/` | Garage's objects (`/srv/media/s3`), copied while Garage is stopped so they match that night's `garage-meta` |
+| `snapshots/<date>/media/{audiobooks,books,podcasts}/` | those library folders |
+| `snapshots/<date>/media/photos/` | Immich's `/srv/media/photos` (originals, profile pictures, Immich's own nightly database dumps in `backups/`), without `thumbs/` and `encoded-video/`, which Immich rebuilds |
+| `snapshots/latest` | a symlink to the newest complete snapshot |
+
+**Snapshots, not a mirror.** Every tree is copied with `rsync --link-dest` against the
+previous complete snapshot: a file that did not change is a hard link to the earlier copy and
+takes no space, so a night costs only what changed (plus the two database dumps). A file
+deleted on the server stays in every older snapshot.
+
+**Retention: about two months.** After a complete snapshot the script keeps the newest 14 and
+the first snapshot of each of the 8 newest ISO weeks (Monday to Sunday), and removes the rest.
+Removing a snapshot frees only the files no other snapshot links to.
+
+**Room on the disk.** Before writing, if less than 10% of the disk is free
+(`INFRA_BACKUP_MIN_FREE_PERCENT`), the oldest snapshots are removed first, but never the newest
+two; if that is still not enough the run fails without writing anything (and without stopping
+any app).
+
+**Only complete snapshots count.** A night is built in `snapshots/.<date>.partial` and becomes
+`snapshots/<date>` (with a `.complete` marker, then the `latest` symlink) only when every step
+succeeded. A failed night's partial is kept for inspection until the next run deletes it; it is
+never linked against.
+
+**From the old layout.** The first snapshot links to the old `media/` mirror instead of copying
+it again; the old `media/` and `apps/` go once a complete snapshot exists, the old `postgres/`
+and `immich/` dumps once 14 snapshots exist.
 
 Not copied: the Ollama models (`ollama-models`; they download again), Immich's ML models
 (`immich-ml-cache`; they download again), Jellyfin's cache volume,
@@ -65,12 +89,12 @@ and the films and series (they would not fit; re-rip them).
   copies, and starts exactly those again, also when a copy fails. They are down for the
   minutes of the copy, in the night. The public sites are never stopped: PostgreSQL is dumped
   live (`pg_dumpall` is consistent), and their file volumes are copied as they are.
-- **No empty mirror over a full one.** A library folder that is missing, or empty while its
-  mirror is not (a disk that did not mount), is refused instead of mirrored; deletions you make
-  on purpose are mirrored the next night.
-- **Every step runs**, and the run fails if any did: a partial dump or app copy is deleted, the
-  earlier ones stay, and `infra-backup-failed.service` logs "the nightly backup FAILED" at
-  error priority. Read it with:
+- **No empty library over a full backup.** A library folder that is missing, or empty while
+  the last snapshot of it is not (a disk that did not mount), fails the night instead of being
+  backed up empty.
+- **Every step runs**, and the run fails if any did: that night makes no snapshot, the earlier
+  ones stay, and `infra-backup-failed.service` logs "the nightly backup FAILED" at error
+  priority. Read it with:
 
   ```bash
   ssh admin@infra-host journalctl -u infra-backup.service --since yesterday
@@ -84,11 +108,11 @@ failure that goes unnoticed longest. Restoring is in
 [RUNBOOK.md](../RUNBOOK.md#restoring-from-the-backup-disk).
 
 The backup disk sits next to the server: it covers a dead SSD or HDD and a bad upgrade, not a
-fire or a burglary. For that, copy `/srv/backup/postgres` and `/srv/backup/apps` off-site now
+fire or a burglary. For that, copy the newest snapshot's dumps and app volumes off-site now
 and then (they are small), for example to the laptop over the tailnet:
 
 ```bash
-ssh admin@infra-host sudo tar -C /srv/backup -czf - postgres apps > infra-backup-$(date +%F).tgz
+ssh admin@infra-host sudo tar -C /srv/backup/snapshots/latest/ -czf - postgres.sql.gz immich.sql.gz volumes > infra-backup-$(date +%F).tgz
 ```
 
 ## A major PostgreSQL upgrade

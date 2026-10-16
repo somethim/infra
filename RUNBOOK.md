@@ -682,45 +682,121 @@ major is a dump and restore, [docs/database.md](docs/database.md#upgrades)) and 
 
 ### Restoring from the backup disk
 
-The external disk holds, under `/srv/backup` (root only): `postgres/<date>.sql.gz` (the newest
-14 nights of `pg_dumpall`), `apps/<date>/<volume>.tar.gz` (the newest 7 nights of the apps'
-own volumes: Jellyfin's config, Audiobookshelf's config and metadata, Kavita's config, Open
-WebUI's data, `portfolio-media`, hypernova's storage, Beszel's history and Garage's metadata)
-and `media/` (a mirror of `audiobooks`, `books`, `podcasts` and Garage's objects `s3` and Immich's `photos`, as of
-the last night), and `immich/<date>.sql.gz` (the newest 14 nights of Immich's own database).
-Movies, shows and the Ollama models are not backed up: re-rip or re-download them. Check last night's run with
+The external disk holds, under `/srv/backup/snapshots/` (root only), one folder per night,
+`<YYYY-MM-DD>/`, and `latest` pointing at the newest:
+
+```
+snapshots/<date>/postgres.sql.gz       pg_dumpall of the shared PostgreSQL
+snapshots/<date>/immich.sql.gz         Immich's own database
+snapshots/<date>/volumes/<volume>/     the apps' volumes as plain trees: jellyfin-config,
+                                       audiobookshelf-config, audiobookshelf-metadata, kavita-config,
+                                       open-webui-data, portfolio-media, hypernova_prizm-storage,
+                                       beszel-data, garage-meta, sftpgo-data
+snapshots/<date>/media/<name>/         audiobooks, books, podcasts, photos (Immich) and s3
+                                       (Garage's objects, the Files bucket)
+```
+
+Kept: the last 14 nights, plus the first night of each of the last 8 weeks, so anything
+deleted within about two months is still in an older snapshot. Unchanged files are hard links
+between snapshots, so each night only costs what changed. Movies, shows and the Ollama models
+are not backed up: re-rip or re-download them. Check last night's run with
 `ssh admin@infra-host journalctl -u infra-backup.service --since yesterday`; a failed one also
-logs "the nightly backup FAILED" at error priority.
+logs "the nightly backup FAILED" at error priority, and its unfinished
+`snapshots/.<date>.partial` stays until the next run.
+
+**Find a file in the snapshots** (books, audiobooks, podcasts and photos are plain files):
+
+```bash
+ssh -t admin@infra-host
+sudo ls /srv/backup/snapshots/
+sudo find /srv/backup/snapshots/*/media/books -iname '*orwell*'
+sudo find /srv/backup/snapshots/*/media/photos/library -name 'IMG_1234*'
+```
+
+**A deleted book, audiobook or podcast episode:** copy it back from a night that still has it:
+
+```bash
+sudo cp -a /srv/backup/snapshots/<date>/media/books/<path> /srv/media/books/<path>
+```
+
+Kavita and Audiobookshelf pick it up at their next scan.
+
+**A deleted photo:** first look in Immich's own trash (it keeps deleted photos for 30 days).
+Past that, copy the original out of a snapshot and upload it again in Immich (web: Upload):
+
+```bash
+sudo find /srv/backup/snapshots/*/media/photos/library -name '<file name>'
+sudo cp /srv/backup/snapshots/<date>/media/photos/library/<...>/<file> /tmp/ && sudo chown admin /tmp/<file>
+scp admin@infra-host:/tmp/<file> .          # from the laptop, then upload it in Immich
+```
+
+**A deleted file from Files (the S3 bucket):** Garage stores objects as hashed blocks, not as
+plain files, so start a throwaway Garage on a copy of that night's metadata and blocks, and copy
+the file out of it with rclone. On the server:
+
+```bash
+d=<date>; s=/srv/backup/snapshots/$d; t=/srv/media/restore-$d
+sudo mkdir -p "$t"
+sudo cp -a "$s/volumes/garage-meta" "$t/meta"     # small; Garage writes to its metadata
+sudo cp -al "$s/media/s3" "$t/data"               # hard links: instant, no extra space
+sudo tee "$t/meta/garage.toml" >/dev/null <<'TOML'
+metadata_dir = "/meta/db"
+data_dir = "/data"
+db_engine = "sqlite"
+replication_factor = 1
+rpc_bind_addr = "127.0.0.1:3911"
+rpc_public_addr = "127.0.0.1:3911"
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "127.0.0.1:3910"
+TOML
+sudo docker run -d --name garage-restore --network host --user "$(sudo stat -c %u:%g "$t/data")" \
+  -e GARAGE_RPC_SECRET="$(openssl rand -hex 32)" -e GARAGE_CONFIG_FILE=/meta/garage.toml \
+  -v "$t/meta:/meta" -v "$t/data:/data" \
+  dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020 /garage server
+```
+
+Then from the laptop, through an SSH tunnel, with the same key as the live bucket (it is in
+that night's metadata):
+
+```bash
+ssh -N -L 3910:127.0.0.1:3910 admin@infra-host &
+k="$(op item get 'infra production secrets' --vault 'Home Server' --fields label=GARAGE_OWNER_ACCESS_KEY_ID --reveal)"
+p="$(op item get 'infra production secrets' --vault 'Home Server' --fields label=GARAGE_OWNER_SECRET_KEY --reveal)"
+old=":s3,provider=Other,endpoint=http://127.0.0.1:3910,region=garage,force_path_style=true,access_key_id=$k,secret_access_key=$p:files"
+rclone ls "$old/<folder>"                                   # find it
+rclone copyto "$old/<folder>/<file>" "home:files/<folder>/<file>"   # back into the live bucket
+unset k p old; kill %1
+```
+
+On the server, throw the copy away: `sudo docker rm -f garage-restore && sudo rm -rf /srv/media/restore-<date>`.
 
 **One app's data** (here Jellyfin; the same for `audiobookshelf-config`,
-`audiobookshelf-metadata`, `kavita-config`, `open-webui-data`): stop its container, empty the
-volume, unpack, start. The volume's root stays the service account's; the tar keeps numeric
-owners.
+`audiobookshelf-metadata`, `kavita-config`, `open-webui-data`, `beszel-data`, `sftpgo-data`):
+stop its container, copy the volume back from a snapshot, start. The trees keep numeric owners.
 
 ```bash
 ssh -t admin@infra-host
 sudo docker stop jellyfin
 v="$(sudo docker volume inspect --format '{{.Mountpoint}}' jellyfin-config)"
-sudo find "$v" -mindepth 1 -delete
-sudo tar -xzpf /srv/backup/apps/<date>/jellyfin-config.tar.gz -C "$v"
+sudo rsync -a --delete --numeric-ids /srv/backup/snapshots/<date>/volumes/jellyfin-config/ "$v/"
 sudo docker start jellyfin
 ```
 
-**Garage's storage** (the S3 `files` bucket): its metadata and objects must come from the same
-night, and the `s3` mirror is always the last night's, so restore the newest `garage-meta`:
+**All of Garage** (the whole `files` bucket as it was that night): its metadata and objects
+must come from the same snapshot:
 
 ```bash
-sudo docker stop garage
+sudo docker stop garage sftpgo
 v="$(sudo docker volume inspect --format '{{.Mountpoint}}' garage-meta)"
-sudo find "$v" -mindepth 1 -delete
-sudo tar -xzpf /srv/backup/apps/<newest date>/garage-meta.tar.gz -C "$v"
-sudo rsync -a --delete /srv/backup/media/s3/ /srv/media/s3/
-sudo docker start garage
+sudo rsync -a --delete --numeric-ids /srv/backup/snapshots/<date>/volumes/garage-meta/ "$v/"
+sudo rsync -a --delete --numeric-ids /srv/backup/snapshots/<date>/media/s3/ /srv/media/s3/
+sudo docker start garage sftpgo
 ```
 
-**Immich** (its database and its photos together): restore the newest dump into an empty
-`immich-pgdata`, then the photos; thumbnails and encoded video rebuild by themselves
-(Administration → Jobs → *Missing*).
+**Immich** (its database and its photos together, from the same snapshot): restore the dump
+into an empty `immich-pgdata`, then the photos; thumbnails and encoded video rebuild by
+themselves (Administration → Jobs → *Missing*).
 
 ```bash
 sudo docker stop immich-server immich-machine-learning
@@ -728,8 +804,8 @@ sudo docker stop immich-postgres
 v="$(sudo docker volume inspect --format '{{.Mountpoint}}' immich-pgdata)"
 sudo find "$v" -mindepth 1 -delete
 sudo docker start immich-postgres    # initdb runs again with IMMICH_DB_PASSWORD; wait until healthy
-gzip -cd /srv/backup/immich/<newest date>.sql.gz | sudo docker exec -i immich-postgres psql -U postgres -d postgres
-sudo rsync -a --delete --exclude=/thumbs/ --exclude=/encoded-video/ /srv/backup/media/photos/ /srv/media/photos/
+gzip -cd /srv/backup/snapshots/<date>/immich.sql.gz | sudo docker exec -i immich-postgres psql -U postgres -d postgres
+sudo rsync -a --delete --numeric-ids --exclude=/thumbs/ --exclude=/encoded-video/ /srv/backup/snapshots/<date>/media/photos/ /srv/media/photos/
 sudo docker start immich-server immich-machine-learning
 ```
 
@@ -739,23 +815,28 @@ app drop its database first, or restore into a fresh `pgdata-v18` after a reinst
 
 ```bash
 sudo docker stop portfolio prizm-provider prizm-web
-gzip -cd /srv/backup/postgres/<date>.sql.gz | sudo docker exec -i postgresql psql -U postgres -d postgres
+gzip -cd /srv/backup/snapshots/<date>/postgres.sql.gz | sudo docker exec -i postgresql psql -U postgres -d postgres
 sudo docker start portfolio prizm-provider prizm-web
 ```
 
-Restore `portfolio-media` from the same night as the dump: the portfolio's `media` table is a
-ledger of that volume ([docs/database.md](docs/database.md#backups)).
+Restore `portfolio-media` from the same snapshot as the dump: the portfolio's `media` table is
+a ledger of that volume ([docs/database.md](docs/database.md#backups)).
 
-**The media mirror**, after replacing the internal disk (format it as in
+**Everything on the media disk**, after replacing the internal disk (format it as in
 [Disks](#disks), put the new UUID in `production.yml`, provision):
 
 ```bash
-sudo rsync -a /srv/backup/media/ /srv/media/      # as root, owners, groups and modes come back as they were
+sudo rsync -a --numeric-ids /srv/backup/snapshots/latest/media/ /srv/media/   # owners, groups and modes come back as they were
 ```
 
 **A new server**: install and provision as in sections 3–9 with the same `production.yml`
 (the backup disk's UUID included), release once so every volume exists, then restore each
-app volume and the database as above.
+app volume, Garage, Immich and the database as above, all from the same snapshot.
+
+**Before snapshots** (backups written before this layout): the first snapshot run deletes the
+old `media/` mirror and `apps/` folder once a complete snapshot exists (it links to the old
+mirror, so nothing is copied twice), and the old `postgres/` and `immich/` dumps once 14
+snapshots exist.
 
 ### More recipes
 
@@ -1133,7 +1214,7 @@ file-list page is not the one the Drive behaviour was written against (a re-pin 
 **Straight to S3.** Garage at `https://s3.home.arbikullakshi.com` (or `http://infra-host:3900`): S3-compatible storage, region `garage`, path-style
 addressing, bucket `files`, over the tailnet only (plain http; Tailscale encrypts the link).
 Objects are on the media disk (`/srv/media/s3`), the metadata on the SSD (`garage-meta`); the
-nightly backup stops Garage, copies `garage-meta` and mirrors `/srv/media/s3`, so the two match.
+nightly backup stops Garage and copies `garage-meta` and `/srv/media/s3` into the same snapshot, so the two match; a file deleted from the bucket stays in older snapshots for about two months.
 `http://infra-host/files.html` (the Files tile) shows the same instructions.
 
 The key is the one in 1Password; with rclone on the laptop:
@@ -1162,7 +1243,7 @@ Immich at `https://photos.home.arbikullakshi.com` (the Photos tile) is the photo
 a map, people (face recognition) and smart search ("beach at sunset"), on the GPU. The originals
 are on the media disk under `/srv/media/photos/library/<user>/<year>/<year>-<month>-<day>/`,
 its database on the SSD, and both reach the backup disk every night (the database dumped first,
-then the photos mirrored without the thumbnails and encoded video Immich can rebuild).
+then the photos copied without the thumbnails and encoded video Immich can rebuild) into a dated snapshot kept for about two months.
 
 **First login**: `status_owner_email` from `production.yml` and the bootstrap password, then a new
 password of your own (Immich insists; keep it in 1Password):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests roles/host/files/infra-backup against a fake docker and mountpoint:
+# Tests roles/host/files/infra-backup against a fake docker, mountpoint and df:
 # every path is a temp dir (INFRA_BACKUP_ROOT, INFRA_BACKUP_MEDIA_ROOT), the
 # volumes are temp dirs the fake `docker volume inspect` names, and tar, gzip
 # and rsync are real. Nothing here touches the local Docker daemon or a disk.
@@ -70,7 +70,20 @@ cat >"$work/bin/rsync" <<SH
 printf 'rsync %s\n' "\${@: -2:1}" >>"\$FAKE_STATE/calls"
 exec "$real_rsync" "\$@"
 SH
-chmod +x "$work/bin/docker" "$work/bin/mountpoint" "$work/bin/rsync"
+# df: state/df.seq lines of "<avail> <size>", one per call (the last one repeats); default plenty free.
+cat >"$work/bin/df" <<'SH'
+#!/usr/bin/env bash
+seq="$FAKE_STATE/df.seq"
+echo "Avail Size"
+if [ -f "$seq" ]; then
+  head -n 1 "$seq"
+  [ "$(wc -l <"$seq")" -le 1 ] || sed -i 1d "$seq"
+else
+  echo "900 1000"
+fi
+SH
+chmod +x "$work/bin/docker" "$work/bin/mountpoint" "$work/bin/rsync" "$work/bin/df"
+
 
 count=0
 state=""
@@ -110,6 +123,7 @@ new_state() {
 }
 
 run_backup() {
+  : >"$state/calls"
   PATH="$work/bin:$PATH" FAKE_STATE="$state" INFRA_BACKUP_ROOT="$state/backup" INFRA_BACKUP_MEDIA_ROOT="$state/media" \
     INFRA_BACKUP_DATE="${1:-2026-10-15}" "$backup" >"$work/out" 2>&1
 }
@@ -128,8 +142,25 @@ expect_failed() {
   grep -qE -- "$want" "$work/out" || { cat "$work/out"; echo "FAIL failed for the wrong reason (wanted '$want'): $name"; exit 1; }
 }
 
-members() {
-  tar -tzf "$1" | sed 's,^\./,,; s,/$,,' | grep . | LC_ALL=C sort
+snap() {
+  printf '%s\n' "$state/backup/snapshots/$1"
+}
+
+inode() {
+  stat -c %i "$1"
+}
+
+latest() {
+  readlink "$state/backup/snapshots/latest"
+}
+
+# fake_snapshot <date> [complete]: a snapshot as an earlier night left it.
+fake_snapshot() {
+  local dir
+  dir="$(snap "$1")"
+  mkdir -p "$dir/media/books"
+  echo "old $1" >"$dir/media/books/old.epub"
+  [ "${2:-complete}" != complete ] || touch "$dir/.complete"
 }
 
 ### No backup disk: nothing is written anywhere
@@ -143,27 +174,26 @@ grep -q "WARNING: .*/backup is not a mountpoint .*: nothing was written" "$work/
 [ -f "$state/running/jellyfin" ] || { echo "FAIL a container was stopped without the backup disk"; exit 1; }
 echo "ok   no backup disk: a warning, exit 0, nothing written, nothing stopped"
 
-### A full run
+### A full run: one complete snapshot
 
 new_state
 expect_ok "a full run"
-dump="$state/backup/postgres/2026-10-15.sql.gz"
-[ -f "$dump" ] || { find "$state/backup"; echo "FAIL no PostgreSQL dump"; exit 1; }
-gzip -cd "$dump" | grep -q "PostgreSQL database cluster dump" || { echo "FAIL the dump is not pg_dumpall's output"; exit 1; }
-[ "$(stat -c %a "$dump")" = 600 ] || { echo "FAIL the dump is not 0600"; exit 1; }
-for dir in "$state/backup" "$state/backup/postgres" "$state/backup/apps" "$state/backup/apps/2026-10-15" "$state/backup/media"; do
+s1="$(snap 2026-10-15)"
+[ -f "$s1/.complete" ] && [ "$(latest)" = 2026-10-15 ] || { find "$state/backup" -maxdepth 2; echo "FAIL no complete snapshot, or latest does not point at it"; exit 1; }
+[ -z "$(find "$state/backup/snapshots" -maxdepth 1 -name '.*partial')" ] || { ls -a "$state/backup/snapshots"; echo "FAIL a partial snapshot was left after a good run"; exit 1; }
+gzip -cd "$s1/postgres.sql.gz" | grep -q "PostgreSQL database cluster dump" || { echo "FAIL the snapshot has no pg_dumpall output"; exit 1; }
+[ "$(stat -c %a "$s1/postgres.sql.gz")" = 600 ] || { echo "FAIL the dump is not 0600"; exit 1; }
+for dir in "$state/backup" "$state/backup/snapshots" "$s1" "$s1/volumes" "$s1/media"; do
   [ "$(stat -c %a "$dir")" = 700 ] || { echo "FAIL $dir is not 0700"; exit 1; }
 done
-echo "ok   PostgreSQL: pg_dumpall to postgres/<date>.sql.gz, 0600, in 0700 directories"
-apps="$state/backup/apps/2026-10-15"
-want_tars="$(printf '%s.tar.gz\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media beszel-data garage-meta sftpgo-data | LC_ALL=C sort)"
-[ "$(find "$apps" -mindepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$want_tars" ] || { find "$apps"; echo "FAIL the app backup does not hold exactly the app volumes"; exit 1; }
+echo "ok   a run writes snapshots/<date> with .complete, latest points at it, dumps 0600 in 0700 directories"
+want_volumes="$(printf '%s\n' audiobookshelf-config audiobookshelf-metadata hypernova_prizm-storage jellyfin-config kavita-config open-webui-data portfolio-media beszel-data garage-meta sftpgo-data | LC_ALL=C sort)"
+[ "$(find "$s1/volumes" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)" = "$want_volumes" ] || { ls "$s1/volumes"; echo "FAIL the snapshot does not hold exactly the app volumes"; exit 1; }
 grep -q 'ollama-models' "$state/calls" && { echo "FAIL the Ollama models were looked at"; exit 1; }
-[ "$(members "$apps/jellyfin-config.tar.gz")" = "$(printf '%s\n' data.db metadata metadata/poster.jpg)" ] || { members "$apps/jellyfin-config.tar.gz"; echo "FAIL jellyfin-config: logs left in, or data missing"; exit 1; }
-[ "$(members "$apps/open-webui-data.tar.gz")" = data.db ] || { members "$apps/open-webui-data.tar.gz"; echo "FAIL open-webui-data: the model cache was copied"; exit 1; }
-[ "$(members "$apps/kavita-config.tar.gz")" = data.db ] || { members "$apps/kavita-config.tar.gz"; echo "FAIL kavita-config: its cache was copied"; exit 1; }
-[ "$(members "$apps/audiobookshelf-metadata.tar.gz")" = data.db ] || { members "$apps/audiobookshelf-metadata.tar.gz"; echo "FAIL audiobookshelf-metadata: its cache was copied"; exit 1; }
-echo "ok   apps: one tar per app volume, caches and logs left out, never the Ollama models"
+[ -f "$s1/volumes/jellyfin-config/metadata/poster.jpg" ] && [ ! -e "$s1/volumes/jellyfin-config/log" ] || { find "$s1/volumes/jellyfin-config"; echo "FAIL jellyfin-config: logs left in, or data missing"; exit 1; }
+[ ! -e "$s1/volumes/open-webui-data/cache" ] && [ ! -e "$s1/volumes/kavita-config/cache" ] && [ ! -e "$s1/volumes/audiobookshelf-metadata/cache" ] ||
+  { echo "FAIL an app cache was copied"; exit 1; }
+echo "ok   apps: one tree per app volume, caches and logs left out, never the Ollama models"
 for name in jellyfin audiobookshelf open-webui beszel garage sftpgo; do
   stop_line="$(grep -n "^stop --time 60 $name$" "$state/calls" | cut -d: -f1)"
   start_line="$(grep -n "^start $name$" "$state/calls" | cut -d: -f1)"
@@ -174,90 +204,151 @@ for name in jellyfin audiobookshelf open-webui beszel garage sftpgo; do
   [ -f "$state/running/$name" ] || { echo "FAIL $name does not run after the backup"; exit 1; }
 done
 grep -q '^start kavita$' "$state/calls" && { echo "FAIL a container that was not running was started"; exit 1; }
-diff -r "$state/media/s3" "$state/backup/media/s3" >/dev/null || { echo "FAIL Garage's objects are not mirrored"; exit 1; }
+diff -r "$state/media/s3" "$s1/media/s3" >/dev/null || { echo "FAIL Garage's objects are not in the snapshot"; exit 1; }
 s3_line="$(grep -n "^rsync $state/media/s3/$" "$state/calls" | cut -d: -f1)"
 [ -n "$s3_line" ] && [ "$s3_line" -gt "$(grep -n '^stop --time 60 garage$' "$state/calls" | cut -d: -f1)" ] &&
   [ "$s3_line" -lt "$(grep -n '^start garage$' "$state/calls" | cut -d: -f1)" ] ||
-  { cat "$state/calls"; echo "FAIL Garage's objects were not mirrored while Garage was stopped"; exit 1; }
-echo "ok   Garage: its metadata volume tarred and its objects mirrored while it is stopped"
-echo "ok   apps: the running app containers are stopped for the copy and started again; a stopped one stays stopped"
+  { cat "$state/calls"; echo "FAIL Garage's objects were not copied while Garage was stopped"; exit 1; }
+echo "ok   Garage: its metadata volume and its objects copied while it is stopped; the apps are started again"
 for name in audiobooks books podcasts; do
-  diff -r "$state/media/$name" "$state/backup/media/$name" >/dev/null || { echo "FAIL $name is not mirrored"; exit 1; }
+  diff -r "$state/media/$name" "$s1/media/$name" >/dev/null || { echo "FAIL $name is not in the snapshot"; exit 1; }
 done
-[ ! -e "$state/backup/media/movies" ] || { echo "FAIL movies were mirrored"; exit 1; }
+[ ! -e "$s1/media/movies" ] || { echo "FAIL movies were copied"; exit 1; }
+gzip -cd "$s1/immich.sql.gz" | grep -q "CREATE TABLE public.asset" && [ "$(stat -c %a "$s1/immich.sql.gz")" = 600 ] || { echo "FAIL no 0600 Immich dump in the snapshot"; exit 1; }
+[ -f "$s1/media/photos/library/admin/2024/2024-05-01/IMG_0001.jpg" ] && [ -f "$s1/media/photos/backups/immich-db-backup.sql.gz" ] &&
+  [ ! -e "$s1/media/photos/thumbs" ] && [ ! -e "$s1/media/photos/encoded-video" ] || { find "$s1/media/photos"; echo "FAIL Immich's photos copied wrong"; exit 1; }
+dump_line="$(grep -n '^exec immich-postgres' "$state/calls" | head -n 1 | cut -d: -f1)"
+photos_line="$(grep -n "^rsync $state/media/photos/$" "$state/calls" | head -n 1 | cut -d: -f1)"
+[ -n "$dump_line" ] && [ -n "$photos_line" ] && [ "$dump_line" -lt "$photos_line" ] || { cat "$state/calls"; echo "FAIL Immich's database was not dumped before its photos were copied"; exit 1; }
+echo "ok   media and Immich: libraries copied (not movies), Immich dumped before its photos, without thumbs and encoded video"
+
+### A second night: hard links for what did not change, deletions stay recoverable
+
 rm "$state/media/podcasts/Show/ep1.mp3"
 echo episode2 >"$state/media/podcasts/Show/ep2.mp3"
 expect_ok "a second night" 2026-10-16
-[ ! -e "$state/backup/media/podcasts/Show/ep1.mp3" ] && [ -f "$state/backup/media/podcasts/Show/ep2.mp3" ] || { echo "FAIL the mirror does not follow deletions"; exit 1; }
-[ -f "$state/backup/postgres/2026-10-15.sql.gz" ] && [ -f "$state/backup/postgres/2026-10-16.sql.gz" ] || { echo "FAIL a second night replaced the first"; exit 1; }
-echo "ok   media: audiobooks, books and podcasts mirrored with --delete, movies and shows not"
-idump="$state/backup/immich/2026-10-15.sql.gz"
-if [ ! -f "$idump" ] || ! gzip -cd "$idump" | grep -q "CREATE TABLE public.asset"; then find "$state/backup"; echo "FAIL no Immich database dump"; exit 1; fi
-[ "$(stat -c %a "$idump")" = 600 ] && [ "$(stat -c %a "$state/backup/immich")" = 700 ] || { echo "FAIL the Immich dump is not 0600 in a 0700 directory"; exit 1; }
-[ -f "$state/backup/media/photos/library/admin/2024/2024-05-01/IMG_0001.jpg" ] && [ -f "$state/backup/media/photos/backups/immich-db-backup.sql.gz" ] ||
-  { find "$state/backup/media/photos"; echo "FAIL Immich's originals or its own dumps are not mirrored"; exit 1; }
-[ ! -e "$state/backup/media/photos/thumbs" ] && [ ! -e "$state/backup/media/photos/encoded-video" ] ||
-  { find "$state/backup/media/photos"; echo "FAIL Immich's thumbnails or encoded video were mirrored"; exit 1; }
-dump_line="$(grep -n '^exec immich-postgres' "$state/calls" | head -n 1 | cut -d: -f1)"
-photos_line="$(grep -n "^rsync $state/media/photos/$" "$state/calls" | head -n 1 | cut -d: -f1)"
-[ -n "$dump_line" ] && [ -n "$photos_line" ] && [ "$dump_line" -lt "$photos_line" ] || { cat "$state/calls"; echo "FAIL Immich's database was not dumped before its photos were mirrored"; exit 1; }
-echo "ok   Immich: its database dumped to immich/<date>.sql.gz before the photos are mirrored without thumbs and encoded video"
+s2="$(snap 2026-10-16)"
+[ "$(latest)" = 2026-10-16 ] || { echo "FAIL latest does not follow the newest snapshot"; exit 1; }
+[ ! -e "$s2/media/podcasts/Show/ep1.mp3" ] && [ -f "$s2/media/podcasts/Show/ep2.mp3" ] || { echo "FAIL the new snapshot does not match the library"; exit 1; }
+[ -f "$s1/media/podcasts/Show/ep1.mp3" ] || { echo "FAIL a deleted file vanished from the earlier snapshot"; exit 1; }
+[ "$(inode "$s1/media/books/novel.epub")" = "$(inode "$s2/media/books/novel.epub")" ] || { echo "FAIL an unchanged media file was copied instead of hard-linked"; exit 1; }
+[ "$(inode "$s1/volumes/beszel-data/data.db")" = "$(inode "$s2/volumes/beszel-data/data.db")" ] || { echo "FAIL an unchanged volume file was copied instead of hard-linked"; exit 1; }
+[ "$(inode "$s1/media/s3/ab/cd/abcdef")" = "$(inode "$s2/media/s3/ab/cd/abcdef")" ] || { echo "FAIL an unchanged S3 object was copied instead of hard-linked"; exit 1; }
+echo "ok   a second night: unchanged files are hard links to the first snapshot; a deleted file is still in the first"
+expect_ok "a second run the same night" 2026-10-16
+[ -f "$(snap 2026-10-16)/.complete" ] && [ "$(inode "$s1/media/books/novel.epub")" = "$(inode "$(snap 2026-10-16)/media/books/novel.epub")" ] ||
+  { echo "FAIL a rerun the same night lost the snapshot or its hard links"; exit 1; }
+echo "ok   a rerun the same night replaces that night's snapshot, still linked"
 
-### Retention
+### A failed night: no snapshot, the partial is never a base and goes next run
 
-new_state
-mkdir -p "$state/backup/postgres" "$state/backup/apps"
-for day in $(seq -w 1 20); do
-  echo old | gzip -c >"$state/backup/postgres/2026-09-$day.sql.gz"
-  mkdir -p "$state/backup/apps/2026-09-$day"
-done
-echo keep >"$state/backup/postgres/notes.txt"
-expect_ok "a run over 20 old nights"
-[ "$(find "$state/backup/postgres" -name '*.sql.gz' | wc -l)" -eq 14 ] || { ls "$state/backup/postgres"; echo "FAIL not exactly 14 dumps kept"; exit 1; }
-[ -f "$state/backup/postgres/2026-10-15.sql.gz" ] && [ -f "$state/backup/postgres/2026-09-08.sql.gz" ] && [ ! -e "$state/backup/postgres/2026-09-07.sql.gz" ] ||
-  { ls "$state/backup/postgres"; echo "FAIL the newest 14 dumps were not the ones kept"; exit 1; }
-[ -f "$state/backup/postgres/notes.txt" ] || { echo "FAIL a file that is not a dump was removed"; exit 1; }
-[ "$(find "$state/backup/apps" -mindepth 1 -maxdepth 1 | wc -l)" -eq 7 ] || { ls "$state/backup/apps"; echo "FAIL not exactly 7 app backups kept"; exit 1; }
-[ -d "$state/backup/apps/2026-10-15" ] && [ -d "$state/backup/apps/2026-09-15" ] && [ ! -e "$state/backup/apps/2026-09-14" ] ||
-  { ls "$state/backup/apps"; echo "FAIL the newest 7 app backups were not the ones kept"; exit 1; }
-echo "ok   retention: the newest 14 dumps and 7 app backups, nothing else removed"
-
-### Failures: every step still runs, the run exits 1
-
-new_state
-mkdir -p "$state/backup/postgres"
-echo previous | gzip -c >"$state/backup/postgres/2026-10-14.sql.gz"
 echo 1 >"$state/pg.rc"
-expect_failed "pg_dumpall fails" "FAILED: pg_dumpall of the postgresql container failed"
-[ -z "$(find "$state/backup/postgres" -name '.*partial')" ] && [ ! -e "$state/backup/postgres/2026-10-15.sql.gz" ] || { ls -a "$state/backup/postgres"; echo "FAIL a failed dump was left behind"; exit 1; }
-[ -f "$state/backup/postgres/2026-10-14.sql.gz" ] || { echo "FAIL a failed dump removed the previous one"; exit 1; }
-[ -d "$state/backup/apps/2026-10-15" ] && [ -d "$state/backup/media/books" ] || { echo "FAIL a failed dump stopped the other steps"; exit 1; }
-grep -q 'FAILED: 1 step(s) failed' "$work/out" || { cat "$work/out"; echo "FAIL no summary of the failed steps"; exit 1; }
-echo "ok   a failed dump leaves no partial file, keeps the earlier dumps, and the other steps still run"
+expect_failed "a night whose dump fails" "FAILED: pg_dumpall of the postgresql container failed" 2026-10-17
+[ ! -e "$(snap 2026-10-17)" ] && [ -d "$state/backup/snapshots/.2026-10-17.partial" ] && [ "$(latest)" = 2026-10-16 ] ||
+  { ls -a "$state/backup/snapshots"; echo "FAIL a failed night became a snapshot, or moved latest"; exit 1; }
+[ -d "$state/backup/snapshots/.2026-10-17.partial/media/books" ] || { echo "FAIL a failed dump stopped the other steps"; exit 1; }
+if ! grep -q 'FAILED: 1 step(s) failed' "$work/out" || ! grep -q 'incomplete snapshot is kept in .*\.2026-10-17\.partial' "$work/out"; then
+  cat "$work/out"; echo "FAIL no summary of the failed night"; exit 1
+fi
+rm "$state/pg.rc"
+echo changed >"$state/media/books/novel.epub"
+echo other >"$state/backup/snapshots/.2026-10-17.partial/media/books/marker"
+expect_ok "the night after a failed one" 2026-10-18
+[ ! -e "$state/backup/snapshots/.2026-10-17.partial" ] || { echo "FAIL the failed night's partial was not removed"; exit 1; }
+[ ! -e "$(snap 2026-10-18)/media/books/marker" ] && [ "$(inode "$(snap 2026-10-16)/media/audiobooks/Author/Book/01.mp3")" = "$(inode "$(snap 2026-10-18)/media/audiobooks/Author/Book/01.mp3")" ] ||
+  { echo "FAIL the night after a failure was based on the partial, not the last complete snapshot"; exit 1; }
+[ "$(cat "$(snap 2026-10-16)/media/books/novel.epub")" = epub ] && [ "$(cat "$(snap 2026-10-18)/media/books/novel.epub")" = changed ] ||
+  { echo "FAIL a changed file overwrote the earlier snapshot's copy through a hard link"; exit 1; }
+echo "ok   a failed night: no snapshot, latest unchanged, the partial is deleted next run and never linked against"
+
+### Retention: the newest 14 and the oldest of each of the 8 newest ISO weeks
 
 new_state
+d=2026-08-01
+while [ "$d" != 2026-10-15 ]; do
+  fake_snapshot "$d"
+  d="$(date -u -d "$d + 1 day" +%F)"
+done
+fake_snapshot 2026-07-20 incomplete
+expect_ok "a run over 75 earlier nights"
+want="$(python3 - <<'PY'
+import datetime as dt
+days=[dt.date(2026,8,1)+dt.timedelta(n) for n in range((dt.date(2026,10,15)-dt.date(2026,8,1)).days+1)]
+keep=set(days[-14:])
+first={}
+for d in days:
+    first.setdefault(d.isocalendar()[:2], d)
+for w in sorted(first)[-8:]:
+    keep.add(first[w])
+print("\n".join(sorted(d.isoformat() for d in keep)))
+PY
+)"
+got="$(find "$state/backup/snapshots" -mindepth 1 -maxdepth 1 -type d -name '20*' -printf '%f\n' | grep -v 2026-07-20 | LC_ALL=C sort)"
+[ "$got" = "$want" ] || { diff <(echo "$want") <(echo "$got"); echo "FAIL retention kept the wrong snapshots"; exit 1; }
+[ "$(echo "$got" | wc -l)" -eq 20 ] || { echo "$got"; echo "FAIL retention did not keep 14 daily + 6 older weekly snapshots"; exit 1; }
+[ -d "$(snap 2026-07-20)" ] || { echo "FAIL retention removed something that is not a complete snapshot"; exit 1; }
+echo "ok   retention: 14 daily plus the oldest of each of 8 ISO weeks (20 here: two weekly picks fall inside the 14); nothing incomplete touched"
+
+### Low space: the oldest go first, never the newest 2; otherwise fail before writing
+
+new_state
+for d in 2026-10-11 2026-10-12 2026-10-13 2026-10-14; do fake_snapshot "$d"; done
+printf '%s\n' "50 1000" "80 1000" "200 1000" >"$state/df.seq"
+expect_ok "low space with snapshots to spare"
+[ ! -e "$(snap 2026-10-11)" ] && [ ! -e "$(snap 2026-10-12)" ] && [ -d "$(snap 2026-10-13)" ] && [ -f "$(snap 2026-10-15)/.complete" ] ||
+  { ls "$state/backup/snapshots"; echo "FAIL low space did not remove exactly the oldest snapshots first"; exit 1; }
+grep -q "only 5% of .* is free (need 10%): removing the oldest snapshot" "$work/out" || { cat "$work/out"; echo "FAIL no low-space note"; exit 1; }
+new_state
+for d in 2026-10-13 2026-10-14; do fake_snapshot "$d"; done
+echo "50 1000" >"$state/df.seq"
+expect_failed "low space with only 2 snapshots" "FAILED: only 5% of .* is free \\(need 10%\\) and only 2 snapshot\\(s\\) are left to keep; nothing was written"
+[ -f "$(snap 2026-10-13)/.complete" ] && [ -f "$(snap 2026-10-14)/.complete" ] && [ ! -e "$(snap 2026-10-15)" ] &&
+  [ -z "$(find "$state/backup/snapshots" -maxdepth 1 -name '.*partial')" ] || { ls -a "$state/backup/snapshots"; echo "FAIL low space removed the last snapshots or wrote anyway"; exit 1; }
+grep -qE '^(stop|exec)' "$state/calls" && { cat "$state/calls"; echo "FAIL low space still stopped containers or dumped"; exit 1; }
+echo "ok   low space: oldest snapshots removed first, the newest 2 never; still low fails before writing anything"
+
+### Migration from the mirror layout
+
+new_state
+mkdir -p "$state/backup/media/books" "$state/backup/media/podcasts/Show" "$state/backup/apps/2026-10-14" "$state/backup/postgres"
+cp "$state/media/books/novel.epub" "$state/backup/media/books/novel.epub"
+touch -r "$state/media/books/novel.epub" "$state/backup/media/books/novel.epub"
+echo gone >"$state/backup/media/podcasts/Show/old.mp3"
+echo tar >"$state/backup/apps/2026-10-14/jellyfin-config.tar.gz"
+echo old | gzip -c >"$state/backup/postgres/2026-10-14.sql.gz"
+old_inode="$(inode "$state/backup/media/books/novel.epub")"
 echo 1 >"$state/immich-pg.rc"
-expect_failed "Immich's pg_dumpall fails" "FAILED: pg_dumpall of the immich-postgres container failed"
-[ -z "$(find "$state/backup" -name '.*partial')" ] && [ -d "$state/backup/media/photos" ] || { find "$state/backup"; echo "FAIL a failed Immich dump left a partial file or stopped the photo mirror"; exit 1; }
+expect_failed "a failed first snapshot" "FAILED: pg_dumpall of the immich-postgres container failed"
+[ -f "$state/backup/media/books/novel.epub" ] && [ -d "$state/backup/apps/2026-10-14" ] || { echo "FAIL the old layout was removed before a complete snapshot existed"; exit 1; }
+rm "$state/immich-pg.rc"
+expect_ok "the first snapshot over the old layout"
+[ "$(inode "$(snap 2026-10-15)/media/books/novel.epub")" = "$old_inode" ] || { echo "FAIL the first snapshot copied the old mirror instead of linking to it"; exit 1; }
+[ ! -e "$state/backup/media" ] && [ ! -e "$state/backup/apps" ] && [ -f "$state/backup/postgres/2026-10-14.sql.gz" ] ||
+  { ls "$state/backup"; echo "FAIL the old media/ and apps/ were not retired, or the old dumps went too early"; exit 1; }
+for d in $(seq -w 1 13); do fake_snapshot "2026-10-$d"; done
+expect_ok "the fourteenth snapshot" 2026-10-16
+[ ! -e "$state/backup/postgres" ] || { echo "FAIL the old dumps outlived 14 snapshots"; exit 1; }
+echo "ok   migration: the first snapshot links to the old mirror; media/ and apps/ go after it, the old dumps after 14 snapshots, nothing before a complete one"
+
+### Failures
+
 new_state
 rm "$state/running/immich-postgres"
 expect_ok "a host without Immich yet"
-grep -q "immich-postgres is not running .*its dump was skipped" "$work/out" && [ ! -e "$state/backup/immich" ] || { cat "$work/out"; echo "FAIL a missing Immich was not skipped"; exit 1; }
-echo "ok   Immich: a failed dump fails the run without a partial file; a host without Immich yet skips the dump"
+grep -q "immich-postgres is not running .*its dump was skipped" "$work/out" && [ ! -e "$(snap 2026-10-15)/immich.sql.gz" ] || { cat "$work/out"; echo "FAIL a missing Immich was not skipped"; exit 1; }
+echo "ok   Immich: a host without Immich yet skips its dump"
 
 new_state
+fake_snapshot 2026-10-14
+mkdir -p "$(snap 2026-10-14)/media/books"
 rm -rf "$state/media/books"
-mkdir -p "$state/backup/media/books"
-echo kept >"$state/backup/media/books/novel.epub"
 expect_failed "the media disk is missing" "FAILED: .*/media/books does not exist \\(is the media disk mounted\\?\\)"
-[ -f "$state/backup/media/books/novel.epub" ] || { echo "FAIL a missing library emptied its mirror"; exit 1; }
+[ ! -e "$(snap 2026-10-15)" ] && [ "$(cat "$(snap 2026-10-14)/media/books/old.epub")" = "old 2026-10-14" ] || { echo "FAIL a missing library made a snapshot or touched the last one"; exit 1; }
 new_state
-rm -rf "$state/media/audiobooks"/*
-mkdir -p "$state/backup/media/audiobooks"
-echo kept >"$state/backup/media/audiobooks/book.mp3"
-expect_failed "an empty library over a full mirror" "FAILED: .*/media/audiobooks is empty but its mirror is not"
-[ -f "$state/backup/media/audiobooks/book.mp3" ] || { echo "FAIL an empty library emptied its mirror"; exit 1; }
-echo "ok   media: a missing or empty library never empties its mirror"
+fake_snapshot 2026-10-14
+rm -rf "$state/media/books"/*
+expect_failed "an empty library over a full snapshot" "FAILED: .*/media/books is empty but the last backup of it is not"
+echo "ok   media: a missing or empty library fails the night and leaves the last snapshot alone"
 
 new_state
 echo 1 >"$state/start.rc"
@@ -271,13 +362,13 @@ echo "ok   a container that cannot start again fails the run; a volume that does
 if [ "$(id -u)" -ne 0 ]; then
   new_state
   chmod 000 "$state/volumes/open-webui-data"
-  expect_failed "an unreadable volume" "FAILED: tar of the volume open-webui-data failed"
+  expect_failed "an unreadable volume" "FAILED: rsync of the volume open-webui-data failed"
   chmod 755 "$state/volumes/open-webui-data"
-  [ ! -e "$state/backup/apps/2026-10-15" ] && [ -z "$(find "$state/backup/apps" -name '.*partial')" ] || { ls -a "$state/backup/apps"; echo "FAIL a failed app copy was kept"; exit 1; }
+  [ ! -e "$(snap 2026-10-15)" ] || { echo "FAIL a failed app copy became a snapshot"; exit 1; }
   for name in jellyfin audiobookshelf open-webui; do
     [ -f "$state/running/$name" ] || { echo "FAIL $name was left stopped after a failed copy"; exit 1; }
   done
-  echo "ok   a failed app copy keeps no partial backup and starts the containers again"
+  echo "ok   a failed app copy makes no snapshot and starts the containers again"
 fi
 
 echo "backup-scripts: all cases passed"
