@@ -21,5 +21,7 @@
   "garage_admin_token": "FakeGarageAdminToken000000000000000",
   "garage_owner_access_key_id": "GK000000000000000000000001",
   "garage_owner_secret_key": "00000000000000000000000000000000000000000000000000000000000000ab",
-  "files_password": "FakeFilesPassword0000000"
+  "files_password": "FakeFilesPassword0000000",
+  "immich_db_password": "FakeImmichDbPassword000000000000000",
+  "immich_admin_password": "FakeImmichAdmin00000"
 }

@@ -123,8 +123,11 @@ Every image that is not an app image is pinned `<image>:<tag>@sha256:<digest>`: 
 Open WebUI, SearXNG and ComfyUI (`stack/ai/docker-compose.yml`; Ollama's pin appears twice, for
 `ollama` and `ollama-pull`, Open WebUI's for `open-webui` and `webui-presets`, ComfyUI's for
 `comfyui` and `comfyui-fetch`), busybox, Traefik, Beszel (hub and the NVIDIA agent), curl,
-Garage and SFTPGo (`stack/media/docker-compose.yml`: busybox for `home` and `garage-config`,
-Traefik for `home-tls`, curl for `beszel-pair` and `garage-setup`), Traefik,
+Garage, SFTPGo and Immich (`stack/media/docker-compose.yml`: busybox for `home` and `garage-config`,
+Traefik for `home-tls`, curl for `beszel-pair`, `garage-setup` and `immich-admin`; Immich's server,
+CUDA machine-learning, PostgreSQL and Valkey images move together, to exactly what the new Immich
+release's own `docker-compose.yml` names, after reading its release notes, since Immich migrates
+its database on start), Traefik,
 Watchtower, autoheal and the socket proxy
 (`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned

@@ -210,6 +210,8 @@ jobs:
           GARAGE_OWNER_ACCESS_KEY_ID: ${{ secrets.GARAGE_OWNER_ACCESS_KEY_ID }}
           GARAGE_OWNER_SECRET_KEY: ${{ secrets.GARAGE_OWNER_SECRET_KEY }}
           FILES_PASSWORD: ${{ secrets.FILES_PASSWORD }}
+          IMMICH_DB_PASSWORD: ${{ secrets.IMMICH_DB_PASSWORD }}
+          IMMICH_ADMIN_PASSWORD: ${{ secrets.IMMICH_ADMIN_PASSWORD }}
         run: |
           jq -n '{
             ghcr_username: env.GHCR_USERNAME,
@@ -234,7 +236,9 @@ jobs:
             garage_admin_token: env.GARAGE_ADMIN_TOKEN,
             garage_owner_access_key_id: env.GARAGE_OWNER_ACCESS_KEY_ID,
             garage_owner_secret_key: env.GARAGE_OWNER_SECRET_KEY,
-            files_password: env.FILES_PASSWORD
+            files_password: env.FILES_PASSWORD,
+            immich_db_password: env.IMMICH_DB_PASSWORD,
+            immich_admin_password: env.IMMICH_ADMIN_PASSWORD
           }' > "${RUNNER_TEMP}/extra-vars.json"
           chmod 600 "${RUNNER_TEMP}/extra-vars.json"
 

@@ -157,6 +157,7 @@ Two audiences, two ways in, and nothing else:
 | Beszel, the status dashboard (`stack/media`) | the owner | Tailscale, tcp 8090 | `http://infra-host:8090` |
 | Garage, S3 storage (`stack/media`) | the owner | Tailscale, tcp 3900 | `http://infra-host:3900` (S3, region `garage`) |
 | SFTPGo, the file manager on Garage's `files` bucket (`stack/media`) | the owner | Tailscale, tcp 8091; WebDAV through `home-tls` (443) | `http://infra-host:8091/web/client`, `https://home.arbikullakshi.com/dav` |
+| Immich, the photo library (`stack/media`) | the owner (browser and phone app) | Tailscale, tcp 2283 | `http://infra-host:2283` |
 | Ollama, PostgreSQL, Traefik | containers only | Docker networks (`llm`, `data`, `edge`) | none on the host |
 
 A tailnet-only service publishes its port on the host's **Tailscale IPv4 alone**

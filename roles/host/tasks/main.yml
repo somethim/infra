@@ -117,7 +117,8 @@
 # Moved here from roles/edge so they exist before any stack or the edge starts.
 # ai carries Ollama's model downloads and Open WebUI's published port; llm is
 # internal (no route out) and joins only Ollama and hypernova's provider; media
-# carries the media apps' metadata lookups, podcast downloads and their ports.
+# carries the media apps' metadata lookups, podcast downloads and their ports;
+# immich is internal and holds only Immich's database and queue (and its server).
 - name: Create shared Docker networks
   ansible.builtin.shell: "docker network inspect {{ item.name }} >/dev/null 2>&1 || docker network create {{ '--internal ' if item.internal else '' }}{{ item.name }}"
   loop:
@@ -126,24 +127,29 @@
     - { name: ai, internal: false }
     - { name: llm, internal: true }
     - { name: media, internal: false }
+    - { name: immich, internal: true }
   loop_control:
     label: "{{ item.name }}"
   register: network_create
   changed_when: "network_create.stdout | length > 0"
 
-- name: Read whether llm is internal
+- name: Read whether llm and immich are internal
   ansible.builtin.command:
-    argv: [docker, network, inspect, --format, "{{ '{{' }}.Internal{{ '}}' }}", llm]
-  register: llm_internal
+    argv: [docker, network, inspect, --format, "{{ '{{' }}.Internal{{ '}}' }}", "{{ item }}"]
+  loop: [llm, immich]
+  register: internal_networks
   changed_when: false
   check_mode: false
 
-- name: Require llm to have no route out
+- name: Require llm and immich to have no route out
   ansible.builtin.assert:
     that:
-      - llm_internal.stdout | trim == 'true'
-    fail_msg: "The llm network exists but is not internal; with every stack that joins it stopped, docker network rm llm and provision again."
+      - item.stdout | trim == 'true'
+    fail_msg: "The {{ item.item }} network exists but is not internal; with every stack that joins it stopped, docker network rm {{ item.item }} and provision again."
     quiet: true
+  loop: "{{ internal_networks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
 # The database volume is external to its stack, so a release can never create
 # an empty one in its place. Created empty on a fresh host (the first release

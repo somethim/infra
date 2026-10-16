@@ -5,13 +5,16 @@
 # exits 0, so a backup never fills the SSD. Then, as root, umask 077:
 #
 #   postgres/<date>.sql.gz   pg_dumpall of the shared PostgreSQL, 0600; the newest 14 are kept
+#   immich/<date>.sql.gz     pg_dumpall of Immich's own PostgreSQL (immich-postgres), 0600,
+#                            the newest 14 kept; taken before its photos are mirrored
 #   apps/<date>/<volume>.tar.gz   the apps' own data volumes (below), the newest 7 days kept;
 #                            Jellyfin, Audiobookshelf, Kavita, Open WebUI, Beszel, Garage and
 #                            SFTPGo are stopped while theirs are copied (SQLite must not change
 #                            mid-copy)
 #   media/s3/                rsync --delete mirror of Garage's objects (/srv/media/s3), taken
 #                            while Garage is stopped, so it matches that night's garage-meta copy
-#   media/<name>/            rsync --delete mirror of /srv/media/{audiobooks,books,podcasts}
+#   media/<name>/            rsync --delete mirror of /srv/media/{audiobooks,books,podcasts,photos};
+#                            photos without Immich's thumbs and encoded-video (it rebuilds them)
 #
 # Every step runs even when an earlier one failed; the script exits 1 if any
 # did, which starts infra-backup-failed.service (an error line in the journal).
@@ -42,7 +45,8 @@ readonly app_volumes=(
 readonly app_containers=(jellyfin audiobookshelf kavita open-webui beszel garage sftpgo)
 # Mirrored while the app containers are stopped: Garage's objects must match its metadata copy.
 readonly mirrored_stopped=(s3)
-readonly mirrored=(audiobooks books podcasts)
+# <folder> [<path inside it to leave out>...]
+readonly mirrored=(audiobooks books podcasts "photos thumbs encoded-video")
 
 failures=0
 stopped=()
@@ -96,6 +100,28 @@ backup_postgres() {
   keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.sql\.gz$' "$keep_dumps"
 }
 
+# Immich keeps its own database (not the shared one). Skipped until the first
+# release has created it; a dump that fails once it runs fails the backup.
+backup_immich() {
+  local dir="$backup_root/immich" partial
+  if [ "$(docker container inspect --format '{{.State.Running}}' immich-postgres 2>/dev/null || true)" != true ]; then
+    log "immich-postgres is not running (no release with Immich yet?); its dump was skipped"
+    return 0
+  fi
+  private_dir "$dir"
+  partial="$dir/.$stamp.sql.gz.partial"
+  if docker exec immich-postgres pg_dumpall --clean --if-exists -U postgres | gzip -c >"$partial" &&
+    [ "$(gzip -cd "$partial" | head -c 64 | wc -c)" -gt 0 ]; then
+    chmod 0600 "$partial"
+    mv -f "$partial" "$dir/$stamp.sql.gz"
+    log "Immich's database dumped to $dir/$stamp.sql.gz"
+  else
+    rm -f "$partial"
+    failed "pg_dumpall of the immich-postgres container failed; the earlier dumps are untouched"
+  fi
+  keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.sql\.gz$' "$keep_dumps"
+}
+
 backup_apps() {
   local dir="$backup_root/apps" partial name spec volume path before="$failures"
   local -a excludes
@@ -139,9 +165,15 @@ backup_apps() {
   keep_newest "$dir" '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$keep_apps"
 }
 
-# mirror_one <name>: rsync --delete /srv/media/<name> to the backup disk.
+# mirror_one <name> [<path inside it to leave out>...]: rsync --delete
+# /srv/media/<name> to the backup disk.
 mirror_one() {
-  local name="$1" source target
+  local name="$1" source target exclude
+  local -a excludes=()
+  shift
+  for exclude in "$@"; do
+    excludes+=("--exclude=/$exclude/")
+  done
   source="$media_root/$name"
   target="$backup_root/media/$name"
   private_dir "$backup_root/media"
@@ -155,7 +187,7 @@ mirror_one() {
     failed "$source is empty but its mirror is not; not mirroring an empty library over it (delete $target by hand if the library really is empty)"
     return 0
   fi
-  if rsync --archive --delete --numeric-ids "$source/" "$target/"; then
+  if rsync --archive --delete --delete-excluded --numeric-ids "${excludes[@]}" "$source/" "$target/"; then
     log "mirrored $source"
   else
     failed "rsync of $source failed"
@@ -163,9 +195,11 @@ mirror_one() {
 }
 
 mirror_media() {
-  local name
-  for name in "${mirrored[@]}"; do
-    mirror_one "$name"
+  local spec
+  local -a parts
+  for spec in "${mirrored[@]}"; do
+    read -r -a parts <<<"$spec"
+    mirror_one "${parts[@]}"
   done
 }
 
@@ -179,6 +213,7 @@ trap start_stopped EXIT
 chmod 0700 "$backup_root"
 
 backup_postgres
+backup_immich
 backup_apps
 mirror_media
 

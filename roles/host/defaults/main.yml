@@ -17,6 +17,7 @@ tailnet_ports:
   - { container: beszel, port: 8090 }
   - { container: garage, port: 3900 }
   - { container: sftpgo, port: 8091 }
+  - { container: immich-server, port: 2283 }
 
 # Accounts the hardened stacks run as (no login, no home), and the external
 # volumes they own: provisioning creates each volume once and hands its root to
@@ -38,6 +39,8 @@ service_volumes:
   - { name: beszel-agent-data, account: media }
   - { name: garage-meta, account: media }
   - { name: sftpgo-data, account: media }
+  - { name: immich-pgdata, account: media }
+  - { name: immich-ml-cache, account: media }
 
 # The disks, by filesystem UUID (production.yml): the internal HDD with the
 # library, and the external USB HDD the nightly backup writes to. Mounted with

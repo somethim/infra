@@ -86,6 +86,8 @@ leading or trailing spaces, which Compose would rewrite.
 | `GARAGE_ADMIN_TOKEN` | Garage's admin API token (`openssl rand -hex 32`, at least 32 letters and digits). In `media/garage.env` and `media/garage-setup.env` |
 | `GARAGE_OWNER_ACCESS_KEY_ID` / `GARAGE_OWNER_SECRET_KEY` | The owner's S3 key (`GK` + `openssl rand -hex 12`; `openssl rand -hex 32`), imported by `garage-setup` (`media/garage-setup.env`) and used by `sftpgo` (`media/sftpgo.env`) for the files bucket. Rotate both together: Garage never reuses a deleted key ID |
 | `FILES_PASSWORD` | The owner's file manager (SFTPGo web client and WebDAV) password (`openssl rand -hex 16`, at least 16 letters and digits). Only in `media/sftpgo.env`, read by `sftpgo`, which reloads its user from it on every start |
+| `IMMICH_DB_PASSWORD` | Immich's own PostgreSQL password (`openssl rand -hex 32`, at least 32 letters and digits). In `media/immich-postgres.env` (`immich-postgres`, set by initdb on the first start) and `media/immich-server.env` (`immich-server`). Changing it later needs `ALTER USER postgres PASSWORD` inside `immich-postgres` first ([RUNBOOK.md](../RUNBOOK.md#rotating-a-secret)) |
+| `IMMICH_ADMIN_PASSWORD` | The password the owner's Immich admin is created with, once (`openssl rand -hex 16`, at least 16 letters and digits). Only in `media/immich-admin.env`, read by `immich-admin`; Immich asks for a new password at that first login, and the account is the app's from then on |
 | `SEARXNG_SECRET` | SearXNG's secret key (`openssl rand -hex 32`, at least 32 letters and digits). Rendered only into `ai/searxng.env`, read only by `searxng`. Rotating it changes nothing visible ([stacks.md](stacks.md#ai)) |
 
 The three database passwords must be at least 32 letters and digits (`[A-Za-z0-9]{32,}`)
@@ -134,6 +136,9 @@ mode 0644, the rest 0600:
 | `media/garage.env` | `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN` | `garage` |
 | `media/garage-setup.env` | `GARAGE_ADMIN_TOKEN`, `OWNER_ACCESS_KEY_ID`, `OWNER_SECRET_ACCESS_KEY` | `garage-setup` |
 | `media/sftpgo.env` | `FILES_PASSWORD`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | `sftpgo` |
+| `media/immich-postgres.env` | `POSTGRES_PASSWORD`, Immich's database password | `immich-postgres` |
+| `media/immich-server.env` | `DB_PASSWORD`, the same password | `immich-server` |
+| `media/immich-admin.env` | `IMMICH_ADMIN_PASSWORD`, the first admin's password | `immich-admin` |
 | `ghcr.env` | GHCR login | `infra-apply`'s `docker login` |
 | `<stack>/.env` | image references, domains, the `ai` and `media` uids and gids, the Ollama models, the ACME contact and the dashboard's login name only | Compose interpolation |
 | `release.env`, `manifest.sha256`, `<stack>/docker-compose.yml` | no secrets | `infra-apply` |
@@ -165,11 +170,12 @@ anything changes ("…; the running release is untouched") unless all of this ho
    container: only hypernova's provider joins `llm`); no privileged settings, added
    capabilities, devices, host namespaces or Docker socket; no host port but the tailnet-only
    ones (`open-webui` 8080, `jellyfin` 8096, `audiobookshelf` 13378, `kavita` 5000, `home` 80,
-   `home-tls` 443, `beszel` 8090, `garage` 3900, `sftpgo` 8091), each
+   `home-tls` 443, `beszel` 8090, `garage` 3900, `sftpgo` 8091, `immich-server` 2283), each
    written exactly `"${TAILSCALE_IP}:<port>:<port>"` and resolved to the address `host.env`
-   names; no bind mount but the media library folders, Garage's `/srv/media/s3` and the two
-   folders Beszel's agent sizes disks through, each in its own container at its fixed path,
-   read-only except Audiobookshelf's audiobooks and podcasts and Garage's objects,
+   names; no bind mount but the media library folders, Garage's `/srv/media/s3`, Immich's
+   `/srv/media/photos` and the two folders Beszel's agent sizes disks through, each in its own
+   container at its fixed path, read-only except Audiobookshelf's audiobooks and podcasts,
+   Garage's objects and Immich's photos,
    `create_host_path: false`; a GPU reservation only for `ollama`, `comfyui`, `jellyfin` and
    `beszel-agent`, and only the whole NVIDIA GPU; only the stack's own env files, each read by
    its one container; in `ai` and
@@ -217,7 +223,7 @@ a tag of its own:
 | `tailscale` | the tailnet join and its checks |
 | `docker` | the pinned Engine, `daemon.json` (with the `nvidia` runtime when `gpu_enabled`), the prune timer |
 | `gpu` | the NVIDIA server driver of `nvidia_driver_major`, the Container Toolkit, the read-back (`nvidia-smi`, `docker info`) |
-| `host` | `/etc/infra/host.env` (with the Tailscale IPv4), non-local binds, the `INFRA-PUBLIC` firewall and its tailnet hook, swap, no sleep, the `edge`, `data`, `ai`, `llm` and `media` networks, the `pgdata-v18` volume, the `ai` and `media` accounts and their volumes, the disks at `/srv/media` and `/srv/backup`, the nightly backup timer, the published-port read-back |
+| `host` | `/etc/infra/host.env` (with the Tailscale IPv4), non-local binds, the `INFRA-PUBLIC` firewall and its tailnet hook, swap, no sleep, the `edge`, `data`, `ai`, `llm`, `media` and `immich` networks (`llm` and `immich` internal), the `pgdata-v18` volume, the `ai` and `media` accounts and their volumes, the disks at `/srv/media` and `/srv/backup`, the nightly backup timer, the published-port read-back |
 | `edge` / `watchtower` / `autoheal` | that compose project and its verify tasks (Traefik: no published port) |
 
 No tags runs everything, in that order.

@@ -127,7 +127,7 @@ it cannot do.
 1. **Access controls**: merge these into the policy file, and give nothing else access to
    `tag:infra-server`. Admins (you) reach the server on tcp 22 and the tailnet-only ports
    (the links page 80 and 443, Open WebUI 8080, Jellyfin 8096, Audiobookshelf 13378, Kavita 5000,
-   the Beszel status dashboard 8090, Garage's S3 API 3900, the SFTPGo file manager 8091, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
+   the Beszel status dashboard 8090, Garage's S3 API 3900, the SFTPGo file manager 8091, Immich 2283, [section 12](#12-gpu-ai-and-media)); the CI runners on tcp 22 only;
    OpenSSH, not Tailscale SSH, is the login:
 
    ```json
@@ -138,7 +138,7 @@ it cannot do.
      },
      "grants": [
        {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]},
-       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]},
+       {"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:2283", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]},
        {"src": ["tag:infra-ci"], "dst": ["tag:infra-server"], "ip": ["tcp:22"]}
      ]
    }
@@ -382,7 +382,7 @@ message at the end. Then, from the laptop:
 
 ```bash
 nc -z -w 5 192.168.1.50 22                      # times out or is refused (exit 1)
-ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 3900, 5000, 8080, 8090, 8091, 8096, 13378/tcp on tailscale0, nothing else
+ssh admin@infra-host sudo ufw status            # Status: active; 22, 80, 443, 2283, 3900, 5000, 8080, 8090, 8091, 8096, 13378/tcp on tailscale0, nothing else
 ssh admin@infra-host sudo docker ps --format '{{.Names}} {{.Ports}}'   # no "->": nothing is published
 ```
 
@@ -401,8 +401,8 @@ infra-apply: compose model accepted: 1 service(s) in the portfolio stack, ...
 infra-apply: compose model accepted: 2 service(s) in the hypernova stack, ...
 infra-apply: compose model accepted: 1 service(s) in the tunnel stack, ...
 infra-apply: compose model accepted: 3 service(s) in the ai stack, no privileged settings, no host port but open-webui 100.x.y.z:8080 on the tailnet, ...
-infra-apply: compose model accepted: 12 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, beszel 100.x.y.z:8090, garage 100.x.y.z:3900, home 100.x.y.z:80, home-tls 100.x.y.z:443, ...
-infra-apply: bundle accepted: 27 files, manifest checksums match
+infra-apply: compose model accepted: 17 service(s) in the media stack, no privileged settings, no host port but audiobookshelf 100.x.y.z:13378, beszel 100.x.y.z:8090, garage 100.x.y.z:3900, home 100.x.y.z:80, home-tls 100.x.y.z:443, immich-server 100.x.y.z:2283, ...
+infra-apply: bundle accepted: 30 files, manifest checksums match
 infra-apply: Watchtower is stopped until the app stacks are up
 infra-apply: pulling images
 infra-apply: starting the database
@@ -416,9 +416,9 @@ infra-apply: Watchtower is running again
 infra-apply: every container is running and healthy, and has run for at least 30s without a restart
 infra-apply: Traefik routes arbikullakshi.com/api/health www.arbikullakshi.com/ hypernova.arbikullakshi.com/ hypernova.arbikullakshi.com/api/health to their apps
 infra-apply: the Cloudflare Tunnel is connected (cloudflared /ready answers 200)
-infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 are bound to 100.x.y.z alone
+infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 immich-server:2283 are bound to 100.x.y.z alone
 infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on 100.x.y.z
-infra-apply: beszel-pair garage-setup finished: the dashboard's agent is paired, and S3 has its layout, the owner's key and the files bucket
+infra-apply: beszel-pair garage-setup immich-admin finished: the dashboard's agent is paired, S3 has its layout, the owner's key and the files bucket, and Immich has its admin
 infra-apply: Traefik, Watchtower, autoheal and Beszel's agent reach Docker through their socket proxies with no refused calls
 infra-apply: RELEASE OK: <id> is current, following :latest, auto-updates on
 ```
@@ -613,6 +613,13 @@ most values:
 - **`FILES_PASSWORD`**: `openssl rand -hex 16` (saved to "infra production secrets" as in
   section 12), then `release`. `sftpgo` reloads its user at start, so the new password works
   at once and the old one stops; update WebDAV mounts.
+- **`IMMICH_ADMIN_PASSWORD`** only creates the first admin. Change your Immich password in
+  Immich (Account Settings → Password); the secret can stay as it is.
+- **`IMMICH_DB_PASSWORD`**: initdb sets it once, so change it inside the database first, then
+  everywhere else: `p="$(openssl rand -hex 32)"; ssh -t admin@infra-host "sudo docker exec
+  immich-postgres psql -U postgres -c \"ALTER USER postgres PASSWORD '$p'\""`, save `$p` to
+  "infra production secrets" (field `IMMICH_DB_PASSWORD`) and `gh secret set IMMICH_DB_PASSWORD`,
+  `unset p`, then `release`; `immich-server` connects with the new value on its restart.
 
 Every value must pass the formats in [docs/deploying.md](docs/deploying.md#secrets-and-variables);
 the render on the runner refuses one that does not, before the host is touched.
@@ -679,9 +686,9 @@ The external disk holds, under `/srv/backup` (root only): `postgres/<date>.sql.g
 14 nights of `pg_dumpall`), `apps/<date>/<volume>.tar.gz` (the newest 7 nights of the apps'
 own volumes: Jellyfin's config, Audiobookshelf's config and metadata, Kavita's config, Open
 WebUI's data, `portfolio-media`, hypernova's storage, Beszel's history and Garage's metadata)
-and `media/` (a mirror of `audiobooks`, `books`, `podcasts` and Garage's objects `s3`, as of
-the last night). Movies, shows and the Ollama models
-are not backed up: re-rip or re-download them. Check last night's run with
+and `media/` (a mirror of `audiobooks`, `books`, `podcasts` and Garage's objects `s3` and Immich's `photos`, as of
+the last night), and `immich/<date>.sql.gz` (the newest 14 nights of Immich's own database).
+Movies, shows and the Ollama models are not backed up: re-rip or re-download them. Check last night's run with
 `ssh admin@infra-host journalctl -u infra-backup.service --since yesterday`; a failed one also
 logs "the nightly backup FAILED" at error priority.
 
@@ -709,6 +716,21 @@ sudo find "$v" -mindepth 1 -delete
 sudo tar -xzpf /srv/backup/apps/<newest date>/garage-meta.tar.gz -C "$v"
 sudo rsync -a --delete /srv/backup/media/s3/ /srv/media/s3/
 sudo docker start garage
+```
+
+**Immich** (its database and its photos together): restore the newest dump into an empty
+`immich-pgdata`, then the photos; thumbnails and encoded video rebuild by themselves
+(Administration → Jobs → *Missing*).
+
+```bash
+sudo docker stop immich-server immich-machine-learning
+sudo docker stop immich-postgres
+v="$(sudo docker volume inspect --format '{{.Mountpoint}}' immich-pgdata)"
+sudo find "$v" -mindepth 1 -delete
+sudo docker start immich-postgres    # initdb runs again with IMMICH_DB_PASSWORD; wait until healthy
+gzip -cd /srv/backup/immich/<newest date>.sql.gz | sudo docker exec -i immich-postgres psql -U postgres -d postgres
+sudo rsync -a --delete --exclude=/thumbs/ --exclude=/encoded-video/ /srv/backup/media/photos/ /srv/media/photos/
+sudo docker start immich-server immich-machine-learning
 ```
 
 **The database**, all roles and databases at once, into the running cluster (a dump of the
@@ -743,7 +765,7 @@ in [docs/operations.md](docs/operations.md).
 ## 12. GPU, AI and media
 
 **Owner action.** Turns on what the rest of the hardware is for: Ollama with Open WebUI (presets,
-web search through SearXNG, image generation through ComfyUI) on the RTX 2060, Jellyfin, Audiobookshelf and Kavita on the 1 TB internal HDD, and a nightly backup to
+web search through SearXNG, image generation through ComfyUI) on the RTX 2060, Jellyfin, Audiobookshelf, Kavita and the Immich photo library on the 1 TB internal HDD, and a nightly backup to
 the 1 TB external USB HDD. None of it is public: it is reachable only over the tailnet, on the
 server's Tailscale address, and only by the Tailscale accounts the policy names (you). Video
 never goes through the Cloudflare Tunnel. Do the steps in this order; each one says how to
@@ -751,13 +773,14 @@ check it.
 
 | Service | Address (on the tailnet) | Port |
 | --- | --- | --- |
-| Links page (the six below as tiles) | `https://home.arbikullakshi.com/`, `http://infra-host/` | 443, 80 |
+| Links page (the seven below as tiles) | `https://home.arbikullakshi.com/`, `http://infra-host/` | 443, 80 |
 | Open WebUI | `http://infra-host:8080` | 8080 |
 | Jellyfin | `http://infra-host:8096` | 8096 |
 | Audiobookshelf | `http://infra-host:13378` | 13378 |
 | Kavita | `http://infra-host:5000` | 5000 |
 | Beszel (server status) | `http://infra-host:8090` | 8090 |
 | Files (SFTPGo, the file manager) | `http://infra-host:8091/web/client`; WebDAV at `https://home.arbikullakshi.com/dav` | 8091 (WebDAV through 443) |
+| Photos (Immich) | `http://infra-host:2283`; the phone app with the same address | 2283 |
 | Garage (S3 storage behind Files) | `http://infra-host:3900` (an S3 endpoint for rclone and S3 apps; see `http://infra-host/files.html`) | 3900 |
 
 ### Disks
@@ -807,7 +830,7 @@ In the Tailscale admin console, **Access controls**, add exactly this grant to t
 else for `tag:infra-server`:
 
 ```json
-{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]}
+{"src": ["autogroup:admin"], "dst": ["tag:infra-server"], "ip": ["tcp:80", "tcp:443", "tcp:2283", "tcp:3900", "tcp:8080", "tcp:8090", "tcp:8091", "tcp:8096", "tcp:13378", "tcp:5000"]}
 ```
 
 An existing policy gets the ports it lacks from `~/.cache/infra-tailscale-setup.sh links`
@@ -872,7 +895,7 @@ cannot communicate with the driver, `sudo dmesg | grep -i nvidia` says why.
 Run `release` (Actions → Deploy). Besides the usual lines, expect the `ai` and `media` stacks
 accepted with their tailnet ports, library mounts and GPU, "starting ai", "starting media", and
 "the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443
-beszel:8090 garage:3900 sftpgo:8091 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB);
+beszel:8090 garage:3900 sftpgo:8091 immich-server:2283 are bound to 100.x.y.z alone". The images are large (Open WebUI about 4 GB, ComfyUI about 7 GB, Immich's CUDA machine learning about 4 GB);
 the first pull takes a while. In the background, after the release:
 
 - `ollama-pull` downloads `ollama_models` in order: `qwen3:4b` (2.6 GB, so **Quick** works
@@ -924,6 +947,10 @@ password from your password manager for each.
    ([The status dashboard](#the-status-dashboard)).
 6. **Files**, `http://infra-host:8091/web/client` (the Files tile): nothing to set up. Sign in as
    `owner` with `FILES_PASSWORD` ([Files](#files-s3-storage)).
+7. **Photos**, `http://infra-host:2283` (the Photos tile): sign in with `status_owner_email` and
+   `IMMICH_ADMIN_PASSWORD`; Immich asks for a new password straight away (keep it in 1Password)
+   and walks through a short onboarding (theme, privacy, storage template: leave its choices,
+   the settings are code). Then the phone app and the Google Takeout ([Photos](#photos-immich)).
 
 Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/audiobooks` and
 `/podcasts` (podcast downloads, covers).
@@ -931,8 +958,9 @@ Jellyfin and Kavita see the library read-only; Audiobookshelf may write in `/aud
 ### The links page
 
 `https://home.arbikullakshi.com/` (or `http://infra-host/`) on any device on the tailnet shows
-six tiles (two columns, three rows, on a phone too): Open WebUI, Jellyfin, Audiobookshelf,
-Kavita, Status (Beszel) and Files (how to reach Garage's S3, `http://infra-host/files.html`),
+seven tiles (two columns on a phone too, Status across the bottom row): Open WebUI, Photos
+(Immich), Jellyfin, Audiobookshelf, Kavita, Files (the file manager; other ways in at
+`http://infra-host/files.html`) and Status (Beszel),
 so nobody has to remember a port; bookmark it or add it to the home screen. The tiles always
 open `http://infra-host:<port>`.
 
@@ -1009,10 +1037,21 @@ The file manager (SFTPGo) adds one more, its sign-in password, the same way:
 p="$(openssl rand -hex 16)"; op item edit "infra production secrets" --vault Personal "FILES_PASSWORD[password]=$p" >/dev/null && printf %s "$p" | gh secret set FILES_PASSWORD --env production -R somethim/infra; unset p
 ```
 
-A release refuses to render without all seven. Then provision (it creates the `beszel-data`,
+Immich adds two more, its database password and the password its first admin is created with:
+
+```bash
+item="infra production secrets"
+set_secret() { op item edit "$item" --vault Personal "$1[password]=$2" >/dev/null && printf %s "$2" | gh secret set "$1" --env production -R somethim/infra; }
+set_secret IMMICH_DB_PASSWORD "$(openssl rand -hex 32)"
+set_secret IMMICH_ADMIN_PASSWORD "$(openssl rand -hex 16)"
+unset -f set_secret; unset item
+```
+
+A release refuses to render without all nine. Then provision (it creates the `beszel-data`,
 `beszel-agent-data` and `garage-meta` volumes, `/srv/media/s3` and `/srv/media/.beszel`, the
 `beszel` role's socket proxy, and opens 3900 and 8090 in ufw; with the file manager also
-`sftpgo-data` and 8091), then `release`.
+`sftpgo-data` and 8091; with Immich also `immich-pgdata`, `immich-ml-cache`, the internal
+`immich` network, `/srv/media/photos` and 2283), then `release`.
 
 ### The status dashboard
 
@@ -1085,6 +1124,63 @@ every release; `ssh admin@infra-host sudo docker logs garage-setup` shows what i
 buckets: add their names to `GARAGE_BUCKETS` in `stack/media/docker-compose.yml` and release.
 Garage's own web UIs are not used (the one community UI has had no release in a year and would
 need Garage's full admin token); the file manager above is the interface.
+
+### Photos (Immich)
+
+Immich at `http://infra-host:2283` (the Photos tile) is the photo library: a timeline, albums,
+a map, people (face recognition) and smart search ("beach at sunset"), on the GPU. The originals
+are on the media disk under `/srv/media/photos/library/<user>/<year>/<year>-<month>-<day>/`,
+its database on the SSD, and both reach the backup disk every night (the database dumped first,
+then the photos mirrored without the thumbnails and encoded video Immich can rebuild).
+
+**First login**: `status_owner_email` from `production.yml` and the bootstrap password, then a new
+password of your own (Immich insists; keep it in 1Password):
+
+```bash
+op item get "infra production secrets" --vault Personal --fields label=IMMICH_ADMIN_PASSWORD --reveal
+```
+
+**The phone.** Install the Immich app (Play Store, F-Droid or the APK on Immich's GitHub
+release), keep Tailscale on, and enter the server address `http://infra-host:2283`. Sign in, then
+**Backup** (the cloud icon) → pick the albums (Camera at least) → **Enable backup**; turn on
+background backup in its settings. Once your photos are in Immich, switch off Google Photos'
+own backup on the phone.
+
+**Google Photos, once, from the laptop** with [immich-go](https://github.com/simulot/immich-go)
+(pinned here to v0.32.0):
+
+1. **Export**: <https://takeout.google.com> → *Deselect all* → tick **Google Photos** → *Next* →
+   *Export once*, `.zip`, **50 GB** files (fewer parts) → *Create export*. Download every
+   `takeout-*.zip` into one folder (about 26 GB here); don't unpack them.
+2. **API key**: in Immich, your avatar → **Account Settings** → **API Keys** → **New API Key**,
+   name `immich-go`, permissions **All** (it pauses Immich's jobs during the upload, which needs
+   an admin's key). Copy it once into 1Password as "Immich API key (immich-go)".
+3. **immich-go**, checked against the release's checksums:
+
+   ```bash
+   mkdir -p ~/.local/share/immich-go && cd ~/.local/share/immich-go
+   v=v0.32.0
+   curl -fsSLO "https://github.com/simulot/immich-go/releases/download/$v/immich-go_Linux_x86_64.tar.gz"
+   curl -fsSLO "https://github.com/simulot/immich-go/releases/download/$v/checksums.txt"
+   grep ' immich-go_Linux_x86_64.tar.gz$' checksums.txt | sha256sum -c - && tar -xzf immich-go_Linux_x86_64.tar.gz immich-go
+   ```
+4. **Upload** (resumable: run it again after an interruption and it skips what is already there):
+
+   ```bash
+   ~/.local/share/immich-go/immich-go upload from-google-photos \
+     --server=http://infra-host:2283 \
+     --api-key="$(op item get 'Immich API key (immich-go)' --vault Personal --fields label=password --reveal)" \
+     --concurrent-tasks=4 --client-timeout=60m --on-errors=continue --session-tag \
+     ~/Downloads/takeout/takeout-*.zip
+   ```
+
+   It keeps Google's albums, dates and locations (from the JSON files next to each photo). Over
+   the LAN the upload itself takes well under an hour; afterwards Immich spends some hours on
+   thumbnails, faces and smart search (Administration → Jobs shows progress). Chats in Open WebUI
+   are slower meanwhile: the GPU is shared.
+
+Everything else is code: the settings (`IMMICH_CONFIG_JSON` in `stack/media/docker-compose.yml`)
+show read-only in Administration → Settings; change them there in the repo and `release`.
 
 ### Copying media in
 

@@ -47,11 +47,14 @@ the server was off runs at the next boot. It writes only to the external USB dis
 | Path | What | Kept |
 | --- | --- | --- |
 | `postgres/<date>.sql.gz` | `pg_dumpall` of the shared PostgreSQL (every role and database), mode 0600 | the newest 14 |
+| `immich/<date>.sql.gz` | `pg_dumpall --clean --if-exists` of Immich's own PostgreSQL (`immich-postgres`), mode 0600, taken before its photos are mirrored; skipped until a release has started Immich | the newest 14 |
 | `apps/<date>/<volume>.tar.gz` | `jellyfin-config` (without logs, cache and transcodes), `audiobookshelf-config`, `audiobookshelf-metadata` (without its cache, logs, streams), `kavita-config` (without cache, temp, logs), `open-webui-data` (without its model cache), `portfolio-media`, `hypernova_prizm-storage`, `beszel-data` (the dashboard's history and alerts), `garage-meta` (Garage's configuration and metadata), `sftpgo-data` (the file manager's database: share links, sessions) | the newest 7 |
 | `media/s3/` | an `rsync --delete` mirror of Garage's objects (`/srv/media/s3`), taken while Garage is stopped so it matches that night's `garage-meta` | last night's |
 | `media/{audiobooks,books,podcasts}/` | an `rsync --delete` mirror of those library folders | last night's |
+| `media/photos/` | an `rsync --delete` mirror of Immich's `/srv/media/photos` (originals, profile pictures, Immich's own nightly database dumps in `backups/`), without `thumbs/` and `encoded-video/`, which Immich rebuilds | last night's |
 
-Not copied: the Ollama models (`ollama-models`; they download again), Jellyfin's cache volume,
+Not copied: the Ollama models (`ollama-models`; they download again), Immich's ML models
+(`immich-ml-cache`; they download again), Jellyfin's cache volume,
 and the films and series (they would not fit; re-rip them).
 
 - **No disk, no writes.** If `/srv/backup` is not a mountpoint (the disk is unplugged, or

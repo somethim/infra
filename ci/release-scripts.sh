@@ -125,6 +125,8 @@ cat >"$work/vars.json" <<JSON
   "garage_owner_access_key_id": "GKcccc3333cccc3333cccc3333",
   "garage_owner_secret_key": "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222",
   "files_password": "HarnessFilesPassword0123",
+  "immich_db_password": "HarnessImmichDb0123456789abcdefABCDEF",
+  "immich_admin_password": "HarnessImmichAdmin0123",
   "deploy_key_file": "$work/deploy_key.pub"
 }
 JSON
@@ -135,7 +137,7 @@ secrets=(ghp_HarnessToken0123456789 HarnessPgSuperuser0123456789abcdefA HarnessP
   HarnessHomeTlsDnsToken0123456789abcdefABCDEF HarnessSearxngSecret0123456789abcdefABCDEF
   HarnessBeszelPassword0123 harness-beszel-agent-token-0123456789 aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111
   HarnessGarageAdmin0123456789abcdefAB GKcccc3333cccc3333cccc3333 bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222
-  HarnessFilesPassword0123)
+  HarnessFilesPassword0123 HarnessImmichDb0123456789abcdefABCDEF HarnessImmichAdmin0123)
 
 build() {
   "$root/build-bundle.sh" "$@" >"$work/build.log" 2>&1
@@ -147,7 +149,7 @@ build "$work/vars.json" "$work/good-again.tgz" || { cat "$work/build.log"; echo 
 cmp -s "$work/good.tgz" "$work/good-again.tgz" || { echo "FAIL build-bundle.sh is not deterministic"; exit 1; }
 echo "ok   bundle: two builds from the same vars are byte-identical"
 if tar -tvzf "$work/good.tgz" | grep -qv '^-'; then tar -tvzf "$work/good.tgz"; echo "FAIL the bundle holds entries other than regular files"; exit 1; fi
-[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 27 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 27 files"; exit 1; }
+[ "$(tar -tzf "$work/good.tgz" | wc -l)" -eq 30 ] || { tar -tzf "$work/good.tgz"; echo "FAIL the bundle does not hold exactly 30 files"; exit 1; }
 echo "ok   bundle: 27 file entries, no directories"
 unpack "$work/good.tgz" "$work/good"
 grep -qxF "RELEASE_COMMIT=$(git -C "$root" rev-parse HEAD)" "$work/good/release.env" || { echo "FAIL release.env does not name the checked-out commit"; exit 1; }
@@ -170,6 +172,8 @@ owner_of() {
     HarnessGarageAdmin*) echo "media/garage.env media/garage-setup.env" ;;
     GKcccc3333* | bbbb2222*) echo "media/garage-setup.env media/sftpgo.env" ;;
     HarnessFilesPassword*) echo media/sftpgo.env ;;
+    HarnessImmichDb*) echo "media/immich-postgres.env media/immich-server.env" ;;
+    HarnessImmichAdmin*) echo media/immich-admin.env ;;
     *) echo portfolio/portfolio.env ;;
   esac
 }
@@ -249,6 +253,9 @@ render_refused "a Garage key ID that is not GK and 24 hex digits" '.garage_owner
 render_refused "a Garage secret key that is not 64 hex digits" '.garage_owner_secret_key = "short"'
 render_refused "a files password shorter than 16 letters and digits" '.files_password = "short"'
 render_refused "a files password with a symbol" '.files_password = "HarnessFilesPassword-0123"'
+render_refused "no Immich database password" 'del(.immich_db_password)'
+render_refused "an Immich database password shorter than 32 letters and digits" '.immich_db_password = "HarnessImmichDb0123"'
+render_refused "an Immich admin password with a symbol" '.immich_admin_password = "HarnessImmichAdmin-0123"'
 render_refused "a hypernova model ollama-pull does not fetch" '.hypernova_ollama_model = "llama3.2:3b"'
 render_refused "an Ollama model without a tag" '.ollama_models = ["qwen3:4b", "qwen3"]'
 printf 'REPLACE_ME_BEFORE_DEPLOYING\n' >"$work/placeholder.pub"
@@ -277,11 +284,11 @@ for stack in database portfolio hypernova tunnel ai media; do
 done
 grep -qF "compose model accepted: 7 service(s) in the ai stack, no privileged settings, no host port but open-webui $tailscale_ip:8080 on the tailnet, no bind mount but none, the GPU only for comfyui, ollama, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the ai stack summary does not name its one tailnet port and its GPU services"; exit 1; }
-grep -qF "compose model accepted: 12 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, beszel $tailscale_ip:8090, garage $tailscale_ip:3900, home $tailscale_ip:80, home-tls $tailscale_ip:443, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000, sftpgo $tailscale_ip:8091 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, beszel-agent /srv/media/.beszel (ro), beszel-agent /srv/backup (ro), garage /srv/media/s3, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for beszel-agent, jellyfin, no Docker socket" "$work/out" ||
+grep -qF "compose model accepted: 17 service(s) in the media stack, no privileged settings, no host port but audiobookshelf $tailscale_ip:13378, beszel $tailscale_ip:8090, garage $tailscale_ip:3900, home $tailscale_ip:80, home-tls $tailscale_ip:443, immich-server $tailscale_ip:2283, jellyfin $tailscale_ip:8096, kavita $tailscale_ip:5000, sftpgo $tailscale_ip:8091 on the tailnet, no bind mount but audiobookshelf /srv/media/audiobooks, audiobookshelf /srv/media/podcasts, beszel-agent /srv/media/.beszel (ro), beszel-agent /srv/backup (ro), garage /srv/media/s3, immich-server /srv/media/photos, jellyfin /srv/media/shows (ro), jellyfin /srv/media/movies (ro), kavita /srv/media/books (ro), the GPU only for beszel-agent, immich-machine-learning, jellyfin, no Docker socket" "$work/out" ||
   { cat "$work/out"; echo "FAIL the media stack summary does not name its tailnet ports, library mounts and GPU"; exit 1; }
 echo "ok   the six checked-in stacks pass the compose guard"
 [ -f "$state/stack/releases/$first_id/.verified" ] || { echo "FAIL the release was not marked verified"; exit 1; }
-for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env manifest.sha256; do
+for file in ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env media/immich-postgres.env media/immich-server.env media/immich-admin.env manifest.sha256; do
   [ "$(stat -c %a "$state/stack/current/$file")" = 600 ] || { echo "FAIL $file is not 0600 in the release"; exit 1; }
 done
 [ "$(stat -c %a "$state/stack/current/portfolio/docker-compose.yml")" = 644 ] || { echo "FAIL docker-compose.yml is not 0644"; exit 1; }
@@ -300,7 +307,7 @@ for want in "curl route arbikullakshi.com http://172.18.0.2:80/api/health" "curl
 done
 [ "$(grep -c '^curl \(route\|ready\) ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL verify checked more than the four routes and the tunnel"; exit 1; }
 [ "$(grep -c '^curl public ' "$state/calls")" -eq 5 ] || { grep '^curl' "$state/calls"; echo "FAIL the public check asked other than the four routes and the http redirect"; exit 1; }
-grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
+grep -qF "infra-apply: the tailnet-only ports open-webui:8080 jellyfin:8096 audiobookshelf:13378 kavita:5000 home:80 home-tls:443 beszel:8090 garage:3900 sftpgo:8091 immich-server:2283 are bound to $tailscale_ip alone" "$work/out" || { cat "$work/out"; echo "FAIL verify did not read back the tailnet-only port"; exit 1; }
 grep -qxF "curl tls home.arbikullakshi.com:443:$tailscale_ip https://home.arbikullakshi.com/" "$state/calls" || { grep '^curl' "$state/calls"; echo "FAIL verify did not ask home-tls by name on the tailnet address"; exit 1; }
 grep -qF "infra-apply: https://home.arbikullakshi.com/ serves the links page with a trusted certificate on $tailscale_ip" "$work/out" || { cat "$work/out"; echo "FAIL verify did not report home-tls's certificate"; exit 1; }
 [ ! -e "$state/stack/previous" ] || { echo "FAIL a first release has no previous release"; exit 1; }
@@ -711,7 +718,7 @@ compose_case "Open WebUI on a LAN address by default" ai 'service open-webui pub
 compose_case "a second Open WebUI port" ai 'service open-webui publishes \[".*8080:8080", ".*:8081:8080"\]' "text = text.replace('$owui_port', '$owui_port      - \"\${TAILSCALE_IP}:8081:8080\"\n')"
 compose_case "ports in flow style" ai "service open-webui writes ports in a form other than a list" "text = text.replace('    ports:\n$owui_port', '    ports: [\"\${TAILSCALE_IP}:8080:8080\"]\n')"
 compose_case "Ollama published on the tailnet" ai "service ollama sets ports, which publishes a host port" "text = text.replace('    container_name: ollama\n', '    container_name: ollama\n    ports:\n      - \"\${TAILSCALE_IP}:11434:11434\"\n')"
-compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only beszel-agent, comfyui, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "the GPU for Open WebUI" ai "service open-webui sets deploy, which can reserve host devices; only beszel-agent, comfyui, immich-machine-learning, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: open-webui\n', '    container_name: open-webui\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
 compose_case "Ollama with deploy labels" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('    deploy:\n      resources:', '    deploy:\n      labels:\n        x-extra: \"1\"\n      resources:', 1)"
 compose_case "Ollama reserving more than the GPU" ai "service ollama sets deploy .*; it may only reserve all NVIDIA GPUs" "text = text.replace('capabilities: [gpu]', 'capabilities: [gpu, utility]', 1)"
 compose_case "Ollama as root" ai 'service ollama runs as "0:0"; it must run as 2001:2001' "text = text.replace('    container_name: ollama\n    user: \"\${AI_UID}:\${AI_GID}\"\n', '    container_name: ollama\n    user: \"0:0\"\n')"
@@ -742,11 +749,11 @@ compose_case "a shared mount propagation" media 'service jellyfin mounts /srv/me
 compose_case "the podcasts folder in Kavita" media 'service kavita has a "bind" mount of "/srv/media/podcasts"' "text = text.replace('        source: /srv/media/books\n', '        source: /srv/media/podcasts\n')"
 compose_case "the host's /etc in Audiobookshelf" media 'service audiobookshelf has a "bind" mount of "/etc"' "text = text.replace('        source: /srv/media/podcasts\n', '        source: /etc\n')"
 compose_case "Kavita as root" media 'service kavita runs as "0:0"; it must run as 2000:2000' "text = text.replace('    container_name: kavita\n    user: \"\${MEDIA_UID}:\${MEDIA_GID}\"\n', '    container_name: kavita\n    user: \"0:0\"\n')"
-compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only beszel-agent, comfyui, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
-compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) beszel-socket and media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
+compose_case "the GPU for Audiobookshelf" media "service audiobookshelf sets deploy, which can reserve host devices; only beszel-agent, comfyui, immich-machine-learning, jellyfin, ollama may reserve the GPU" "text = text.replace('    container_name: audiobookshelf\n', '    container_name: audiobookshelf\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - driver: nvidia\n              count: all\n              capabilities: [gpu]\n')"
+compose_case "Jellyfin on the edge network" media 'network edge is "edge"; the media stack may only join the existing network\(s\) beszel-socket and immich and media' "text = text.replace('    networks:\n      - media\n    labels:', '    networks:\n      - media\n      - edge\n    labels:', 1).replace('networks:\n  media:\n', 'networks:\n  edge:\n    name: edge\n    external: true\n  media:\n')"
 compose_case "a Traefik route to Jellyfin" media "service jellyfin sets the label traefik.enable" "text = text.replace('      - autoheal=true\n', '      - autoheal=true\n      - traefik.enable=true\n', 1)"
 compose_case "an env file in the media stack" media 'service kavita reads env_file ".*"; the media stack may only read home-tls.env' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: ../ai/open-webui.env\n')"
-compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack beszel, beszel-agent, beszel-pair, garage, garage-setup, home-tls, sftpgo may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
+compose_case "Kavita reading home-tls's secret" media 'service kavita reads env_file ".*home-tls.env"; in the media stack beszel, beszel-agent, beszel-pair, garage, garage-setup, home-tls, immich-admin, immich-postgres, immich-server, sftpgo may read an env file' "text = text.replace('    container_name: kavita\n', '    container_name: kavita\n    env_file: home-tls.env\n')"
 # The guard on its own, against the resolved models of the checked-in stacks.
 for stack in database portfolio hypernova tunnel ai media; do
   repos=()
@@ -857,14 +864,14 @@ expect_refused "a container with an unreadable StartedAt" "not ready after 1s: p
 installed_state
 sleep 1
 touch "$state/vanished/c4"
-expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 24 listed containers could not be inspected" "$work/second.tgz" release
+expect_refused "a listed container is gone before the inspect" "not ready after 1s: 1 of 29 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with an uninspected container was marked verified"; exit 1; }
 grep -q '^curl ' "$state/calls" && { echo "FAIL the routes were checked before every container was inspected"; exit 1; }
 
 installed_state
 sleep 1
-for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21 c22 c23 c24; do touch "$state/vanished/$c"; done
-expect_refused "every listed container is gone before the inspect" "not ready after 1s: 24 of 24 listed containers could not be inspected" "$work/second.tgz" release
+for c in c1 c2 c3 c4 c5 c6 c7 c8 c9 c10 c11 c12 c13 c14 c15 c16 c17 c18 c19 c20 c21 c22 c23 c24 c25 c26 c27 c28 c29; do touch "$state/vanished/$c"; done
+expect_refused "every listed container is gone before the inspect" "not ready after 1s: 29 of 29 listed containers could not be inspected" "$work/second.tgz" release
 [ ! -e "$state/stack/current/.verified" ] || { echo "FAIL a release with no inspected container was marked verified"; exit 1; }
 
 installed_state

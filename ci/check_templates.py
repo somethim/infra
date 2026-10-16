@@ -70,6 +70,8 @@ SECRET_PREFIX_FILES = {
     "garage_admin_": {"media/garage.env", "media/garage-setup.env"},
     "garage_owner_": {"media/garage-setup.env", "media/sftpgo.env"},
     "files_password": {"media/sftpgo.env"},
+    "immich_db_": {"media/immich-postgres.env", "media/immich-server.env"},
+    "immich_admin_": {"media/immich-admin.env"},
 }
 # Set at apply time from /etc/infra/host.env (infra-apply exports them), never by a bundle file.
 HOST_VARIABLES = {"TAILSCALE_IP"}
@@ -84,6 +86,7 @@ TAILNET_PORTS = {
     ("media", "beszel"): 8090,
     ("media", "garage"): 3900,
     ("media", "sftpgo"): 8091,
+    ("media", "immich-server"): 2283,
 }
 ANSIBLE_MAGIC = {"playbook_dir", "role_path", "inventory_hostname", "ansible_managed", "item"}
 SOCKET_PROXIES = {"edge-socket-proxy", "watchtower-socket-proxy", "autoheal-socket-proxy", "beszel-socket-proxy"}
@@ -483,8 +486,8 @@ def self_test() -> None:
                 m(tmp)
         return mutate
 
-    jq_last = "            files_password: env.FILES_PASSWORD\n"
-    env_last = "          FILES_PASSWORD: ${{ secrets.FILES_PASSWORD }}\n"
+    jq_last = "            immich_admin_password: env.IMMICH_ADMIN_PASSWORD\n"
+    env_last = "          IMMICH_ADMIN_PASSWORD: ${{ secrets.IMMICH_ADMIN_PASSWORD }}\n"
     dead_secret = both(
         edit(WORKFLOW, jq_last, jq_last.rstrip("\n") + ",\n            crm_db_password: env.CRM_DB_PASSWORD\n"),
         edit(WORKFLOW, env_last, env_last + "          CRM_DB_PASSWORD: ${{ secrets.CRM_DB_PASSWORD }}\n"),

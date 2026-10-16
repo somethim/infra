@@ -237,9 +237,9 @@ new_state() {
   fi
   printf '%s\n' PUBLIC_INTERFACE=eth0 PUBLIC_PORTS= "TAILSCALE_IP=$tailscale_ip" AI_USER=2001:2001 MEDIA_USER=2000:2000 \
     "PORTFOLIO_IMAGE_REPO=$portfolio_repo" "HYPERNOVA_PROVIDER_IMAGE_REPO=$provider_repo" "HYPERNOVA_WEB_IMAGE_REPO=$web_repo" >"$state/host.env"
-  # ollama-pull, webui-presets, comfyui-fetch, beszel-pair, garage-config and garage-setup are one-shots
-  # (restart: "no"): verify does not wait for them to run, but checks that beszel-pair and garage-setup
-  # ended with status 0 (state/oneshot/<name>).
+  # ollama-pull, webui-presets, comfyui-fetch, beszel-pair, garage-config, garage-setup and immich-admin
+  # are one-shots (restart: "no"): verify does not wait for them to run, but checks that beszel-pair,
+  # garage-setup and immich-admin ended with status 0 (state/oneshot/<name>).
   printf '%s\n' \
     "c1 /postgresql running always healthy database" \
     "c2 /portfolio running always healthy portfolio" \
@@ -264,8 +264,14 @@ new_state() {
     "c21 /garage-config exited no none media" \
     "c22 /garage running always healthy media" \
     "c23 /garage-setup exited no none media" \
-    "c24 /sftpgo running always healthy media" >"$state/containers"
-  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls beszel beszel-agent garage sftpgo; do
+    "c24 /sftpgo running always healthy media" \
+    "c25 /immich-postgres running always healthy media" \
+    "c26 /immich-valkey running always healthy media" \
+    "c27 /immich-server running always healthy media" \
+    "c28 /immich-machine-learning running always healthy media" \
+    "c29 /immich-admin exited no none media" >"$state/containers"
+  for name in edge-socket-proxy edge-traefik watchtower-socket-proxy watchtower autoheal-socket-proxy autoheal beszel-socket-proxy cloudflared ollama open-webui searxng comfyui jellyfin audiobookshelf kavita home home-tls beszel beszel-agent garage sftpgo \
+    immich-postgres immich-valkey immich-server immich-machine-learning; do
     echo "true false" >"$state/running/$name"
   done
   tailnet_binding open-webui 8080
@@ -277,6 +283,7 @@ new_state() {
   tailnet_binding beszel 8090
   tailnet_binding garage 3900
   tailnet_binding sftpgo 8091
+  tailnet_binding immich-server 2283
   echo 172.18.0.2 >"$state/ip/edge-traefik"
   echo 172.18.0.9 >"$state/ip/cloudflared"
   running_image portfolio "$portfolio_repo:latest" 11

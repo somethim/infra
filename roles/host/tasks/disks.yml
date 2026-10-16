@@ -182,6 +182,17 @@
     mode: "0700"
   when: media_writable
 
+# Immich's photos (originals by date, thumbnails, encoded video and its own
+# database dumps): the media account's alone. People see them in Immich.
+- name: Create Immich's photo folder, private to the media account
+  ansible.builtin.file:
+    path: "{{ media_root }}/photos"
+    state: directory
+    owner: "{{ media_uid }}"
+    group: "{{ media_gid }}"
+    mode: "0700"
+  when: media_writable
+
 # Beszel's agent reads the media disk's size through this empty folder (bound
 # read-only), so it sees none of the library.
 - name: Create the empty folder Beszel's agent sizes the media disk through
@@ -205,6 +216,7 @@
     - "{{ backup_root }}/postgres"
     - "{{ backup_root }}/apps"
     - "{{ backup_root }}/media"
+    - "{{ backup_root }}/immich"
   when: backup_mounted
 
 - name: Read the library folders back

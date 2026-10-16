@@ -210,9 +210,10 @@ refuse to render, since the stack could not start.
 ## media
 
 Jellyfin (films and series), Audiobookshelf (audiobooks and podcasts) and Kavita (books), the
-Beszel status dashboard, Garage (S3 storage) with SFTPGo as its file manager, for the owner
-alone, and `home`, a links page
-(`http://infra-host/`) with a tile for each of them and Open WebUI (six tiles, two by three),
+Beszel status dashboard, Garage (S3 storage) with SFTPGo as its file manager, the Immich photo
+library, for the owner alone, and `home`, a links page
+(`http://infra-host/`) with a tile for each of them and Open WebUI (seven tiles in two columns,
+the last across the bottom row),
 with `home-tls` in front of it for `https://home.arbikullakshi.com/` (and the file manager's
 WebDAV at `/dav`). Like `ai`, nothing here is
 public: no `edge`, no label for the edge Traefik, never behind the tunnel. Serving video through Cloudflare's tunnel is against Cloudflare's terms anyway, and
@@ -233,6 +234,11 @@ relay when it must), WireGuard-encrypted.
 | `garage` | 3900 (S3; admin 3903 and RPC 3901 on the `media` network only) | `/srv/media/s3` → `/data`, read-write (the objects) | `garage-meta` (`/meta`: the config and the SQLite metadata) |
 | `garage-setup` | none (one-shot) | none | none (Garage's admin API) |
 | `sftpgo` | 8091 (web client; WebDAV on 8092, `media` network only, through `home-tls` at `/dav`) | none (its files are the `files` bucket, over S3) | `sftpgo-data` (`/var/lib/sftpgo`: its SQLite database, share links) |
+| `immich-server` | 2283 (web and the phone app's API) | `/srv/media/photos` → `/data`, read-write (originals, thumbnails, encoded video, Immich's own database dumps) | none |
+| `immich-machine-learning` | none (3003 on the `media` network) | none | `immich-ml-cache` (`/cache`: the models it downloads from Hugging Face) |
+| `immich-postgres` | none (5432 on the internal `immich` network) | none | `immich-pgdata` (`/var/lib/postgresql/data`, on the SSD) |
+| `immich-valkey` | none (6379 on the internal `immich` network) | none | none (an in-memory job queue) |
+| `immich-admin` | none (one-shot) | none | none (Immich's admin sign-up API) |
 
 **`beszel`, `beszel-pair`, `beszel-agent`** (Beszel 0.21). The hub creates the owner's login on
 its first start from `BESZEL_HUB_USER_EMAIL` (`status_owner_email`, `media/.env`) and
@@ -279,6 +285,36 @@ page until an admin exists, so the same file adds one with a fresh random passwo
 start; the admin web UI and the REST API are off, so nobody can use it. SFTP and FTP are off. It
 starts after `garage-setup` has created the bucket and imported the key.
 
+**Immich** (v3.2.4: `immich-server`, `immich-machine-learning`, `immich-postgres`,
+`immich-valkey`, and the one-shot `immich-admin`) is the photo library, a self-hosted Google
+Photos: a timeline, albums, a map, face recognition and smart search, and phone apps that back
+up the camera roll (`http://infra-host:2283`, the Photos tile). The four services are exactly
+the images the release's own `docker-compose.yml` names (Immich's PostgreSQL 14 build with the
+VectorChord and pgvecto.rs extensions, not the shared PostgreSQL 18; Valkey 9 by Immich's
+digest), run the way its rootless variant does and then some: the media account, read-only
+roots, no capabilities. Postgres writes its config and socket to tmpfs (`/etc/postgresql`,
+`/var/run/postgresql`, owned by the media account) and gets the 128 MB `/dev/shm` Immich's file
+gives it; its data is `immich-pgdata` on the SSD, as Immich recommends. Valkey keeps no data
+(Immich's nightly jobs re-queue missing work). Both sit on the internal `immich` network alone;
+the server joins it and `media` (its port, and the ML container); the ML container joins
+`media` only, for its first model downloads from Hugging Face into `immich-ml-cache`.
+
+Its settings are code: `IMMICH_CONFIG_JSON` in the compose file, written to tmpfs at start and
+named by `IMMICH_CONFIG_FILE`, so the admin UI shows them read-only (machine learning on through
+`http://immich-machine-learning:3003` with face recognition, smart search, duplicate detection
+and OCR; the storage template `{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}`; no version check; the
+external domain `http://infra-host:2283`; OAuth off; its own nightly database dump at 01:00,
+7 kept, under `/srv/media/photos/backups`). Anything not in that JSON keeps Immich's default.
+`immich-admin` (curl) creates the owner's admin once, after the server is healthy, through the
+admin sign-up API (`status_owner_email`, `IMMICH_ADMIN_PASSWORD`); Immich asks for a new password
+at that first login, and on later releases the one-shot only finds the admin and exits 0.
+
+The ML container uses the GPU (the `-cuda` image) and unloads each model after 5 minutes idle
+(`MACHINE_LEARNING_MODEL_TTL`), so the 12 GB go back to Ollama, ComfyUI and Jellyfin between
+jobs. A big import (a Google Takeout) keeps it busy for hours: chats then run slower, and a
+14B model plus Immich's models may not fit together, in which case Ollama falls back to the
+CPU for that answer. Transcoding of uploaded videos stays on the CPU.
+
 **`home-tls`** is a second Traefik (the edge image and digest) that terminates TLS for
 `home.arbikullakshi.com` and proxies to `home:80` over the `media` network. The apex sends HSTS
 with `includeSubDomains`, so browsers only open `home.` over https. It has no Docker socket: its
@@ -308,18 +344,24 @@ read-only root filesystem and a tmpfs `/tmp`. Kavita does not: its entrypoint co
 `appsettings.json` from the image's `/tmp/config` on first start, which a tmpfs `/tmp` would
 hide; as a non-root user it cannot write anything root owns in the image anyway. Each secret is in
 its own env file, read by its one container (`home-tls.env`, `beszel.env`, `beszel-pair.env`,
-`beszel-agent.env`, `garage.env`, `garage-setup.env`, `sftpgo.env`); `media/.env` holds only the uid and gid,
+`beszel-agent.env`, `garage.env`, `garage-setup.env`, `sftpgo.env`, `immich-postgres.env`,
+`immich-server.env`, `immich-admin.env`); `media/.env` holds only the uid and gid,
 the links page's name and ACME contact and the dashboard's login name.
 
 **GPU.** Jellyfin reserves the GPU like Ollama for NVENC/NVDEC transcodes, and `beszel-agent`
-for reading the GPU's state through NVML (the guard allows exactly `ollama`, `comfyui`,
-`jellyfin` and `beszel-agent`); turn it on in Jellyfin's **Dashboard → Playback → Transcoding**
+for reading the GPU's state through NVML, and `immich-machine-learning` for face recognition,
+smart search and OCR (the guard allows exactly `ollama`, `comfyui`, `jellyfin`, `beszel-agent`
+and `immich-machine-learning`); turn it on in Jellyfin's **Dashboard → Playback → Transcoding**
 ([RUNBOOK.md](../RUNBOOK.md#first-logins)). The 12 GB are shared with Ollama
 ([ai](#ai)): a transcode takes a few hundred MB, so a 7B model and two or three streams fit
 together. Consumer drivers allow a handful of concurrent NVENC sessions, plenty for one home.
 
-**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `audiobookshelf` 1 GiB, `kavita` 1 GiB, `garage` 512 MiB,
-`sftpgo` 256 MiB, `beszel` 192 MiB, `beszel-agent` 128 MiB, `home-tls` 128 MiB, `home` 32 MiB, the one-shots 16–32 MiB.
+**Memory.** `jellyfin` 3 GiB (ffmpeg runs inside it), `immich-machine-learning` 3 GiB, `immich-server`
+2 GiB (thumbnails and encodes of a large import), `immich-postgres` 1 GiB, `audiobookshelf` 1 GiB,
+`kavita` 1 GiB, `garage` 512 MiB, `sftpgo` 256 MiB, `beszel` 192 MiB, `immich-valkey` 128 MiB,
+`beszel-agent` 128 MiB, `home-tls` 128 MiB, `home` 32 MiB, the one-shots 16–32 MiB. These are
+ceilings, not use: Immich idles at about 1 GB in all, and its ML container only grows while a
+model is loaded (it unloads after 5 minutes idle).
 With `ollama` at 8 GiB and the rest, the stacks fit a 16 GB machine with the swap file as a
 buffer; give Ollama less if the server has less RAM.
 
@@ -327,6 +369,6 @@ buffer; give Ollama less if the server has less RAM.
 database irreversibly on a major upgrade. Re-pin, read the release notes, make sure last
 night's backup ran, then release. The nightly backup copies each app's volumes (not
 Jellyfin's cache; Beszel's history and Garage's metadata included, with both stopped) and
-mirrors `audiobooks`, `books`, `podcasts` and Garage's `s3` (while Garage is stopped, so the
+mirrors `audiobooks`, `books`, `podcasts`, Immich's `photos` (after dumping its database) and Garage's `s3` (while Garage is stopped, so the
 objects match that night's metadata); films and series are not
 copied (they would not fit, and can be re-ripped) ([operations.md](operations.md#backups)).

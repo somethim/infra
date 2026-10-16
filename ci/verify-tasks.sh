@@ -114,7 +114,7 @@ scenario() {
   printf '%s\n' "open-webui $ts_ip:8080->8080/tcp, 8080/tcp" "ollama 11434/tcp" "ollama-pull " "edge-traefik 80/tcp" "postgresql 5432/tcp" \
     "jellyfin $ts_ip:8096->8096/tcp" "audiobookshelf $ts_ip:13378->13378/tcp" "kavita $ts_ip:5000->5000/tcp" "home $ts_ip:80->80/tcp" "home-tls $ts_ip:443->443/tcp, 80/tcp" \
     "beszel $ts_ip:8090->8090/tcp" "beszel-agent " "garage $ts_ip:3900->3900/tcp, 3901/tcp, 3903/tcp" \
-    "sftpgo $ts_ip:8091->8091/tcp" >"$work/state/docker.ps"
+    "sftpgo $ts_ip:8091->8091/tcp" "immich-server $ts_ip:2283->2283/tcp" "immich-postgres 5432/tcp" >"$work/state/docker.ps"
 }
 run() {
   local role="$1"

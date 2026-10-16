@@ -1,6 +1,6 @@
-# Jellyfin, Audiobookshelf and Kavita, the Beszel status dashboard, Garage S3
-# storage, and a links page to them and Open WebUI, for the owner over the
-# tailnet only.
+# Jellyfin, Audiobookshelf and Kavita, the Immich photo library, the Beszel
+# status dashboard, Garage S3 storage with the SFTPGo file manager, and a links
+# page to them and Open WebUI, for the owner over the tailnet only.
 # See docs/stacks.md. Each publishes one port on the host's Tailscale address
 # and nowhere else (TAILSCALE_IP comes from /etc/infra/host.env, which
 # infra-apply exports); never through the tunnel or the edge Traefik
@@ -16,7 +16,9 @@
 # Cloudflare DNS token for the links page's certificate), beszel.env,
 # beszel-pair.env and beszel-agent.env (the dashboard's owner password and
 # agent token), garage.env and garage-setup.env (Garage's RPC secret, admin
-# token and the owner's S3 key).
+# token and the owner's S3 key), sftpgo.env (the file manager's password),
+# immich-postgres.env and immich-server.env (Immich's database password) and
+# immich-admin.env (the first Immich admin's password).
 name: media
 
 services:
@@ -157,9 +159,9 @@ services:
     labels:
       - autoheal=true
 
-  # The links page: http://infra-host/ shows Open WebUI, the three services
-  # above, the status dashboard and the file manager as six tiles (two by
-  # three), so nobody has to remember a port; /files.html lists the other ways
+  # The links page: http://infra-host/ shows Open WebUI, Immich, the three
+  # services above, the file manager and the status dashboard as seven tiles
+  # (two columns, the last across the bottom row), so nobody has to remember a port; /files.html lists the other ways
   # into the files bucket (WebDAV, rclone, S3 apps). busybox
   # httpd serves both pages from tmpfs; they are HOME_HTML and FILES_HTML below
   # (no host file, no bind mount). Port 80 needs no capability: Docker lets any user
@@ -204,7 +206,7 @@ services:
         html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
           font: 16px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
         main { height: 100vh; height: 100dvh; display: grid; gap: 12px;
-          grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 1fr;
+          grid-template-columns: 1fr 1fr; grid-template-rows: repeat(4, 1fr);
           padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
                    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
         a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
@@ -212,6 +214,8 @@ services:
           background: var(--tile); border: 1px solid var(--edge); border-radius: 20px; }
         a:hover, a:focus-visible { border-color: var(--c); outline: none; }
         a:active { transform: scale(0.98); }
+        /* Seven tiles in two columns: the last one, Status, spans the bottom row. */
+        a:last-child { grid-column: span 2; }
         svg { width: clamp(36px, 10vmin, 80px); height: auto; color: var(--c); }
         b { font-size: clamp(17px, 3.6vmin, 28px); font-weight: 600; }
         span { font-size: clamp(13px, 2.4vmin, 18px); color: var(--muted); }
@@ -222,6 +226,10 @@ services:
         <a data-port="8080" href="http://infra-host:8080" style="--c: #10a37f">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>
           <b>Open WebUI</b><span>AI chat</span>
+        </a>
+        <a data-port="2283" href="http://infra-host:2283" style="--c: #4250af">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
+          <b>Photos</b><span>Immich</span>
         </a>
         <a data-port="8096" href="http://infra-host:8096" style="--c: #7c5cff">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/></svg>
@@ -235,13 +243,13 @@ services:
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10 5 7 4.5 3 5v13c4-.5 7 0 9 1.5 2-1.5 5-2 9-1.5V5c-4-.5-7 0-9 1.5z"/><path d="M12 6.5v13"/></svg>
           <b>Kavita</b><span>Books</span>
         </a>
-        <a data-port="8090" href="http://infra-host:8090" style="--c: #e0457b">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></svg>
-          <b>Status</b><span>Server &amp; containers</span>
-        </a>
         <a data-port="8091" href="http://infra-host:8091/web/client" style="--c: #c9a227">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
           <b>Files</b><span>Upload, browse &amp; share</span>
+        </a>
+        <a data-port="8090" href="http://infra-host:8090" style="--c: #e0457b">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></svg>
+          <b>Status</b><span>Server &amp; containers</span>
         </a>
         </main>
         </body>
@@ -838,6 +846,242 @@ services:
     labels:
       - autoheal=true
 
+  # Immich, the photo library (http://infra-host:2283; the phone app backs up
+  # to it over Tailscale). Four services from the pinned release's own compose
+  # file (immich-app/immich v3.2.4: docker-compose.yml and its rootless
+  # variant), run the hardened way: the media account, read-only root,
+  # no capabilities. The photos live on the media disk at /srv/media/photos
+  # (the only folder Immich writes; the nightly backup mirrors it without the
+  # regenerable thumbs and encoded-video), its database on the SSD
+  # (immich-pgdata), its ML models in immich-ml-cache. Postgres and Valkey sit on
+  # the internal immich network only; the server joins media for its port and to
+  # reach the ML container, which joins media for its one-time model downloads
+  # from Hugging Face. Server settings are code: IMMICH_CONFIG_FILE, written
+  # from IMMICH_CONFIG_JSON at start, makes them read-only in the admin UI.
+  immich-postgres:
+    # Exactly the database image the Immich release names (Postgres 14 with the
+    # VectorChord and pgvecto.rs extensions it needs); not the shared Postgres 18.
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    container_name: immich-postgres
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 1g
+    restart: always
+    read_only: true
+    # The entrypoint writes its config to /etc/postgresql; Postgres its socket to
+    # /var/run/postgresql. shm: Immich's compose gives the database 128 MB.
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql:uid=${MEDIA_UID},gid=${MEDIA_GID},mode=0700
+      - /etc/postgresql:uid=${MEDIA_UID},gid=${MEDIA_GID},mode=0700
+      - /dev/shm:size=134217728
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: immich-postgres.env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: --data-checksums
+      DB_STORAGE_TYPE: SSD
+    volumes:
+      - type: volume
+        source: immich-pgdata
+        target: /var/lib/postgresql/data
+        volume:
+          nocopy: true
+    networks:
+      - immich
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d immich -h /var/run/postgresql"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
+
+  # Immich's job queue. Nothing in it needs to survive a restart (Immich re-queues
+  # missing work in its nightly jobs), so no persistence and no volume.
+  immich-valkey:
+    image: docker.io/valkey/valkey:9@sha256:70739f85ad2ee01a726a965584a0f94895f01b0c60b3cc8b0aeef11eaa6888cf
+    container_name: immich-valkey
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 128m
+    restart: always
+    read_only: true
+    tmpfs:
+      - /data
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    command: [valkey-server, --save, "", --appendonly, "no"]
+    networks:
+      - immich
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - autoheal=true
+
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:v3.2.4@sha256:d317916b28090c33eb36b308464ea391f8b7df1d850fcfea227a39ec879718c2
+    container_name: immich-server
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    # Thumbnails and video encodes of a large import peak here.
+    mem_limit: 2g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: immich-server.env
+    environment:
+      TZ: Europe/Tirane
+      DB_HOSTNAME: immich-postgres
+      DB_USERNAME: postgres
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: immich-valkey
+      IMMICH_CONFIG_FILE: /tmp/immich.json
+      # Merged over Immich's defaults. Links Immich shows use the tailnet name
+      # (HSTS keeps them off home.<domain>). Its own nightly database dumps go to
+      # /data/backups, which the backup disk mirror then carries too.
+      IMMICH_CONFIG_JSON: |
+        {
+          "machineLearning": {
+            "enabled": true,
+            "urls": ["http://immich-machine-learning:3003"],
+            "clip": {"enabled": true},
+            "facialRecognition": {"enabled": true},
+            "duplicateDetection": {"enabled": true},
+            "ocr": {"enabled": true}
+          },
+          "storageTemplate": {"enabled": true, "template": "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"},
+          "newVersionCheck": {"enabled": false},
+          "server": {"externalDomain": "http://infra-host:2283", "publicUsers": false},
+          "oauth": {"enabled": false},
+          "passwordLogin": {"enabled": true},
+          "backup": {"database": {"enabled": true, "cronExpression": "0 1 * * *", "keepLastAmount": 7}}
+        }
+    # The image's entrypoint is tini -- bash -c; write the settings, then its own start.sh.
+    command: ["printf '%s' \"$$IMMICH_CONFIG_JSON\" >/tmp/immich.json && exec start.sh"]
+    ports:
+      - "${TAILSCALE_IP}:2283:2283"
+    volumes:
+      - type: bind
+        source: /srv/media/photos
+        target: /data
+        bind:
+          create_host_path: false
+    depends_on:
+      immich-postgres:
+        condition: service_healthy
+      immich-valkey:
+        condition: service_healthy
+    networks:
+      - media
+      - immich
+    healthcheck:
+      test: ["CMD-SHELL", "immich-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+
+  # Face recognition, smart search, OCR and duplicate detection, on the GPU
+  # (the CUDA build). The 12 GB are shared with Ollama, ComfyUI and Jellyfin:
+  # each model leaves VRAM and RAM after MACHINE_LEARNING_MODEL_TTL seconds idle.
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:v3.2.4-cuda@sha256:b9fdebfe7f07ff71f77e9d67d509d83c5e055da486a07c12080669c82a80c65e
+    container_name: immich-machine-learning
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 3g
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /cache
+      MACHINE_LEARNING_CACHE_FOLDER: /cache
+      MACHINE_LEARNING_MODEL_TTL: "300"
+    volumes:
+      - type: volume
+        source: immich-ml-cache
+        target: /cache
+        volume:
+          nocopy: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - media
+    healthcheck:
+      test: ["CMD-SHELL", "python3 healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - autoheal=true
+
+  # One-shot: creates the owner's Immich admin once (admin sign-up only works
+  # while no user exists), STATUS_OWNER_EMAIL with IMMICH_ADMIN_PASSWORD. Immich
+  # asks for a new password at that first login; after that the account is the
+  # app's, and this only checks that the server is initialised. Prints no secret.
+  immich-admin:
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    container_name: immich-admin
+    user: "${MEDIA_UID}:${MEDIA_GID}"
+    mem_limit: 32m
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    env_file: immich-admin.env
+    environment:
+      OWNER_EMAIL: ${STATUS_OWNER_EMAIL}
+      ADMIN_SH: |
+        set -eu
+        api=http://immich-server:2283/api
+        i=0
+        until config="$$(curl -sS -f "$$api/server/config" 2>/dev/null)"; do
+          i=$$((i + 1)); [ "$$i" -lt 90 ] || { echo "immich-admin: Immich did not answer within 3 minutes" >&2; exit 1; }
+          sleep 2
+        done
+        if printf '%s' "$$config" | grep -q '"isInitialized":true'; then
+          echo "immich-admin: Immich already has its admin"
+          exit 0
+        fi
+        code="$$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+          --data "{\"email\":\"$$OWNER_EMAIL\",\"password\":\"$$IMMICH_ADMIN_PASSWORD\",\"name\":\"Owner\"}" "$$api/auth/admin-sign-up")"
+        case "$$code" in
+          201|200) echo "immich-admin: created the admin $$OWNER_EMAIL" ;;
+          *) echo "immich-admin: the admin sign-up answered $$code" >&2; exit 1 ;;
+        esac
+    command: [sh, -c, "printf '%s' \"$$ADMIN_SH\" >/tmp/admin.sh && exec sh /tmp/admin.sh"]
+    depends_on:
+      immich-server:
+        condition: service_healthy
+    networks:
+      - media
+
 networks:
   media:
     name: media
@@ -846,6 +1090,10 @@ networks:
   # socket proxy are on it.
   beszel-socket:
     name: beszel-socket
+    external: true
+  # Created by provisioning (roles/host), internal: Immich's database and queue.
+  immich:
+    name: immich
     external: true
 
 volumes:
@@ -878,4 +1126,10 @@ volumes:
     external: true
   sftpgo-data:
     name: sftpgo-data
+    external: true
+  immich-pgdata:
+    name: immich-pgdata
+    external: true
+  immich-ml-cache:
+    name: immich-ml-cache
     external: true

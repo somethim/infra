@@ -53,17 +53,20 @@ readonly bundle_files=(
   ai/docker-compose.yml ai/.env ai/open-webui.env ai/searxng.env
   media/docker-compose.yml media/.env media/home-tls.env
   media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env
+  media/immich-postgres.env media/immich-server.env media/immich-admin.env
 )
 readonly env_files=(release.env ghcr.env database/postgres.env portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env
+  media/immich-postgres.env media/immich-server.env media/immich-admin.env)
 readonly secret_files=(ghcr.env database/postgres.env database/provision.sql portfolio/.env portfolio/portfolio.env hypernova/.env hypernova/provider.env tunnel/tunnel.env
-  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env manifest.sha256)
+  ai/.env ai/open-webui.env ai/searxng.env media/.env media/home-tls.env media/beszel.env media/beszel-pair.env media/beszel-agent.env media/garage.env media/garage-setup.env media/sftpgo.env
+  media/immich-postgres.env media/immich-server.env media/immich-admin.env manifest.sha256)
 # The only published ports, "<container> <port>", each bound to the host's
 # Tailscale address alone (the compose guard's TAILNET_PORTS).
-readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443" "beszel 8090" "garage 3900" "sftpgo 8091")
+readonly tailnet_ports=("open-webui 8080" "jellyfin 8096" "audiobookshelf 13378" "kavita 5000" "home 80" "home-tls 443" "beszel 8090" "garage 3900" "sftpgo 8091" "immich-server 2283")
 # One-shots whose work a release depends on: each must exit 0 (the dashboard's
-# pairing and Garage's layout, key and bucket).
-readonly checked_one_shots=(beszel-pair garage-setup)
+# pairing, Garage's layout, key and bucket, and Immich's first admin).
+readonly checked_one_shots=(beszel-pair garage-setup immich-admin)
 readonly tailscale_ip_pattern='^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
 readonly service_user_pattern='^[1-9][0-9]*:[1-9][0-9]*$'
 # Traefik and cloudflared, by container name, on the shared edge network.
@@ -263,6 +266,9 @@ validate_env_files() {
     '^OWNER_SECRET_ACCESS_KEY=[0-9a-f]{64}$'
   require_env "$dir" media/sftpgo.env '^FILES_PASSWORD=[A-Za-z0-9]{16,}$' '^S3_ACCESS_KEY_ID=GK[0-9a-f]{24}$' \
     '^S3_SECRET_ACCESS_KEY=[0-9a-f]{64}$'
+  require_env "$dir" media/immich-postgres.env '^POSTGRES_PASSWORD=[A-Za-z0-9]{32,}$'
+  require_env "$dir" media/immich-server.env '^DB_PASSWORD=[A-Za-z0-9]{32,}$'
+  require_env "$dir" media/immich-admin.env '^IMMICH_ADMIN_PASSWORD=[A-Za-z0-9]{16,}$'
 }
 
 # require_env <bundle dir> <file> <line pattern>...: the file holds exactly one
@@ -619,8 +625,8 @@ check_home_tls() {
 # The one-shots the dashboard and S3 storage depend on finished with exit
 # status 0: beszel-pair registered the agent's token and wrote the hub's key
 # (the agent starts only after it), garage-setup assigned the layout,
-# imported the owner's key and created the files bucket. Each prints why it
-# failed, never a secret.
+# imported the owner's key and created the files bucket, immich-admin created
+# Immich's first admin (or found it). Each prints why it failed, never a secret.
 check_one_shots() {
   local name state deadline=$((SECONDS + route_wait_seconds))
   for name in "${checked_one_shots[@]}"; do
@@ -637,7 +643,7 @@ check_one_shots() {
       sleep "$poll_seconds"
     done
   done
-  log "${checked_one_shots[*]} finished: the dashboard's agent is paired, and S3 has its layout, the owner's key and the files bucket"
+  log "${checked_one_shots[*]} finished: the dashboard's agent is paired, S3 has its layout, the owner's key and the files bucket, and Immich has its admin"
 }
 
 # Each tailnet-only port is bound to the Tailscale address and nothing else, as

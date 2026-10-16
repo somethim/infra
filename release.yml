@@ -21,6 +21,9 @@
 #   media/garage.env        RPC secret, admin token (garage)
 #   media/garage-setup.env  admin token, S3 key     (garage-setup, imports the owner's key)
 #   media/sftpgo.env        files password, S3 key  (sftpgo, the file manager)
+#   media/immich-postgres.env  Immich DB password    (immich-postgres)
+#   media/immich-server.env    Immich DB password    (immich-server)
+#   media/immich-admin.env     first admin password  (immich-admin, creates the admin once)
 #   ghcr.env                registry login          (infra-apply's docker login)
 # The <stack>/.env files hold only image references, domains, uids and the models.
 - name: Render the infra release bundle on the runner
@@ -57,6 +60,8 @@
       - garage_owner_access_key_id
       - garage_owner_secret_key
       - files_password
+      - immich_db_password
+      - immich_admin_password
 
   pre_tasks:
     - name: Require deploy secrets
@@ -83,6 +88,8 @@
           - garage_owner_access_key_id | default('') is match('^GK[0-9a-f]{24}$')
           - garage_owner_secret_key | default('') is match('^[0-9a-f]{64}$')
           - files_password | default('') is match('^[A-Za-z0-9]{16,}$')
+          - immich_db_password | default('') is match('^[A-Za-z0-9]{32,}$')
+          - immich_admin_password | default('') is match('^[A-Za-z0-9]{16,}$')
         fail_msg: >-
           Missing or invalid deploy secrets: the GHCR login, three distinct database passwords of at least
           32 letters and digits, PORTFOLIO_TOTP_ENCRYPTION_KEY as base64 of 32 bytes, the portfolio and
@@ -93,8 +100,9 @@
           digits (openssl rand -hex 32), BESZEL_PASSWORD of at least 16 letters and digits, BESZEL_AGENT_TOKEN
           of at least 32 letters, digits and -, GARAGE_RPC_SECRET as 64 hex digits, GARAGE_ADMIN_TOKEN of at
           least 32 letters and digits, GARAGE_OWNER_ACCESS_KEY_ID as GK and 24 hex digits and
-          GARAGE_OWNER_SECRET_KEY as 64 hex digits, and FILES_PASSWORD of at least 16 letters and digits
-          (RUNBOOK.md, "Rotating a secret").
+          GARAGE_OWNER_SECRET_KEY as 64 hex digits, FILES_PASSWORD of at least 16 letters and digits,
+          IMMICH_DB_PASSWORD of at least 32 letters and digits and IMMICH_ADMIN_PASSWORD of at least 16
+          letters and digits (RUNBOOK.md, "Rotating a secret").
         quiet: true
 
     - name: Refuse deploy values the Compose env files would rewrite
@@ -197,6 +205,9 @@
         - { src: media/garage.env.j2, dest: media/garage.env }
         - { src: media/garage-setup.env.j2, dest: media/garage-setup.env }
         - { src: media/sftpgo.env.j2, dest: media/sftpgo.env }
+        - { src: media/immich-postgres.env.j2, dest: media/immich-postgres.env }
+        - { src: media/immich-server.env.j2, dest: media/immich-server.env }
+        - { src: media/immich-admin.env.j2, dest: media/immich-admin.env }
         - { src: ghcr.env.j2, dest: ghcr.env }
       loop_control:
         label: "{{ item.dest }}"

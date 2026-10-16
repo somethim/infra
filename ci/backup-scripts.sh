@@ -23,9 +23,17 @@ state="$FAKE_STATE"
 printf '%s\n' "$*" >>"$state/calls"
 case "$1" in
   exec)
-    [ "$*" = "exec postgresql pg_dumpall -U postgres" ] || { echo "fake docker: unsupported exec: $*" >&2; exit 2; }
-    [ ! -f "$state/pg.rc" ] || { echo "pg_dumpall: error: connection to server failed" >&2; exit "$(cat "$state/pg.rc")"; }
-    printf -- '--\n-- PostgreSQL database cluster dump\n--\nCREATE ROLE portfolio;\n'
+    case "$*" in
+      "exec postgresql pg_dumpall -U postgres")
+        [ ! -f "$state/pg.rc" ] || { echo "pg_dumpall: error: connection to server failed" >&2; exit "$(cat "$state/pg.rc")"; }
+        printf -- '--\n-- PostgreSQL database cluster dump\n--\nCREATE ROLE portfolio;\n'
+        ;;
+      "exec immich-postgres pg_dumpall --clean --if-exists -U postgres")
+        [ ! -f "$state/immich-pg.rc" ] || { echo "pg_dumpall: error: connection to server failed" >&2; exit "$(cat "$state/immich-pg.rc")"; }
+        printf -- '--\n-- PostgreSQL database cluster dump\n--\nCREATE TABLE public.asset ();\n'
+        ;;
+      *) echo "fake docker: unsupported exec: $*" >&2; exit 2 ;;
+    esac
     ;;
   container)
     [ "$2 $3 $4" = "inspect --format {{.State.Running}}" ] || { echo "fake docker: unsupported: $*" >&2; exit 2; }
@@ -91,8 +99,14 @@ new_state() {
   echo film >"$state/media/movies/film.mkv"
   mkdir -p "$state/media/s3/ab/cd"
   echo object >"$state/media/s3/ab/cd/abcdef"
+  mkdir -p "$state/media/photos/library/admin/2024/2024-05-01" "$state/media/photos/thumbs/u1" "$state/media/photos/encoded-video/u1" \
+    "$state/media/photos/backups"
+  echo photo >"$state/media/photos/library/admin/2024/2024-05-01/IMG_0001.jpg"
+  echo thumb >"$state/media/photos/thumbs/u1/a_thumbnail.webp"
+  echo video >"$state/media/photos/encoded-video/u1/a.mp4"
+  echo dump >"$state/media/photos/backups/immich-db-backup.sql.gz"
   touch "$state/running/jellyfin" "$state/running/audiobookshelf" "$state/running/open-webui" "$state/stopped/kavita" \
-    "$state/running/beszel" "$state/running/garage" "$state/running/sftpgo"
+    "$state/running/beszel" "$state/running/garage" "$state/running/sftpgo" "$state/running/immich-postgres"
 }
 
 run_backup() {
@@ -177,6 +191,17 @@ expect_ok "a second night" 2026-10-16
 [ ! -e "$state/backup/media/podcasts/Show/ep1.mp3" ] && [ -f "$state/backup/media/podcasts/Show/ep2.mp3" ] || { echo "FAIL the mirror does not follow deletions"; exit 1; }
 [ -f "$state/backup/postgres/2026-10-15.sql.gz" ] && [ -f "$state/backup/postgres/2026-10-16.sql.gz" ] || { echo "FAIL a second night replaced the first"; exit 1; }
 echo "ok   media: audiobooks, books and podcasts mirrored with --delete, movies and shows not"
+idump="$state/backup/immich/2026-10-15.sql.gz"
+if [ ! -f "$idump" ] || ! gzip -cd "$idump" | grep -q "CREATE TABLE public.asset"; then find "$state/backup"; echo "FAIL no Immich database dump"; exit 1; fi
+[ "$(stat -c %a "$idump")" = 600 ] && [ "$(stat -c %a "$state/backup/immich")" = 700 ] || { echo "FAIL the Immich dump is not 0600 in a 0700 directory"; exit 1; }
+[ -f "$state/backup/media/photos/library/admin/2024/2024-05-01/IMG_0001.jpg" ] && [ -f "$state/backup/media/photos/backups/immich-db-backup.sql.gz" ] ||
+  { find "$state/backup/media/photos"; echo "FAIL Immich's originals or its own dumps are not mirrored"; exit 1; }
+[ ! -e "$state/backup/media/photos/thumbs" ] && [ ! -e "$state/backup/media/photos/encoded-video" ] ||
+  { find "$state/backup/media/photos"; echo "FAIL Immich's thumbnails or encoded video were mirrored"; exit 1; }
+dump_line="$(grep -n '^exec immich-postgres' "$state/calls" | head -n 1 | cut -d: -f1)"
+photos_line="$(grep -n "^rsync $state/media/photos/$" "$state/calls" | head -n 1 | cut -d: -f1)"
+[ -n "$dump_line" ] && [ -n "$photos_line" ] && [ "$dump_line" -lt "$photos_line" ] || { cat "$state/calls"; echo "FAIL Immich's database was not dumped before its photos were mirrored"; exit 1; }
+echo "ok   Immich: its database dumped to immich/<date>.sql.gz before the photos are mirrored without thumbs and encoded video"
 
 ### Retention
 
@@ -209,6 +234,16 @@ expect_failed "pg_dumpall fails" "FAILED: pg_dumpall of the postgresql container
 [ -d "$state/backup/apps/2026-10-15" ] && [ -d "$state/backup/media/books" ] || { echo "FAIL a failed dump stopped the other steps"; exit 1; }
 grep -q 'FAILED: 1 step(s) failed' "$work/out" || { cat "$work/out"; echo "FAIL no summary of the failed steps"; exit 1; }
 echo "ok   a failed dump leaves no partial file, keeps the earlier dumps, and the other steps still run"
+
+new_state
+echo 1 >"$state/immich-pg.rc"
+expect_failed "Immich's pg_dumpall fails" "FAILED: pg_dumpall of the immich-postgres container failed"
+[ -z "$(find "$state/backup" -name '.*partial')" ] && [ -d "$state/backup/media/photos" ] || { find "$state/backup"; echo "FAIL a failed Immich dump left a partial file or stopped the photo mirror"; exit 1; }
+new_state
+rm "$state/running/immich-postgres"
+expect_ok "a host without Immich yet"
+grep -q "immich-postgres is not running .*its dump was skipped" "$work/out" && [ ! -e "$state/backup/immich" ] || { cat "$work/out"; echo "FAIL a missing Immich was not skipped"; exit 1; }
+echo "ok   Immich: a failed dump fails the run without a partial file; a host without Immich yet skips the dump"
 
 new_state
 rm -rf "$state/media/books"
