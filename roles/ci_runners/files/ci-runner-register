@@ -17,8 +17,12 @@ count="$4"
 [[ "$labels" =~ ^[A-Za-z0-9_.,-]{1,100}$ ]] || { echo "ci-runner-register: bad labels" >&2; exit 1; }
 [[ "$count" =~ ^[1-9]$ ]] || { echo "ci-runner-register: count must be 1-9" >&2; exit 1; }
 
+# Read the token only if one is piped in; never wait on an open, silent stdin
+# (provisioning sends none when every runner is already registered).
 token=""
-IFS= read -r token || true
+if [ ! -t 0 ]; then
+  IFS= read -r -t 10 token || true
+fi
 for n in $(seq 1 "$count"); do
   dir="/home/runner/runners/$n"
   name="${prefix}-${n}"

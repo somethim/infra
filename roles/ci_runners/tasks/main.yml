@@ -234,7 +234,8 @@
     cmd: >-
       incus exec {{ ci_runners_container }} -- /usr/local/sbin/ci-runner-register
       {{ ci_runners_repo }} {{ ci_runners_name_prefix }} {{ ci_runners_labels }} {{ ci_runners_count }}
-    stdin: "{{ ci_token.stdout | default('') }}"
+    # Always send a line, so the script's read returns even with no token.
+    stdin: "{{ ci_token.stdout | default('') }}\n"
   register: ci_register
   changed_when: "'registered' in ci_register.stdout"
   no_log: true
