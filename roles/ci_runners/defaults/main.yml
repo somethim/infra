@@ -8,10 +8,12 @@
 # false: provisioning skips the role entirely.
 ci_runners_enabled: false
 # The repository the runners serve (owner/name) and how many run side by side.
-# 2, not 4: four parallel Go builds plus their Postgres/browser services filled
-# the 8 GiB cap, the runners were killed and the host swapped (2026-10-17).
+# 1: four parallel Go builds filled the 8 GiB cap (the runners were killed and
+# the host swapped), and with two, the Backend and App test jobs both publish
+# Postgres on host port 5432 and the second fails (2026-10-17). One runner runs
+# every job in turn.
 ci_runners_repo: synis-ai/synis-ai
-ci_runners_count: 2
+ci_runners_count: 1
 # Runner names are <prefix>-1 .. <prefix>-N; the labels are added to the default
 # self-hosted, Linux, X64.
 ci_runners_name_prefix: home-ci

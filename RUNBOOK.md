@@ -1338,7 +1338,7 @@ when convenient. A TV app that cannot use a name can still use the server's `100
 
 ## 13. CI runners for synis-ai
 
-Two self-hosted GitHub Actions runners for `synis-ai/synis-ai` (`home-ci-1`, `home-ci-2`,
+One self-hosted GitHub Actions runner for `synis-ai/synis-ai` (`home-ci-1`, one job at a time,
 labels `self-hosted, linux, x64, synis`) run in an Incus system container, `ci-runners`, on this
 host (roles/ci_runners, [docs/host.md](docs/host.md#ci-runners)). Jobs run repository code and
 receive Synis's deploy secrets, so they never run on the host itself:
@@ -1366,7 +1366,7 @@ git -C ~/Work/Personal/infra fetch -q && cd ~/.cache/infra-clean && git checkout
 ansible-playbook -u admin --ask-become-pass provision.yml --tags ci_runners
 ```
 
-Expect the two runners online at the end (`gh api repos/synis-ai/synis-ai/actions/runners`)
+Expect the one runner online at the end (`gh api repos/synis-ai/synis-ai/actions/runners`)
 and the read-back: caps, Docker, Chrome, the TUN device, disk, GitHub reachable and the host's
 tailnet address not.
 
