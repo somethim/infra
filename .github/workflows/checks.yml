@@ -55,7 +55,7 @@ jobs:
           tar -xJf "${RUNNER_TEMP}/shellcheck.tar.xz" -C "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/shellcheck-v0.11.0/shellcheck" build-bundle.sh release-images.sh ci/*.sh \
             roles/common/files/infra-deploy-gate roles/common/files/infra-apply roles/host/files/infra-firewall roles/host/files/infra-backup \
-            roles/ci_runners/files/ci-runners-firewall roles/ci_runners/files/ci-runner-setup roles/ci_runners/files/ci-runner-register
+            roles/ci_runners/files/ci-runners-firewall roles/ci_runners/files/ci-runner-setup roles/ci_runners/files/ci-runner-register roles/ci_runners/files/ci-beszel-agent-setup roles/ci_runners/files/ci-beszel-register
 
       - name: Install the Docker Compose the host runs
         run: |

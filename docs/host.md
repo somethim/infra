@@ -324,6 +324,15 @@ Actions runners for `synis-ai/synis-ai` in one unprivileged system container, `c
   container's disk.
 - **Credentials**: registration tokens are made per provisioning run on the laptop and passed on
   stdin; the runners hold only their own runner credentials, as any self-hosted runner does.
+- **In the status dashboard as "ci-runners"**: the container has a fixed address
+  (`ci_runners_address`, 10.250.0.10) and runs Beszel's agent (a pinned, checksum-verified binary
+  under a systemd `DynamicUser`, reading Docker through a read-only socket proxy on 127.0.0.1:2375
+  that answers the same four calls as the host's). The **hub dials the agent** (Beszel's SSH mode,
+  port 45876; the agent answers only the hub's key), so the container still opens nothing towards
+  the host, the tailnet or a private network. ci-runners-firewall's one exception: new TCP
+  connections from the hub's Docker network (`media`) to 10.250.0.10:45876, and the agent's
+  replies on those connections. Provisioning adds the system to the hub with the owner's login,
+  as the dashboard's "Add system" dialog would (`files/ci-beszel-register`).
 
 ## Snowflake
 

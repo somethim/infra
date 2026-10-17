@@ -15,6 +15,12 @@
       - ci_runners_bridge is match('^[a-zA-Z0-9._-]{1,15}$')
       - ci_runners_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
       - ci_runners_sha256 is match('^[0-9a-f]{64}$')
+      - ci_runners_address is match('^10\\.250\\.0\\.([2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])$')
+      - ci_runners_beszel_name is match('^[a-z0-9-]{1,40}$')
+      - ci_runners_beszel_port | int >= 1024 and ci_runners_beszel_port | int <= 65535
+      - ci_runners_beszel_hub_network is match('^[a-zA-Z0-9._-]{1,64}$')
+      - ci_runners_beszel_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - ci_runners_beszel_sha256 is match('^[0-9a-f]{64}$')
     fail_msg: "ci_runners_* in roles/ci_runners/defaults/main.yml or production.yml is malformed"
     quiet: true
 
@@ -57,6 +63,19 @@
   register: ci_ufw
   changed_when: "'Skipping' not in ci_ufw.stdout"
 
+- name: Write the CI runners' firewall settings
+  ansible.builtin.copy:
+    dest: /etc/default/ci-runners-firewall
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Written by roles/ci_runners; read by ci-runners-firewall.service.
+      CI_BRIDGE={{ ci_runners_bridge }}
+      CI_BESZEL_AGENT={{ (ci_runners_address ~ ':' ~ ci_runners_beszel_port) if ci_runners_beszel | bool else '' }}
+      CI_BESZEL_HUB_NETWORK={{ ci_runners_beszel_hub_network }}
+  register: ci_firewall_settings
+
 - name: Install the CI runners' firewall
   ansible.builtin.copy:
     src: "{{ item.src }}"
@@ -73,7 +92,7 @@
   ansible.builtin.systemd:
     name: ci-runners-firewall.service
     enabled: true
-    state: "{{ 'restarted' if ci_firewall_files is changed else 'started' }}"
+    state: "{{ 'restarted' if (ci_firewall_files is changed or ci_firewall_settings is changed) else 'started' }}"
     daemon_reload: true
 
 - name: Read whether the CI container exists
@@ -130,11 +149,34 @@
     incus config device add {{ ci_runners_container }} tun unix-char source=/dev/net/tun path=/dev/net/tun
   when: "'tun' not in ci_devices.stdout_lines"
 
+# A fixed address, so the firewall and the hub can name the container.
+- name: Read the CI container's address setting
+  ansible.builtin.command: incus config device get {{ ci_runners_container }} eth0 ipv4.address
+  register: ci_address
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Give the CI container the fixed address {{ ci_runners_address }}
+  ansible.builtin.shell: |
+    set -eu
+    incus config device set {{ ci_runners_container }} eth0 ipv4.address={{ ci_runners_address }} 2>/dev/null ||
+      incus config device override {{ ci_runners_container }} eth0 ipv4.address={{ ci_runners_address }}
+  register: ci_address_set
+  when: ci_address.stdout | trim != ci_runners_address
+
 - name: Start the CI container
   ansible.builtin.command: incus start {{ ci_runners_container }}
   register: ci_start
   failed_when: ci_start.rc != 0 and 'already running' not in ci_start.stderr
   changed_when: ci_start.rc == 0
+
+# A running container keeps its old lease until it restarts.
+- name: Restart the CI container onto its new address
+  ansible.builtin.command: incus restart {{ ci_runners_container }}
+  when:
+    - ci_address_set is changed
+    - ci_start.rc != 0
 
 - name: Wait for the CI container's network
   ansible.builtin.command: incus exec {{ ci_runners_container }} -- getent hosts download.docker.com
@@ -153,12 +195,12 @@
     owner: root
     group: root
     mode: "0755"
-  loop: [ci-runner-setup, ci-runner-register]
+  loop: [ci-runner-setup, ci-runner-register, ci-beszel-agent-setup]
 
 - name: Push the runner setup and registration scripts into the CI container
   ansible.builtin.command: >-
     incus file push --mode 0755 /usr/local/libexec/{{ item }} {{ ci_runners_container }}/usr/local/sbin/{{ item }}
-  loop: [ci-runner-setup, ci-runner-register]
+  loop: [ci-runner-setup, ci-runner-register, ci-beszel-agent-setup]
   changed_when: false
 
 - name: Set up the CI container (Docker, Chrome, the runner account and {{ ci_runners_count }} runners)
@@ -196,6 +238,94 @@
   register: ci_register
   changed_when: "'registered' in ci_register.stdout"
   no_log: true
+
+# The container in the status dashboard (docs/host.md, "CI runners"). The hub's
+# public key comes from beszel-pair's output on this host; the hub then dials
+# the agent at ci_runners_address:ci_runners_beszel_port.
+- name: Copy the dashboard registration script to the host
+  ansible.builtin.copy:
+    src: ci-beszel-register
+    dest: /usr/local/libexec/ci-beszel-register
+    owner: root
+    group: root
+    mode: "0755"
+  when: ci_runners_beszel | bool
+
+- name: Read the status dashboard hub's public key
+  ansible.builtin.slurp:
+    src: /var/lib/docker/volumes/beszel-agent-data/_data/hub.pub
+  register: ci_hub_key
+  failed_when: false
+  when: ci_runners_beszel | bool
+
+- name: Say why the CI container is not in the status dashboard yet
+  ansible.builtin.debug:
+    msg: >-
+      No hub key at /var/lib/docker/volumes/beszel-agent-data/_data/hub.pub: release the media stack
+      (beszel-pair writes it), then provision --tags ci_runners again to add the CI container to Beszel.
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is not defined
+
+- name: Put the hub's public key into the CI container
+  ansible.builtin.shell: |
+    set -eu
+    incus exec {{ ci_runners_container }} -- install -d -m 0755 /etc/beszel-agent
+    printf '%s' "$KEY" | incus exec {{ ci_runners_container }} -- sh -c 'cat >/etc/beszel-agent/hub.pub && chmod 0644 /etc/beszel-agent/hub.pub'
+  environment:
+    KEY: "{{ ci_hub_key.content | b64decode }}"
+  changed_when: false
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is defined
+
+- name: Install Beszel's agent in the CI container (the hub dials it on port {{ ci_runners_beszel_port }})
+  ansible.builtin.command: >-
+    incus exec {{ ci_runners_container }} -- /usr/local/sbin/ci-beszel-agent-setup
+    {{ ci_runners_beszel_version }} {{ ci_runners_beszel_sha256 }} {{ ci_runners_beszel_port }}
+  changed_when: false
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is defined
+
+# Adds (or points) the system "ci-runners" at the agent, as the dashboard's own
+# "Add system" dialog would, with the owner's login from the current release's
+# beszel-pair.env, from a throwaway container on the hub's network
+# (files/ci-beszel-register).
+- name: Add the CI container to the status dashboard
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - "{{ ci_runners_beszel_hub_network }}"
+      - --read-only
+      - --cap-drop
+      - ALL
+      - --security-opt
+      - no-new-privileges
+      - --env-file
+      - /opt/infra/current/media/beszel-pair.env
+      - -e
+      - "OWNER_EMAIL={{ status_owner_email }}"
+      - -e
+      - "SYS_NAME={{ ci_runners_beszel_name }}"
+      - -e
+      - "SYS_HOST={{ ci_runners_address }}"
+      - -e
+      - "SYS_PORT={{ ci_runners_beszel_port }}"
+      - -v
+      - /usr/local/libexec/ci-beszel-register:/ci-beszel-register:ro
+      - --entrypoint
+      - sh
+      - "curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
+      - /ci-beszel-register
+  register: ci_beszel_system
+  changed_when: "'added' in ci_beszel_system.stdout"
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is defined
 
 - name: Verify the CI runners
   ansible.builtin.import_tasks: verify.yml

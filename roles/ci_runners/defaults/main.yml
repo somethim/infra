@@ -29,3 +29,18 @@ ci_runners_pool: ci
 # this pin only decides what is installed first.
 ci_runners_version: 2.337.0
 ci_runners_sha256: 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+
+# The container's fixed address on the bridge, where the status dashboard's hub
+# dials its Beszel agent (docs/host.md, "CI runners").
+ci_runners_address: 10.250.0.10
+# The container in the status dashboard as its own system: a Beszel agent the hub
+# dials (SSH mode). ci-runners-firewall admits that one connection from the hub's
+# Docker network and nothing else; the container opens nothing towards the host.
+ci_runners_beszel: true
+ci_runners_beszel_name: ci-runners
+ci_runners_beszel_port: 45876
+ci_runners_beszel_hub_network: media
+# beszel-agent_linux_amd64.tar.gz, verified by beszel_<version>_checksums.txt;
+# moves with the hub's pin (stack/media, docs/agents.md).
+ci_runners_beszel_version: 0.21.0
+ci_runners_beszel_sha256: 898d67d456a4feed7d651bbac22def5eb41840d4f3d9bf058a5ed37c8c815599

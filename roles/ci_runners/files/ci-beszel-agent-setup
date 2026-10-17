@@ -1,0 +1,123 @@
+#!/bin/bash
+# Runs inside the CI container (roles/ci_runners): installs Beszel's agent so the
+# container shows up in the status dashboard as its own system, "ci-runners".
+#
+#   ci-beszel-agent-setup <version> <sha256 of beszel-agent_linux_amd64.tar.gz> <port>
+#
+# The hub dials the agent (Beszel's SSH mode), never the other way round, so the
+# container still opens no connection to the host, the tailnet or any private
+# network. The agent listens on <port> and answers only a client holding the
+# hub's key (its public half is /etc/beszel-agent/hub.pub, pushed by the role);
+# ci-runners-firewall admits new connections to that one address and port from
+# the hub's network alone. The agent sees containers only through a read-only
+# socket proxy on 127.0.0.1:2375 (the same four Docker reads as on the host:
+# version, info, the container list and one container's stats).
+# Idempotent: unchanged files are left alone.
+set -euo pipefail
+
+version="${1:?usage: ci-beszel-agent-setup <version> <sha256> <port>}"
+sha256="${2:?}"
+port="${3:?}"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ci-beszel-agent-setup: bad version" >&2; exit 1; }
+[[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "ci-beszel-agent-setup: bad sha256" >&2; exit 1; }
+[[ "$port" =~ ^[0-9]{2,5}$ ]] || { echo "ci-beszel-agent-setup: bad port" >&2; exit 1; }
+[ -s /etc/beszel-agent/hub.pub ] || { echo "ci-beszel-agent-setup: /etc/beszel-agent/hub.pub is missing" >&2; exit 1; }
+
+log() { printf 'ci-beszel-agent-setup: %s\n' "$*"; }
+
+# The proxy image is the one roles/beszel pins for the host (docs/agents.md: one
+# version per repository).
+readonly proxy_image="wollomatic/socket-proxy:1.13.1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002"
+
+log "agent ${version}"
+bin=/usr/local/bin/beszel-agent
+want="/usr/local/lib/beszel-agent-${version}"
+if [ ! -x "$want/beszel-agent" ]; then
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL -o "$tmp/agent.tgz" \
+    "https://github.com/henrygd/beszel/releases/download/v${version}/beszel-agent_linux_amd64.tar.gz"
+  echo "${sha256}  $tmp/agent.tgz" | sha256sum -c --quiet -
+  tar -xzf "$tmp/agent.tgz" -C "$tmp" beszel-agent
+  install -d -m 0755 "$want"
+  install -m 0755 "$tmp/beszel-agent" "$want/beszel-agent"
+fi
+ln -sfn "$want/beszel-agent" "$bin"
+
+log "read-only Docker window for the agent"
+cat >/usr/local/sbin/ci-beszel-proxy <<PROXY
+#!/bin/bash
+# Keeps the agent's read-only Docker proxy running: jobs may remove every
+# container, so a timer puts this one back. Installed by ci-beszel-agent-setup.
+set -euo pipefail
+state="\$(docker container inspect --format '{{.State.Running}} {{.Config.Image}}' beszel-socket-proxy 2>/dev/null || true)"
+[ "\$state" = "true ${proxy_image}" ] && exit 0
+docker rm -f beszel-socket-proxy >/dev/null 2>&1 || true
+exec docker run -d --name beszel-socket-proxy --restart always --network host \\
+  --read-only --cap-drop ALL --security-opt no-new-privileges --memory 32m --user 0:0 \\
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \\
+  "${proxy_image}" \\
+  -loglevel=info -listenip=127.0.0.1 -allowfrom=127.0.0.1/32 \\
+  '-allowGET=(/v1\\.\\d+)?/(version|info|containers/json|containers/[^/]+/stats)(\\?\\S*)?' \\
+  -shutdowngracetime=5 -watchdoginterval=10 -stoponwatchdog >/dev/null
+PROXY
+chmod 0755 /usr/local/sbin/ci-beszel-proxy
+cat >/etc/systemd/system/ci-beszel-proxy.service <<'UNIT'
+[Unit]
+Description=Keep the Beszel agent's read-only Docker proxy running
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ci-beszel-proxy
+UNIT
+cat >/etc/systemd/system/ci-beszel-proxy.timer <<'UNIT'
+[Unit]
+Description=Check the Beszel agent's Docker proxy every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+log "agent service on port ${port}"
+install -d -m 0755 /etc/beszel-agent
+cat >/etc/systemd/system/beszel-agent.service <<UNIT
+[Unit]
+Description=Beszel agent (the hub dials in; read-only Docker through 127.0.0.1:2375)
+After=network-online.target ci-beszel-proxy.service
+Wants=network-online.target
+
+[Service]
+ExecStart=${bin}
+Environment=LISTEN=${port}
+Environment=KEY_FILE=/etc/beszel-agent/hub.pub
+Environment=DOCKER_HOST=tcp://127.0.0.1:2375
+Environment=DOCKER_IMAGE_CHECK=false
+Environment=DATA_DIR=/var/lib/beszel-agent
+Environment=GOMEMLIMIT=64MiB
+DynamicUser=yes
+StateDirectory=beszel-agent
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+MemoryMax=96M
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+/usr/local/sbin/ci-beszel-proxy
+systemctl enable --now ci-beszel-proxy.timer >/dev/null
+systemctl enable beszel-agent.service >/dev/null
+systemctl restart beszel-agent.service
+log "done"

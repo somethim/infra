@@ -6,6 +6,7 @@ PartOf=docker.service
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/default/ci-runners-firewall
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/ci-runners-firewall
 

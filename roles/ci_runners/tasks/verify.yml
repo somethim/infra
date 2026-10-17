@@ -93,3 +93,40 @@
       the host's tailnet address {{ 'reachable (must not be)' if ci_reach.results[1].rc == 0 else 'unreachable' }}.
       Check ci-runners-firewall.service and `iptables -S CI-RUNNERS`.
     quiet: true
+
+# The CI container in the status dashboard: the agent runs and listens, and the
+# firewall admits exactly the hub's connection to it (a NEW rule from the hub's
+# Docker network to that one address and port, and its ESTABLISHED replies).
+- name: Read the Beszel agent inside the CI container and the firewall's exception
+  ansible.builtin.shell: |
+    set -u
+    incus exec {{ ci_runners_container }} -- systemctl is-active beszel-agent
+    incus exec {{ ci_runners_container }} -- sh -c 'ss -Hltn "sport = :{{ ci_runners_beszel_port }}" | wc -l'
+    iptables -S CI-RUNNERS | grep -cE -- "-d {{ ci_runners_address }}/32 .*--dport {{ ci_runners_beszel_port }} -m conntrack --ctstate NEW -j ACCEPT"
+    iptables -S CI-RUNNERS | grep -cE -- "-s {{ ci_runners_address }}/32 .*--sport {{ ci_runners_beszel_port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT"
+    iptables -S CI-RUNNERS | grep -c -- "-j ACCEPT"
+  register: ci_beszel_read
+  changed_when: false
+  check_mode: false
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is defined
+
+- name: Require the agent running and only the hub's connection admitted
+  ansible.builtin.assert:
+    that:
+      - ci_beszel_read.stdout_lines | length == 5
+      - ci_beszel_read.stdout_lines[0] == 'active'
+      - ci_beszel_read.stdout_lines[1] | int >= 1
+      - ci_beszel_read.stdout_lines[2] | int == 1
+      - ci_beszel_read.stdout_lines[3] | int == 1
+      # the established-reply rule, the hub's NEW rule, its replies, and the final internet ACCEPT
+      - ci_beszel_read.stdout_lines[4] | int == 4
+    fail_msg: >-
+      Beszel in the CI container: {{ ci_beszel_read.stdout_lines }} (want: agent active, listening on
+      {{ ci_runners_beszel_port }}, one NEW rule and one reply rule for {{ ci_runners_address }}, four ACCEPTs in CI-RUNNERS).
+      `incus exec {{ ci_runners_container }} -- journalctl -u beszel-agent` and `iptables -S CI-RUNNERS` show why.
+    quiet: true
+  when:
+    - ci_runners_beszel | bool
+    - ci_hub_key.content is defined

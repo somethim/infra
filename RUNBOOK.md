@@ -1151,7 +1151,8 @@ A release refuses to render without all nine. Then provision (it creates the `be
 
 ### The status dashboard
 
-Beszel at `https://status.home.arbikullakshi.com` (the Status tile): CPU, memory, load, temperatures, the GPU
+Beszel at `https://status.home.arbikullakshi.com` (the Status tile opens the server's own page,
+`/system/infra-host`, directly): CPU, memory, load, temperatures, the GPU
 (use, memory, power), the SSD, the media disk and the backup disk, and every container's CPU,
 memory and network, with history. Sign in with `status_owner_email` from `production.yml` and
 `BESZEL_PASSWORD`:
@@ -1383,6 +1384,11 @@ tailnet address not.
 - **Inspect**: `sudo incus exec ci-runners -- bash`, `sudo incus info ci-runners` (memory and
   CPU use), `sudo incus exec ci-runners -- journalctl -u 'actions.runner.*' -f`.
 - **Start over**: `sudo incus delete --force ci-runners`, delete the runners on GitHub, provision.
+- **In the status dashboard**: Beszel lists the container as its own system, `ci-runners` (CPU,
+  memory, disk, each CI container). The hub dials its agent at 10.250.0.10:45876; that one
+  connection is the only exception in ci-runners-firewall. It appears after the media stack has
+  been released once (beszel-pair writes the hub's key) and `--tags ci_runners` runs; the run says
+  so if the key is not there yet.
 - **Resources**: CI is capped at 4 CPUs and 8 GiB, so the host keeps 8 GB for everything else.
   Avoid big AI jobs (a 14B model chat, image generation) during long CI runs: with both at their
   peak the AI can still be slowed by memory pressure, though never killed by CI.

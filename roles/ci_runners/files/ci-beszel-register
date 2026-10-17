@@ -1,0 +1,38 @@
+#!/bin/sh
+# Adds the CI container to the status dashboard as its own system, or points the
+# existing one at the agent again, the way the dashboard's own "Add system"
+# dialog does (a systems record for the owner, plus a fingerprints record).
+# Runs in a throwaway curl container on the hub's Docker network, started by
+# roles/ci_runners with the current release's beszel-pair.env (OWNER_PASSWORD)
+# and OWNER_EMAIL, SYS_NAME, SYS_HOST, SYS_PORT. Prints no secret.
+set -eu
+
+hub=http://beszel:8090
+field() { tr -d '\n' | sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" | head -n 1; }
+
+login="$(curl -sS -f -H 'Content-Type: application/json' \
+  --data "{\"identity\":\"$OWNER_EMAIL\",\"password\":\"$OWNER_PASSWORD\"}" \
+  "$hub/api/collections/users/auth-with-password")" ||
+  { echo "ci-beszel-register: the hub refused the owner's login" >&2; exit 1; }
+auth="$(printf '%s' "$login" | field token)"
+uid="$(printf '%s' "$login" | tr -d '\n' | sed -n 's/.*"record": *{[^}]*"id": *"\([a-z0-9]*\)".*/\1/p' | head -n 1)"
+[ -n "$auth" ] && [ -n "$uid" ] || { echo "ci-beszel-register: no session or user id in the hub's login answer" >&2; exit 1; }
+
+found="$(curl -sS -f -G -H "Authorization: $auth" --data-urlencode "filter=(name='$SYS_NAME')" \
+  "$hub/api/collections/systems/records")"
+id="$(printf '%s' "$found" | tr -d '\n' | sed -n 's/.*"items": *\[ *{[^]]*"id": *"\([a-z0-9]*\)".*/\1/p' | head -n 1)"
+
+if [ -z "$id" ]; then
+  id="$(curl -sS -f -H "Authorization: $auth" -H 'Content-Type: application/json' \
+    --data "{\"name\":\"$SYS_NAME\",\"host\":\"$SYS_HOST\",\"port\":\"$SYS_PORT\",\"users\":[\"$uid\"]}" \
+    "$hub/api/collections/systems/records" | field id)"
+  [ -n "$id" ] || { echo "ci-beszel-register: the hub did not create the system" >&2; exit 1; }
+  token="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  curl -sS -f -o /dev/null -H "Authorization: $auth" -H 'Content-Type: application/json' \
+    --data "{\"system\":\"$id\",\"token\":\"$token\"}" "$hub/api/collections/fingerprints/records"
+  echo "ci-beszel-register: added $SYS_NAME at $SYS_HOST:$SYS_PORT"
+else
+  curl -sS -f -o /dev/null -X PATCH -H "Authorization: $auth" -H 'Content-Type: application/json' \
+    --data "{\"host\":\"$SYS_HOST\",\"port\":\"$SYS_PORT\"}" "$hub/api/collections/systems/records/$id"
+  echo "ci-beszel-register: $SYS_NAME points at $SYS_HOST:$SYS_PORT"
+fi

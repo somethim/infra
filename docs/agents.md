@@ -134,7 +134,10 @@ Watchtower, autoheal and the socket proxy
 (`roles/snowflake/files/docker-compose.yml`; provision with `--tags snowflake`; its releases are on
 gitlab.torproject.org, the image tags `vX.Y.Z` on containers.torproject.org). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
-one in a stack on the host. One version per repository: the socket proxy appears in four files, with the same pin.
+one in a stack on the host. One version per repository: the socket proxy appears in four compose files and in
+`roles/ci_runners/files/ci-beszel-agent-setup` (the CI container's agent proxy), with the same pin; Beszel's
+agent binary for the CI container (`ci_runners_beszel_version` and `_sha256` in `roles/ci_runners/defaults/main.yml`,
+from the release's `beszel_<version>_checksums.txt`) moves with the hub's pin.
 
 To move one:
 
