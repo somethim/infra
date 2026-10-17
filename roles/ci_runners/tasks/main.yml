@@ -237,8 +237,29 @@
     # Always send a line, so the script's read returns even with no token.
     stdin: "{{ ci_token.stdout | default('') }}\n"
   register: ci_register
-  changed_when: "'registered' in ci_register.stdout"
+  changed_when: "'registered' in ci_register.stdout or 'removed' in ci_register.stdout"
   no_log: true
+
+# A lowered count leaves runners registered on GitHub; delete those above it
+# (the owner's gh login, on his machine, like the registration token).
+- name: Delete runners above the count from GitHub
+  ansible.builtin.shell: |
+    set -euo pipefail
+    gh api "repos/{{ ci_runners_repo }}/actions/runners?per_page=100" \
+      --jq '.runners[] | select(.name | test("^{{ ci_runners_name_prefix }}-[0-9]+$")) | "\(.id) \(.name)"' |
+    while read -r id name; do
+      n="${name##*-}"
+      if [ "$n" -gt {{ ci_runners_count | int }} ]; then
+        gh api -X DELETE "repos/{{ ci_runners_repo }}/actions/runners/$id" && echo "deleted $name"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: ci_delete
+  changed_when: "'deleted' in ci_delete.stdout"
 
 # The container in the status dashboard (docs/host.md, "CI runners"). The hub's
 # public key comes from beszel-pair's output on this host; the hub then dials

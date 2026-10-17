@@ -39,3 +39,16 @@ for n in $(seq 1 "$count"); do
   (cd "$dir" && ./svc.sh start >/dev/null)
 done
 unset token
+
+# Runners above the count (the count was lowered): stop and uninstall their
+# services and drop their local registration; provisioning deletes them on GitHub.
+for dir in /home/runner/runners/*/; do
+  n="$(basename "$dir")"
+  [[ "$n" =~ ^[0-9]+$ ]] || continue
+  [ "$n" -gt "$count" ] || continue
+  if ls /etc/systemd/system/actions.runner.*."${prefix}-${n}".service >/dev/null 2>&1; then
+    (cd "$dir" && ./svc.sh stop >/dev/null 2>&1 || true; ./svc.sh uninstall >/dev/null 2>&1 || true)
+  fi
+  rm -rf "$dir"
+  echo "ci-runner-register: removed ${prefix}-${n}"
+done
