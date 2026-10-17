@@ -43,6 +43,8 @@
       tags: [autoheal]
     - role: beszel
       tags: [beszel]
+    - role: ci_runners
+      tags: [ci_runners]
 
   post_tasks:
     - name: Check account access and set the SSH login policy

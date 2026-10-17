@@ -1,0 +1,42 @@
+#!/bin/bash
+# Keeps the CI runners' Incus container (bridge CI_BRIDGE, default incusbr-ci)
+# on the internet and off everything else: it may open connections out to public
+# addresses, but not to the tailnet (100.64.0.0/10), the LAN, link-local or any
+# private range (which covers every Docker network on this host), and nothing
+# may open a connection in. Docker's FORWARD policy drops forwarded traffic, so
+# without the final ACCEPT the container would have no network at all.
+# The rules live in DOCKER-USER after infra-firewall's two hooks, whose order
+# roles/host verifies; that second hook already drops the container's attempts
+# to reach a port Docker publishes on the host.
+# Installed by roles/ci_runners; run by ci-runners-firewall.service after
+# infra-firewall.
+set -euo pipefail
+
+bridge="${CI_BRIDGE:-incusbr-ci}"
+[[ "$bridge" =~ ^[a-zA-Z0-9._-]{1,15}$ ]] || { echo "ci-runners-firewall: CI_BRIDGE is not an interface name" >&2; exit 1; }
+
+iptables -N CI-RUNNERS 2>/dev/null || true
+iptables -F CI-RUNNERS
+iptables -A CI-RUNNERS -o "$bridge" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A CI-RUNNERS -o "$bridge" -j DROP
+for net in 100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 127.0.0.0/8 224.0.0.0/4 240.0.0.0/4; do
+  iptables -A CI-RUNNERS -i "$bridge" -d "$net" -j DROP
+done
+iptables -A CI-RUNNERS -i "$bridge" -j ACCEPT
+
+iptables -N DOCKER-USER 2>/dev/null || true
+while iptables -D DOCKER-USER -i "$bridge" -j CI-RUNNERS 2>/dev/null; do :; done
+while iptables -D DOCKER-USER -o "$bridge" -j CI-RUNNERS 2>/dev/null; do :; done
+rules="$(iptables -S DOCKER-USER | grep -c '^-A' || true)"
+position=$((rules < 2 ? rules + 1 : 3))
+iptables -I DOCKER-USER "$position" -i "$bridge" -j CI-RUNNERS
+iptables -I DOCKER-USER "$position" -o "$bridge" -j CI-RUNNERS
+
+# No IPv6 on the bridge; refuse any forwarded IPv6 to or from it all the same.
+ip6tables -N CI-RUNNERS 2>/dev/null || true
+ip6tables -F CI-RUNNERS
+ip6tables -A CI-RUNNERS -j DROP
+while ip6tables -D FORWARD -i "$bridge" -j CI-RUNNERS 2>/dev/null; do :; done
+while ip6tables -D FORWARD -o "$bridge" -j CI-RUNNERS 2>/dev/null; do :; done
+ip6tables -I FORWARD 1 -i "$bridge" -j CI-RUNNERS
+ip6tables -I FORWARD 1 -o "$bridge" -j CI-RUNNERS

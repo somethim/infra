@@ -302,3 +302,25 @@ Retune if a container is killed in normal work:
 ```bash
 sudo docker inspect <name> --format '{{.State.OOMKilled}}'
 ```
+
+## CI runners
+
+`roles/ci_runners` (on when `ci_runners_enabled`) installs Incus and runs self-hosted GitHub
+Actions runners for `synis-ai/synis-ai` in one unprivileged system container, `ci-runners`
+(RUNBOOK.md, section 13). Why a container and how it is fenced:
+
+- **Not on the host**: the jobs run that repository's code with its deploy secrets.
+- **A container, not a VM**: a VM's memory is taken while it runs; the container uses memory
+  only while jobs do, under a hard cap (`limits.memory` 8 GiB, `limits.memory.swap` false,
+  `limits.cpu` 4, `limits.cpu.priority` 5), which protects the host's services from CI.
+- **Unprivileged, nested**: `security.privileged` false; `security.nesting` true plus mknod and
+  setxattr syscall interception so Docker runs inside.
+- **Network**: its own bridge `incusbr-ci` with NAT and no IPv6. ufw admits only DHCP and DNS
+  from it to the host. `ci-runners-firewall` (a chain `CI-RUNNERS`, jumped to from DOCKER-USER
+  after infra-firewall's two hooks, and an IPv6 drop) forwards new connections from the bridge
+  to public addresses only, never to 100.64.0.0/10, RFC 1918, link-local or loopback, and none
+  into it. Docker's FORWARD policy drops everything else.
+- **Disk**: a 60 GiB btrfs image (`incus storage` pool `ci`) on the SSD, which also caps the
+  container's disk.
+- **Credentials**: registration tokens are made per provisioning run on the laptop and passed on
+  stdin; the runners hold only their own runner credentials, as any self-hosted runner does.

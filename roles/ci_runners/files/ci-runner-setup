@@ -1,0 +1,166 @@
+#!/bin/bash
+# Sets up the CI runners' container from inside it, as root: what the GitHub
+# Ubuntu image gives the workflows (Docker Engine, classic sudo without a
+# password for the runner user, Google Chrome at google-chrome, git, curl,
+# unzip, xz-utils, jq, python3-yaml, build-essential; never Go or bun, which the
+# workflows' setup actions install), the actions/runner release unpacked for N
+# runners, the job hooks that start every job clean, and the weekly prune.
+# Idempotent. Pushed and run by roles/ci_runners:
+#   ci-runner-setup <runner version> <sha256 of actions-runner-linux-x64-<version>.tar.gz> <count>
+set -euo pipefail
+
+version="$1"
+sha256="$2"
+count="$3"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "ci-runner-setup: bad runner version" >&2; exit 1; }
+[[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "ci-runner-setup: bad sha256" >&2; exit 1; }
+[[ "$count" =~ ^[1-9]$ ]] || { echo "ci-runner-setup: count must be 1-9" >&2; exit 1; }
+
+# Docker's and Google's apt signing keys, pinned by checksum (the same Docker
+# key roles/docker pins on the host).
+readonly docker_key_sha256=1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
+readonly google_key_sha256=54dea5f6c2a26091578cf52a999cebc6b64df478d37ad4dce96376b711e3b27c
+
+export DEBIAN_FRONTEND=noninteractive
+log() { printf 'ci-runner-setup: %s\n' "$*"; }
+
+fetch_key() {
+  local url="$1" want="$2" dest="$3" tmp
+  tmp="$(mktemp)"
+  curl -fsSL "$url" -o "$tmp"
+  echo "$want  $tmp" | sha256sum --check --strict --quiet || { rm -f "$tmp"; echo "ci-runner-setup: $url does not match its pinned checksum" >&2; exit 1; }
+  install -m 0644 "$tmp" "$dest"
+  rm -f "$tmp"
+}
+
+log "base packages"
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg git unzip xz-utils jq python3 python3-yaml \
+  build-essential sudo iproute2 iptables >/dev/null
+
+# The GitHub images run classic sudo; Ubuntu 26.04 defaults to sudo-rs, whose
+# option set differs. Jobs call sudo with whatever flags their actions use.
+if [ -x /usr/bin/sudo.ws ] && [ "$(readlink -f /usr/bin/sudo)" != /usr/bin/sudo.ws ]; then
+  update-alternatives --set sudo /usr/bin/sudo.ws >/dev/null 2>&1 || true
+fi
+
+install -d -m 0755 /etc/apt/keyrings
+fetch_key https://download.docker.com/linux/ubuntu/gpg "$docker_key_sha256" /etc/apt/keyrings/docker.asc
+fetch_key https://dl.google.com/linux/linux_signing_key.pub "$google_key_sha256" /etc/apt/keyrings/google-chrome.asc
+# shellcheck source=/dev/null
+. /etc/os-release
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" >/etc/apt/sources.list.d/docker.list
+# Chrome's package would otherwise add its own repository line and key.
+printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' >/etc/default/google-chrome
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main" >/etc/apt/sources.list.d/google-chrome.list
+
+log "Docker Engine and Google Chrome"
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+  google-chrome-stable >/dev/null
+command -v google-chrome >/dev/null || { echo "ci-runner-setup: google-chrome is not on PATH" >&2; exit 1; }
+systemctl enable --now docker >/dev/null
+
+log "runner account"
+id runner >/dev/null 2>&1 || useradd --create-home --shell /bin/bash runner
+usermod -aG docker runner
+# Inside this container only: the jobs install packages with sudo, as on the
+# GitHub images. The container holds nothing but the runners.
+echo 'runner ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/runner
+chmod 0440 /etc/sudoers.d/runner
+visudo -cf /etc/sudoers.d/runner >/dev/null
+
+log "actions/runner ${version}"
+# The runner needs ICU; its installdependencies.sh does not know every release.
+icu="$(apt-cache search --names-only '^libicu[0-9]+$' | awk '{print $1}' | sort -V | tail -1)"
+if [ -n "$icu" ]; then apt-get install -y -qq --no-install-recommends "$icu" libkrb5-3 zlib1g >/dev/null; fi
+tarball="/opt/actions-runner-${version}.tar.gz"
+if [ ! -f "$tarball" ]; then
+  tmp="$(mktemp)"
+  curl -fsSL "https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-x64-${version}.tar.gz" -o "$tmp"
+  echo "$sha256  $tmp" | sha256sum --check --strict --quiet || { rm -f "$tmp"; echo "ci-runner-setup: the runner tarball does not match its pinned sha256" >&2; exit 1; }
+  install -m 0644 "$tmp" "$tarball"
+  rm -f "$tmp"
+fi
+for n in $(seq 1 "$count"); do
+  dir="/home/runner/runners/$n"
+  if [ ! -x "$dir/config.sh" ]; then
+    install -d -o runner -g runner "$dir"
+    sudo -u runner tar -xzf "$tarball" -C "$dir"
+  fi
+  # The runner reads .env at start: every job begins and ends through the hooks.
+  cat >"$dir/.env" <<'ENV'
+LANG=C.UTF-8
+ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/sbin/ci-job-started
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/sbin/ci-job-completed
+ENV
+  chown runner:runner "$dir/.env"
+done
+
+log "job hooks, disk guard and the weekly prune"
+cat >/usr/local/sbin/ci-disk-guard <<'GUARD'
+#!/bin/bash
+# Keeps the container's disk under 80%: past it, removes every unused image,
+# build cache and stopped container.
+set -euo pipefail
+used="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
+if [ "${used:-0}" -ge 80 ]; then
+  echo "ci-disk-guard: disk at ${used}%, pruning"
+  docker system prune -af >/dev/null || true
+  docker builder prune -af >/dev/null || true
+fi
+GUARD
+cat >/usr/local/sbin/ci-job-started <<'STARTED'
+#!/bin/bash
+# Runs before every job (ACTIONS_RUNNER_HOOK_JOB_STARTED).
+exec /usr/local/sbin/ci-disk-guard
+STARTED
+cat >/usr/local/sbin/ci-job-completed <<'COMPLETED'
+#!/bin/bash
+# Runs after every job (ACTIONS_RUNNER_HOOK_JOB_COMPLETED): empties this
+# runner's work directory, except the tool cache setup-go and friends fill and
+# the runner's own _temp, and
+# removes what the job left in Docker: stopped containers (older than a few
+# minutes, so a neighbour's just-finished job keeps its own), unused anonymous
+# volumes, unused networks and dangling images. Other runners' running jobs are
+# untouched.
+set -euo pipefail
+work="${RUNNER_WORKSPACE:-}"
+if [ -n "$work" ]; then
+  root="$(dirname "$work")"
+  if [ -d "$root" ] && [[ "$root" == /home/runner/runners/*/_work ]]; then
+    find "$root" -mindepth 1 -maxdepth 1 ! -name _tool ! -name _temp -exec sudo rm -rf {} +
+  fi
+fi
+docker container prune -f --filter until=5m >/dev/null || true
+docker volume prune -f >/dev/null || true
+docker network prune -f --filter until=5m >/dev/null || true
+docker image prune -f >/dev/null || true
+/usr/local/sbin/ci-disk-guard
+COMPLETED
+chmod 0755 /usr/local/sbin/ci-disk-guard /usr/local/sbin/ci-job-started /usr/local/sbin/ci-job-completed
+
+cat >/etc/systemd/system/ci-docker-prune.service <<'UNIT'
+[Unit]
+Description=Weekly Docker prune for the CI runners
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker system prune -af --filter until=24h
+UNIT
+cat >/etc/systemd/system/ci-docker-prune.timer <<'UNIT'
+[Unit]
+Description=Weekly Docker prune for the CI runners
+
+[Timer]
+OnCalendar=Sun 04:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now ci-docker-prune.timer >/dev/null
+log "done"

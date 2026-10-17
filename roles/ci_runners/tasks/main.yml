@@ -1,0 +1,190 @@
+---
+# See docs/host.md, "CI runners", and RUNBOOK.md, "CI runners for synis-ai".
+- name: Skip the CI runners on a host that does not run them
+  ansible.builtin.meta: end_role
+  when: not (ci_runners_enabled | bool)
+
+- name: Refuse a malformed CI runner setting
+  ansible.builtin.assert:
+    that:
+      - ci_runners_repo is match('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+      - ci_runners_count | int >= 1 and ci_runners_count | int <= 9
+      - ci_runners_name_prefix is match('^[a-z0-9-]{1,40}$')
+      - ci_runners_labels is match('^[A-Za-z0-9_.,-]{1,100}$')
+      - ci_runners_container is match('^[a-z0-9-]{1,40}$')
+      - ci_runners_bridge is match('^[a-zA-Z0-9._-]{1,15}$')
+      - ci_runners_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - ci_runners_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: "ci_runners_* in roles/ci_runners/defaults/main.yml or production.yml is malformed"
+    quiet: true
+
+- name: Install Incus and the btrfs tools its storage pool uses
+  ansible.builtin.apt:
+    name:
+      - incus
+      - btrfs-progs
+    state: present
+    update_cache: true
+
+- name: Start Incus at boot
+  ansible.builtin.systemd:
+    name: incus.service
+    enabled: true
+    state: started
+
+- name: Read the Incus networks and storage pools
+  ansible.builtin.command: incus {{ item }} list --format csv --columns n
+  loop: [network, storage]
+  register: ci_incus_lists
+  changed_when: false
+  check_mode: false
+
+- name: Create the CI bridge (NAT to the internet, no IPv6)
+  ansible.builtin.command: >-
+    incus network create {{ ci_runners_bridge }}
+    ipv4.address={{ ci_runners_bridge_address }} ipv4.nat=true ipv6.address=none
+  when: ci_runners_bridge not in ci_incus_lists.results[0].stdout_lines
+
+- name: Create the CI storage pool, a {{ ci_runners_disk }} btrfs image on the SSD
+  ansible.builtin.command: incus storage create {{ ci_runners_pool }} btrfs size={{ ci_runners_disk }}
+  when: ci_runners_pool not in ci_incus_lists.results[1].stdout_lines
+
+# DHCP and DNS from Incus's dnsmasq on the bridge; ufw denies everything else
+# the container could open to the host.
+- name: Let the container reach the bridge's DHCP and DNS
+  ansible.builtin.command: "ufw allow in on {{ ci_runners_bridge }} to any port {{ item }}"
+  loop: ["53", "67 proto udp"]
+  register: ci_ufw
+  changed_when: "'Skipping' not in ci_ufw.stdout"
+
+- name: Install the CI runners' firewall
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: ci-runners-firewall, dest: /usr/local/sbin/ci-runners-firewall, mode: "0755" }
+    - { src: ci-runners-firewall.service, dest: /etc/systemd/system/ci-runners-firewall.service, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+  register: ci_firewall_files
+
+- name: Keep the CI runners' firewall on after every boot and Docker restart
+  ansible.builtin.systemd:
+    name: ci-runners-firewall.service
+    enabled: true
+    state: "{{ 'restarted' if ci_firewall_files is changed else 'started' }}"
+    daemon_reload: true
+
+- name: Read whether the CI container exists
+  ansible.builtin.command: incus list --format csv --columns n
+  register: ci_instances
+  changed_when: false
+  check_mode: false
+
+- name: Create the CI container (unprivileged, nested Docker, its own bridge, a {{ ci_runners_disk }} root)
+  ansible.builtin.command: >-
+    incus init {{ ci_runners_image }} {{ ci_runners_container }}
+    --storage {{ ci_runners_pool }} --network {{ ci_runners_bridge }}
+  when: ci_runners_container not in ci_instances.stdout_lines
+
+- name: Set the CI container's limits and security
+  ansible.builtin.command: incus config set {{ ci_runners_container }} {{ item.key }}={{ item.value }}
+  loop:
+    - { key: limits.cpu, value: "{{ ci_runners_cpus }}" }
+    - { key: limits.memory, value: "{{ ci_runners_memory }}" }
+    - { key: limits.memory.enforce, value: hard }
+    - { key: limits.memory.swap, value: "false" }
+    - { key: limits.cpu.priority, value: "5" }
+    - { key: security.privileged, value: "false" }
+    - { key: security.nesting, value: "true" }
+    - { key: security.syscalls.intercept.mknod, value: "true" }
+    - { key: security.syscalls.intercept.setxattr, value: "true" }
+    - { key: boot.autostart, value: "true" }
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+  changed_when: false
+
+- name: Read the CI container's devices
+  ansible.builtin.command: incus config device list {{ ci_runners_container }}
+  register: ci_devices
+  changed_when: false
+  check_mode: false
+
+- name: Cap the CI container's root disk at {{ ci_runners_disk }}
+  ansible.builtin.command: incus config device set {{ ci_runners_container }} root size={{ ci_runners_disk }}
+  register: ci_root_size
+  failed_when: false
+  changed_when: false
+
+- name: Give the CI container its own root disk entry when the profile supplied none
+  ansible.builtin.command: >-
+    incus config device add {{ ci_runners_container }} root disk pool={{ ci_runners_pool }} path=/ size={{ ci_runners_disk }}
+  when: ci_root_size.rc != 0 and 'root' not in ci_devices.stdout_lines
+
+# deploy.yml brings Tailscale up inside its job with its own auth key; that
+# needs a TUN device in the container's own network namespace. The host's
+# tailscaled, its socket and its interface stay out of reach.
+- name: Give the CI container a TUN device for jobs that join a tailnet themselves
+  ansible.builtin.command: >-
+    incus config device add {{ ci_runners_container }} tun unix-char source=/dev/net/tun path=/dev/net/tun
+  when: "'tun' not in ci_devices.stdout_lines"
+
+- name: Start the CI container
+  ansible.builtin.command: incus start {{ ci_runners_container }}
+  register: ci_start
+  failed_when: ci_start.rc != 0 and 'already running' not in ci_start.stderr
+  changed_when: ci_start.rc == 0
+
+- name: Wait for the CI container's network
+  ansible.builtin.command: incus exec {{ ci_runners_container }} -- getent hosts download.docker.com
+  register: ci_net
+  retries: 30
+  delay: 2
+  until: ci_net.rc == 0
+  changed_when: false
+
+- name: Push the runner setup and registration scripts into the CI container
+  ansible.builtin.command: >-
+    incus file push --mode 0755 {{ role_path }}/files/{{ item }} {{ ci_runners_container }}/usr/local/sbin/{{ item }}
+  loop: [ci-runner-setup, ci-runner-register]
+  changed_when: false
+
+- name: Set up the CI container (Docker, Chrome, the runner account and {{ ci_runners_count }} runners)
+  ansible.builtin.command: >-
+    incus exec {{ ci_runners_container }} -- /usr/local/sbin/ci-runner-setup
+    {{ ci_runners_version }} {{ ci_runners_sha256 }} {{ ci_runners_count }}
+  changed_when: false
+
+- name: Read which runners are not registered yet
+  ansible.builtin.command: incus exec {{ ci_runners_container }} -- test -f /home/runner/runners/{{ item }}/.runner
+  loop: "{{ range(1, ci_runners_count | int + 1) | list }}"
+  register: ci_registered
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# A registration token lives about an hour and only registers runners; it is
+# made on the owner's machine with his gh login and handed over on stdin.
+- name: Make a short-lived runner registration token with the owner's gh login
+  ansible.builtin.command: gh api -X POST repos/{{ ci_runners_repo }}/actions/runners/registration-token --jq .token
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: ci_token
+  changed_when: false
+  no_log: true
+  when: ci_registered.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+- name: Register the new runners and start every runner service
+  ansible.builtin.command:
+    cmd: >-
+      incus exec {{ ci_runners_container }} -- /usr/local/sbin/ci-runner-register
+      {{ ci_runners_repo }} {{ ci_runners_name_prefix }} {{ ci_runners_labels }} {{ ci_runners_count }}
+    stdin: "{{ ci_token.stdout | default('') }}"
+  register: ci_register
+  changed_when: "'registered' in ci_register.stdout"
+  no_log: true
+
+- name: Verify the CI runners
+  ansible.builtin.import_tasks: verify.yml

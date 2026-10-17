@@ -1,0 +1,31 @@
+---
+# Self-hosted GitHub Actions runners for another repository, in an Incus system
+# container on this host (docs/host.md, "CI runners"). The container is
+# unprivileged, capped (CPU, memory without swap, a 60 GiB disk), on its own NAT
+# bridge, off the tailnet, and kept from the LAN, the tailnet and every container
+# network by ci-runners-firewall; jobs run there, never on the host.
+
+# false: provisioning skips the role entirely.
+ci_runners_enabled: false
+# The repository the runners serve (owner/name) and how many run side by side.
+ci_runners_repo: synis-ai/synis-ai
+ci_runners_count: 4
+# Runner names are <prefix>-1 .. <prefix>-N; the labels are added to the default
+# self-hosted, Linux, X64.
+ci_runners_name_prefix: home-ci
+ci_runners_labels: synis
+
+ci_runners_container: ci-runners
+ci_runners_image: images:ubuntu/26.04
+ci_runners_cpus: 4
+ci_runners_memory: 8GiB
+ci_runners_disk: 60GiB
+ci_runners_bridge: incusbr-ci
+ci_runners_bridge_address: 10.250.0.1/24
+ci_runners_pool: ci
+
+# actions/runner, verified by the sha256 its release notes publish for linux-x64.
+# Runners update themselves after registering (GitHub requires recent versions);
+# this pin only decides what is installed first.
+ci_runners_version: 2.337.0
+ci_runners_sha256: 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613

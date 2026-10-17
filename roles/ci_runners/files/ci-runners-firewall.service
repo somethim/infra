@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep the CI runners' container on the internet and off the tailnet, the LAN and Docker
+After=docker.service infra-firewall.service incus.service
+Requires=docker.service infra-firewall.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ci-runners-firewall
+
+[Install]
+WantedBy=multi-user.target docker.service

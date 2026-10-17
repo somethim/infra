@@ -1334,3 +1334,55 @@ so Tailscale's own DNS setting does not matter. A device that is not on the tail
 nothing, by design. Apps already set up with `http://infra-host:<port>` keep working; switch them
 when convenient. A TV app that cannot use a name can still use the server's `100.x.y.z` address
 (`tailscale ip -4 infra-host` on the laptop) with the old port.
+
+## 13. CI runners for synis-ai
+
+Four self-hosted GitHub Actions runners for `synis-ai/synis-ai` (`home-ci-1` … `home-ci-4`,
+labels `self-hosted, linux, x64, synis`) run in an Incus system container, `ci-runners`, on this
+host (roles/ci_runners, [docs/host.md](docs/host.md#ci-runners)). Jobs run repository code and
+receive Synis's deploy secrets, so they never run on the host itself:
+
+- **Unprivileged container**, Ubuntu 26.04, 4 CPUs, 8 GiB of memory with no swap (a hard cap,
+  so CI can never take memory from the AI, Immich or Jellyfin), a 60 GiB btrfs disk image on
+  the SSD (`/var/lib/incus`), nested Docker for the jobs' `services:` containers.
+- **Its own NAT bridge, `incusbr-ci` (10.250.0.0/24), off the tailnet.** ci-runners-firewall
+  lets it open connections to the internet only: not to the tailnet (100.64.0.0/10), the LAN,
+  any private range (every Docker network) or the host. A TUN device lets deploy.yml bring its
+  own Tailscale up inside a job; the host's tailscaled is out of reach.
+- **Inside**: Docker Engine, Google Chrome (`google-chrome`), git, curl, unzip, xz-utils, jq,
+  python3-yaml, build-essential, classic sudo without a password for the `runner` account; no
+  Go or bun (the workflows' setup actions install them).
+- **Every job starts clean**: a job-completed hook empties the runner's work directory (keeping
+  only `_tool`) and prunes stopped containers, unused volumes, networks and dangling images; a
+  job-started hook and the disk guard keep the disk under 80%; `ci-docker-prune.timer` runs
+  `docker system prune` weekly (Sundays 04:30).
+
+Provision (the laptop's `gh` must be logged in: it makes the one-hour registration token, which
+goes to the container on stdin and is never written down):
+
+```bash
+git -C ~/Work/Personal/infra fetch -q && cd ~/.cache/infra-clean && git checkout -q --detach origin/master
+ansible-playbook -u admin --ask-become-pass provision.yml --tags ci_runners
+```
+
+Expect the four runners online at the end (`gh api repos/synis-ai/synis-ai/actions/runners`)
+and the read-back: caps, Docker, Chrome, the TUN device, disk, GitHub reachable and the host's
+tailnet address not.
+
+- **Switch the repository to them**: its workflows read `runs-on` from the `RUNS_ON` repository
+  variable: `gh variable set RUNS_ON -R synis-ai/synis-ai --body '["self-hosted","linux","x64","synis"]'`.
+- **Back to GitHub-hosted runners**: `gh variable delete RUNS_ON -R synis-ai/synis-ai`; every job
+  falls back to `ubuntu-latest`.
+- **More or fewer runners**: change `ci_runners_count` (roles/ci_runners/defaults/main.yml) and
+  provision with `--tags ci_runners`. To remove one: stop it inside the container
+  (`sudo incus exec ci-runners -- systemctl disable --now 'actions.runner.*.home-ci-4.service'`),
+  delete it on GitHub (Settings → Actions → Runners), then
+  `sudo incus exec ci-runners -- rm -rf /home/runner/runners/4`.
+- **Re-register after a reset**: `sudo incus exec ci-runners -- rm /home/runner/runners/N/.runner`
+  and provision again.
+- **Inspect**: `sudo incus exec ci-runners -- bash`, `sudo incus info ci-runners` (memory and
+  CPU use), `sudo incus exec ci-runners -- journalctl -u 'actions.runner.*' -f`.
+- **Start over**: `sudo incus delete --force ci-runners`, delete the runners on GitHub, provision.
+- **Resources**: CI is capped at 4 CPUs and 8 GiB, so the host keeps 8 GB for everything else.
+  Avoid big AI jobs (a 14B model chat, image generation) during long CI runs: with both at their
+  peak the AI can still be slowed by memory pressure, though never killed by CI.

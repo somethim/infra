@@ -1,0 +1,95 @@
+---
+# Read back the CI runners: the container's caps, what the jobs need inside it,
+# every runner online on GitHub, and that the container reaches the internet but
+# not the host's tailnet address.
+- name: Read the CI container's caps
+  ansible.builtin.command: incus config get {{ ci_runners_container }} {{ item }}
+  loop: [limits.cpu, limits.memory, limits.memory.swap, security.privileged, security.nesting]
+  register: ci_caps
+  changed_when: false
+  check_mode: false
+
+- name: Require the CI container's caps
+  ansible.builtin.assert:
+    that:
+      - ci_caps.results[0].stdout | trim == ci_runners_cpus | string
+      - ci_caps.results[1].stdout | trim == ci_runners_memory
+      - ci_caps.results[2].stdout | trim == 'false'
+      - ci_caps.results[3].stdout | trim == 'false'
+      - ci_caps.results[4].stdout | trim == 'true'
+    fail_msg: >-
+      The CI container's caps differ: {{ ci_caps.results | map(attribute='item') | zip(ci_caps.results | map(attribute='stdout')) | list }}
+    quiet: true
+
+- name: Read Docker, Chrome, the TUN device and the disk inside the CI container
+  ansible.builtin.command: >-
+    incus exec {{ ci_runners_container }} -- sh -c
+    'docker info --format "{{ '{{' }}.ServerVersion{{ '}}' }}" && google-chrome --version && test -c /dev/net/tun && df --output=pcent / | tail -1'
+  register: ci_inside
+  changed_when: false
+  check_mode: false
+
+- name: Require Docker, Chrome, the TUN device and room on the disk
+  ansible.builtin.assert:
+    that:
+      - ci_inside.stdout_lines | length == 3
+      - ci_inside.stdout_lines[1] is search('Google Chrome')
+      - ci_inside.stdout_lines[2] | regex_replace('[^0-9]', '') | int < 80
+    fail_msg: "Inside the CI container: {{ ci_inside.stdout_lines }} (want a Docker version, Google Chrome and disk under 80%)"
+    quiet: true
+
+- name: Read the runner services inside the CI container
+  ansible.builtin.command: incus exec {{ ci_runners_container }} -- sh -c 'systemctl is-active actions.runner.*.service'
+  register: ci_services
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Require every runner service to be running
+  ansible.builtin.assert:
+    that:
+      - ci_services.stdout_lines | select('equalto', 'active') | list | length == ci_runners_count | int
+    fail_msg: "Runner services: {{ ci_services.stdout_lines }} (want {{ ci_runners_count }} active)"
+    quiet: true
+
+- name: Read the repository's runners from GitHub
+  ansible.builtin.command: >-
+    gh api repos/{{ ci_runners_repo }}/actions/runners --paginate
+    --jq '.runners[] | select(.name | startswith("{{ ci_runners_name_prefix }}-")) | "\(.name) \(.status)"'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: ci_online
+  changed_when: false
+  check_mode: false
+  retries: 6
+  delay: 10
+  until: ci_online.stdout_lines | select('search', ' online$') | list | length == ci_runners_count | int
+
+- name: Read the host's tailnet address
+  ansible.builtin.command: ip -4 -o addr show dev tailscale0
+  register: ci_tailnet_addr
+  changed_when: false
+  check_mode: false
+
+- name: Try the internet and the host's tailnet address from inside the CI container
+  ansible.builtin.command: >-
+    incus exec {{ ci_runners_container }} -- curl -sS -m 6 -o /dev/null -w '%{http_code}' {{ item }}
+  loop:
+    - https://api.github.com
+    - "https://{{ ci_tailnet_addr.stdout | regex_search('inet ([0-9.]+)', '\\1') | first }}:443"
+  register: ci_reach
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Require the internet reachable and the tailnet not
+  ansible.builtin.assert:
+    that:
+      - ci_reach.results[0].rc == 0
+      - ci_reach.results[1].rc != 0
+    fail_msg: >-
+      From the CI container: github.com {{ 'reachable' if ci_reach.results[0].rc == 0 else 'unreachable' }},
+      the host's tailnet address {{ 'reachable (must not be)' if ci_reach.results[1].rc == 0 else 'unreachable' }}.
+      Check ci-runners-firewall.service and `iptables -S CI-RUNNERS`.
+    quiet: true

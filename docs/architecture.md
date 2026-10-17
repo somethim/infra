@@ -52,6 +52,14 @@ traffic, so the GHCR token's scope and who can push to those repositories are th
 boundary. A rollback pins an app to a digest, which pauses that for the pinned app until
 `resume`.
 
+## Outside the stacks: CI runners
+
+One more thing runs on the host but outside every stack: an Incus system container,
+`ci-runners`, with four self-hosted GitHub Actions runners for `synis-ai/synis-ai`
+(roles/ci_runners; docs/host.md, "CI runners"). It is provisioned, never released, sits on its
+own NAT bridge off the tailnet, and the host firewall keeps it from the LAN, the tailnet and
+every Docker network.
+
 ## Provision and release
 
 - **`provision.yml`** runs the roles `common`, `tailscale`, `docker`, `gpu`, `host`, `edge`,

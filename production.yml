@@ -89,3 +89,9 @@ status_owner_email: contact@arbikullakshi.com
 portfolio_image_repo: ghcr.io/somethim/portfolio
 hypernova_provider_image_repo: ghcr.io/hypernova3643725/hypernova-provider
 hypernova_web_image_repo: ghcr.io/hypernova3643725/hypernova-web
+
+# Self-hosted GitHub Actions runners for synis-ai/synis-ai in an Incus container
+# on this host (roles/ci_runners, docs/host.md "CI runners"). Provisioning makes
+# the registration token with the owner's gh login, so a run that registers
+# runners needs `gh auth status` to work on the laptop.
+ci_runners_enabled: true

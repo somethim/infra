@@ -1,0 +1,37 @@
+#!/bin/bash
+# Registers every runner directory that is not registered yet and installs it
+# as a systemd service (actions.runner.<owner>-<repo>.<name>.service), inside
+# the CI runners' container, as root. The short-lived registration token comes
+# on stdin and is never written down or echoed; a registered runner keeps only
+# its own runner credentials (.runner, .credentials), as every self-hosted runner
+# does. Runners already registered are started and left as they are.
+#   ci-runner-register <owner/repo> <name prefix> <extra labels> <count>  < token
+set -euo pipefail
+
+repo="$1"
+prefix="$2"
+labels="$3"
+count="$4"
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "ci-runner-register: bad repository" >&2; exit 1; }
+[[ "$prefix" =~ ^[a-z0-9-]{1,40}$ ]] || { echo "ci-runner-register: bad name prefix" >&2; exit 1; }
+[[ "$labels" =~ ^[A-Za-z0-9_.,-]{1,100}$ ]] || { echo "ci-runner-register: bad labels" >&2; exit 1; }
+[[ "$count" =~ ^[1-9]$ ]] || { echo "ci-runner-register: count must be 1-9" >&2; exit 1; }
+
+token=""
+IFS= read -r token || true
+for n in $(seq 1 "$count"); do
+  dir="/home/runner/runners/$n"
+  name="${prefix}-${n}"
+  [ -x "$dir/config.sh" ] || { echo "ci-runner-register: $dir is not set up; run ci-runner-setup first" >&2; exit 1; }
+  if [ ! -f "$dir/.runner" ]; then
+    [[ "$token" =~ ^[A-Za-z0-9]{20,}$ ]] || { echo "ci-runner-register: no registration token on stdin" >&2; exit 1; }
+    (cd "$dir" && sudo -u runner ./config.sh --unattended --url "https://github.com/${repo}" --token "$token" \
+      --name "$name" --labels "$labels" --work _work --replace >/dev/null)
+    echo "ci-runner-register: registered $name"
+  fi
+  if ! ls /etc/systemd/system/actions.runner.*."${name}".service >/dev/null 2>&1; then
+    (cd "$dir" && ./svc.sh install runner >/dev/null)
+  fi
+  (cd "$dir" && ./svc.sh start >/dev/null)
+done
+unset token
