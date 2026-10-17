@@ -144,9 +144,20 @@
   until: ci_net.rc == 0
   changed_when: false
 
+# incus runs on the host, so the scripts are copied there first: role_path is
+# a path on the owner's machine.
+- name: Copy the runner setup and registration scripts to the host
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [ci-runner-setup, ci-runner-register]
+
 - name: Push the runner setup and registration scripts into the CI container
   ansible.builtin.command: >-
-    incus file push --mode 0755 {{ role_path }}/files/{{ item }} {{ ci_runners_container }}/usr/local/sbin/{{ item }}
+    incus file push --mode 0755 /usr/local/libexec/{{ item }} {{ ci_runners_container }}/usr/local/sbin/{{ item }}
   loop: [ci-runner-setup, ci-runner-register]
   changed_when: false
 
