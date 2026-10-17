@@ -36,7 +36,7 @@ fetch_key() {
 log "base packages"
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg git unzip xz-utils jq python3 python3-yaml \
-  build-essential sudo iproute2 iptables >/dev/null
+  build-essential sudo iproute2 iptables zstd apparmor apparmor-profiles >/dev/null
 
 # The GitHub images run classic sudo; Ubuntu 26.04 defaults to sudo-rs, whose
 # option set differs. Jobs call sudo with whatever flags their actions use.
@@ -59,6 +59,19 @@ apt-get update -qq
 apt-get install -y -qq --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
   google-chrome-stable >/dev/null
 command -v google-chrome >/dev/null || { echo "ci-runner-setup: google-chrome is not on PATH" >&2; exit 1; }
+
+# Chrome's sandbox creates a user namespace. Ubuntu restricts unprivileged user
+# namespaces through AppArmor (kernel.apparmor_restrict_unprivileged_userns=1,
+# set by the host and seen inside this unprivileged container), and allows them
+# only to programs whose AppArmor profile says so: Ubuntu's `chrome` profile
+# (apparmor-profiles) does, for /opt/google/chrome/chrome. Without it loaded,
+# Chrome dies with "FATAL:sandbox/linux/services/credentials.cc … Permission
+# denied (13)" before opening its DevTools port (2026-10-17). Load it now and at
+# every boot (apparmor.service reads /etc/apparmor.d).
+log "Chrome's AppArmor profile (user-namespace sandbox)"
+[ -f /etc/apparmor.d/chrome ] || { echo "ci-runner-setup: /etc/apparmor.d/chrome is missing (apparmor-profiles)" >&2; exit 1; }
+apparmor_parser -r /etc/apparmor.d/chrome
+systemctl enable apparmor >/dev/null 2>&1 || true
 systemctl enable --now docker >/dev/null
 
 log "runner account"
@@ -182,3 +195,10 @@ for n in "${restart[@]}"; do
   done
 done
 log "done"
+
+# Prove Chrome starts the way the browser tests start it: as the runner user,
+# a fresh profile, the sandbox on, and a DevTools port written to the profile.
+log "check: headless Chrome as the runner user"
+sudo -iu runner bash -c 'p=$(mktemp -d); timeout 20 google-chrome --headless --remote-debugging-port=0 --user-data-dir="$p" --disable-gpu --no-first-run --no-default-browser-check --disable-extensions --disable-dev-shm-usage about:blank >/dev/null 2>&1 & for _ in $(seq 1 20); do [ -s "$p/DevToolsActivePort" ] && break; sleep 0.5; done; port=$(head -n1 "$p/DevToolsActivePort" 2>/dev/null); kill %1 2>/dev/null; wait 2>/dev/null; rm -rf "$p"; [[ "$port" =~ ^[0-9]+$ ]]' \
+  || { echo "ci-runner-setup: headless Chrome did not open its DevTools port as the runner user" >&2; exit 1; }
+sudo -iu runner zstd --version >/dev/null || { echo "ci-runner-setup: zstd missing" >&2; exit 1; }
