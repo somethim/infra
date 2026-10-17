@@ -82,19 +82,26 @@ if [ ! -f "$tarball" ]; then
   install -m 0644 "$tmp" "$tarball"
   rm -f "$tmp"
 fi
+restart=()
 for n in $(seq 1 "$count"); do
   dir="/home/runner/runners/$n"
   if [ ! -x "$dir/config.sh" ]; then
     install -d -o runner -g runner "$dir"
     sudo -u runner tar -xzf "$tarball" -C "$dir"
   fi
-  # The runner reads .env at start: every job begins and ends through the hooks.
+  # The runner reads .env at start: every job begins and ends through the hooks
+  # (the runner refuses hook paths that do not end in .sh). A changed .env
+  # restarts that runner's service so it takes effect.
+  old_env="$(cat "$dir/.env" 2>/dev/null || true)"
   cat >"$dir/.env" <<'ENV'
 LANG=C.UTF-8
-ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/sbin/ci-job-started
-ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/sbin/ci-job-completed
+ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/sbin/ci-job-started.sh
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/sbin/ci-job-completed.sh
 ENV
   chown runner:runner "$dir/.env"
+  if [ "$old_env" != "$(cat "$dir/.env")" ]; then
+    restart+=("$n")
+  fi
 done
 
 log "job hooks, disk guard and the weekly prune"
@@ -110,12 +117,12 @@ if [ "${used:-0}" -ge 80 ]; then
   docker builder prune -af >/dev/null || true
 fi
 GUARD
-cat >/usr/local/sbin/ci-job-started <<'STARTED'
+cat >/usr/local/sbin/ci-job-started.sh <<'STARTED'
 #!/bin/bash
 # Runs before every job (ACTIONS_RUNNER_HOOK_JOB_STARTED).
 exec /usr/local/sbin/ci-disk-guard
 STARTED
-cat >/usr/local/sbin/ci-job-completed <<'COMPLETED'
+cat >/usr/local/sbin/ci-job-completed.sh <<'COMPLETED'
 #!/bin/bash
 # Runs after every job (ACTIONS_RUNNER_HOOK_JOB_COMPLETED): empties this
 # runner's work directory, except the tool cache setup-go and friends fill and
@@ -138,7 +145,8 @@ docker network prune -f --filter until=5m >/dev/null || true
 docker image prune -f >/dev/null || true
 /usr/local/sbin/ci-disk-guard
 COMPLETED
-chmod 0755 /usr/local/sbin/ci-disk-guard /usr/local/sbin/ci-job-started /usr/local/sbin/ci-job-completed
+chmod 0755 /usr/local/sbin/ci-disk-guard /usr/local/sbin/ci-job-started.sh /usr/local/sbin/ci-job-completed.sh
+rm -f /usr/local/sbin/ci-job-started /usr/local/sbin/ci-job-completed
 
 cat >/etc/systemd/system/ci-docker-prune.service <<'UNIT'
 [Unit]
@@ -163,4 +171,14 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now ci-docker-prune.timer >/dev/null
+
+# Runners whose .env changed pick it up only on a restart, which cancels a job
+# running on that runner: provision while the runners are idle.
+for n in "${restart[@]}"; do
+  for unit in /etc/systemd/system/actions.runner.*-"$n".service; do
+    [ -e "$unit" ] || continue
+    systemctl restart "$(basename "$unit")"
+    log "restarted $(basename "$unit") for its new .env"
+  done
+done
 log "done"
