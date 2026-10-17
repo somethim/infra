@@ -25,7 +25,9 @@ Rules (each problem is printed as a ::error:: line):
   9. No compose file publishes a host port (ports:, network_mode: host): the public arrives only
      through the Cloudflare Tunnel, and Traefik is reachable only on the edge network. The only
      exceptions are TAILNET_PORTS, each exactly "${TAILSCALE_IP}:<port>:<port>" (the host's Tailscale
-     address). The tunnel token reaches only tunnel/tunnel.env (rule 2) and only cloudflared reads it.
+     address), and HOST_NETWORK_SERVICES: the Snowflake proxy, which publishes nothing but needs the
+     host network for WebRTC NAT traversal and is fenced by uid in roles/snowflake. The tunnel token
+     reaches only tunnel/tunnel.env (rule 2) and only cloudflared reads it.
 
 --self-test first seeds at least one violation per rule into a temp copy of the tree and requires
 each to be caught, then checks the real tree.
@@ -424,6 +426,13 @@ def check_sample(root: pathlib.Path, extra: dict[str, str]) -> list[str]:
 
 
 # Rule 9
+# The one service allowed on the host network: Tor's Snowflake proxy. Behind a
+# Docker bridge its NAT measures "strict" instead of "restricted"; it publishes
+# no port and roles/snowflake's nftables fence keeps its uid off every local and
+# private address (docs/host.md "Snowflake").
+HOST_NETWORK_SERVICES = {("roles/snowflake/files/docker-compose.yml", "snowflake-proxy")}
+
+
 def check_no_published_ports(root: pathlib.Path) -> list[str]:
     problems = []
     for rel in compose_files(root):
@@ -438,7 +447,7 @@ def check_no_published_ports(root: pathlib.Path) -> list[str]:
             elif port is None and service.get("ports"):
                 problems.append(f"rule 9: {rel}: service {name} publishes host ports {service['ports']}; nothing may be reachable "
                                 "but through the Cloudflare Tunnel, or for TAILNET_PORTS on the tailnet (docs/edge.md)")
-            if str(service.get("network_mode", "")) == "host":
+            if str(service.get("network_mode", "")) == "host" and (rel, name) not in HOST_NETWORK_SERVICES:
                 problems.append(f"rule 9: {rel}: service {name} uses network_mode: host, which listens on the host's interfaces")
     return problems
 
@@ -542,6 +551,10 @@ def self_test() -> None:
          "service traefik publishes host ports"),
         ("9", "cloudflared on the host network", edit("stack/tunnel/docker-compose.yml", "    container_name: cloudflared\n", "    container_name: cloudflared\n    network_mode: host\n"),
          "service cloudflared uses network_mode: host"),
+        ("9", "another role service on the host network", edit("roles/autoheal/files/docker-compose.yml", "    container_name: autoheal\n", "    container_name: autoheal\n    network_mode: host\n"),
+         "service autoheal uses network_mode: host"),
+        ("9", "the Snowflake proxy publishes a port", edit("roles/snowflake/files/docker-compose.yml", "    container_name: snowflake-proxy\n", "    container_name: snowflake-proxy\n    ports: [\"8080:8080\"]\n"),
+         "service snowflake-proxy publishes host ports"),
         ("9", "a stack publishes a port", edit("stack/hypernova/docker-compose.yml", "    container_name: prizm-web\n", "    container_name: prizm-web\n    ports: [\"3000:3000\"]\n"),
          "service web publishes host ports"),
         ("9", "Open WebUI published on every interface", edit("stack/ai/docker-compose.yml", '      - "${TAILSCALE_IP}:8080:8080"\n', '      - "8080:8080"\n'),

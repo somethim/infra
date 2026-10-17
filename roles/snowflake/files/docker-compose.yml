@@ -1,0 +1,42 @@
+# Tor Snowflake standalone proxy. See docs/host.md "Snowflake".
+#
+# It relays censored users' WebRTC connections to Tor's Snowflake bridge; it is
+# not a Tor relay or exit. Host networking is the one deliberate exception to
+# "no compose file uses the host network" (ci/check_templates.py rule 9): behind
+# a Docker bridge the extra NAT layer makes Snowflake measure its NAT as
+# "strict" (tested: bridge "strict", host network "restricted"), so far fewer
+# users can be matched to it. It publishes no port; WebRTC is outbound with STUN,
+# and ufw keeps refusing new inbound connections. snowflake-guard.nft fences
+# its uid (64999, used by nothing else) off loopback, the LAN, the tailnet,
+# every Docker network and the rest of the private ranges; only the
+# systemd-resolved stub and the public internet stay reachable.
+#
+# Pinned like every non-app image (docs/agents.md); no Watchtower label, so it
+# moves only with a reviewed re-pin and provisioning.
+name: snowflake
+
+services:
+  snowflake-proxy:
+    image: containers.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake:v2.15.1@sha256:a040427f567692d1ffd23a99f419f7e7b4557ff6c9555dedea35702affd996ae
+    container_name: snowflake-proxy
+    network_mode: host
+    user: "64999:64999"
+    command:
+      - -capacity
+      - "10"
+      - -summary-interval
+      - 1h
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    pids_limit: 256
+    mem_limit: 384m
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

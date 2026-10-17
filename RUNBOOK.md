@@ -1386,3 +1386,35 @@ tailnet address not.
 - **Resources**: CI is capped at 4 CPUs and 8 GiB, so the host keeps 8 GB for everything else.
   Avoid big AI jobs (a 14B model chat, image generation) during long CI runs: with both at their
   peak the AI can still be slowed by memory pressure, though never killed by CI.
+
+## 14. Snowflake
+
+The host runs Tor's standalone Snowflake proxy (roles/snowflake,
+[docs/host.md](docs/host.md#snowflake)): it relays up to 10 censored users at once to Tor's
+Snowflake bridge over WebRTC. Host network, fenced by uid 64999 off every local and private
+address; no port published.
+
+**Turn it on or update it** (provisioning; there is nothing to release):
+
+```bash
+git -C ~/Work/Personal/infra fetch -q && cd ~/.cache/infra-clean && git checkout -q --detach origin/master
+ansible-playbook -u admin --ask-become-pass provision.yml --tags snowflake
+```
+
+The run ends with the proxy's NAT type (`restricted` is normal behind a home router;
+`unrestricted` is best; `strict` or `unknown` means fewer users can be matched).
+
+**See what it does:**
+
+```bash
+ssh -t admin@infra-host 'sudo docker logs snowflake-proxy 2>&1 | grep -iE "connections|NAT type" | tail'
+```
+
+Every hour it logs a summary: completed connections and traffic relayed.
+
+**Stop it:** set `snowflake_enabled: false` in `production.yml`, merge to `master`, and run the
+same provisioning command; it removes the container, its fence and its files. To pause it for a
+while instead: `ssh -t admin@infra-host sudo docker stop snowflake-proxy` (it starts again at the
+next boot or provisioning run).
+
+**Re-pin**: docs/agents.md, "Re-pinning third-party images".

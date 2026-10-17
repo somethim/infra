@@ -1,0 +1,78 @@
+---
+# Read back the Snowflake proxy: running as uid 64999, its fence loaded, the fence
+# refusing that uid the host's LAN and tailnet addresses and a Docker network
+# while the internet stays reachable, and the proxy talking to the broker.
+- name: Read the Snowflake proxy's state and user
+  ansible.builtin.command: >-
+    docker container inspect --format
+    '{% raw %}{{.State.Running}} {{.State.Restarting}} {{.Config.User}} {{.HostConfig.NetworkMode}}{% endraw %}'
+    snowflake-proxy
+  register: sf_state
+  changed_when: false
+  check_mode: false
+
+- name: Require the Snowflake proxy running as uid 64999 on the host network
+  ansible.builtin.assert:
+    that:
+      - sf_state.stdout | trim == 'true false 64999:64999 host'
+    fail_msg: "snowflake-proxy reports '{{ sf_state.stdout | trim }}', want 'true false 64999:64999 host'; `docker logs snowflake-proxy` shows why."
+    quiet: true
+
+- name: Read the Snowflake fence
+  ansible.builtin.command: nft list table inet snowflake_guard
+  register: sf_fence
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Require the Snowflake fence loaded
+  ansible.builtin.assert:
+    that:
+      - sf_fence.rc == 0
+      - "'meta skuid 64999 jump fence' in sf_fence.stdout"
+    fail_msg: "The nftables table snowflake_guard is not loaded (rc {{ sf_fence.rc }}); systemctl status snowflake-guard shows why."
+    quiet: true
+
+# The same uid in the host network namespace is exactly what the fence sees from
+# the proxy. Each target below accepts connections from the host when the fence
+# is down (sshd on loopback and the LAN address, home-tls on the tailnet address,
+# Traefik on the edge network); the fence must turn each into a reject, which
+# curl reports as exit 7 at once. The broker must answer (exit 0).
+- name: Probe from uid 64999 what the fence lets through
+  ansible.builtin.shell: |
+    set -u
+    probe() { setpriv --reuid=64999 --regid=64999 --clear-groups curl -s -o /dev/null -m 6 "$1"; echo "$1 $?"; }
+    lan="$(ip -4 -o addr show dev "$(ip -4 route show default | awk '{print $5; exit}')" | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    edge="$(docker container inspect --format '{% raw %}{{with index .NetworkSettings.Networks "edge"}}{{.IPAddress}}{{end}}{% endraw %}' edge-traefik)"
+    probe "http://127.0.0.1:22/"
+    probe "http://${lan}:22/"
+    probe "http://$(tailscale ip -4 | head -1):443/"
+    probe "http://${edge}:80/"
+    probe "https://snowflake-broker.torproject.net/"
+  args:
+    executable: /bin/bash
+  register: sf_probe
+  changed_when: false
+  check_mode: false
+
+- name: Require the fence to refuse the host, LAN, tailnet and Docker addresses and pass the internet
+  ansible.builtin.assert:
+    that:
+      - sf_probe.stdout_lines | length == 5
+      - sf_probe.stdout_lines[:4] | select('search', ' 7$') | list | length == 4
+      - sf_probe.stdout_lines[4] is search(' 0$')
+    fail_msg: "uid 64999 probes: {{ sf_probe.stdout_lines }}; the first four must be refused (curl exit 7), the broker must answer (exit 0)."
+    quiet: true
+
+- name: Wait for the proxy to measure its NAT and reach the broker
+  ansible.builtin.shell: docker logs snowflake-proxy 2>&1 | grep -E 'NAT type:|Connected to relay|Poll interval' | tail -3
+  register: sf_log
+  changed_when: false
+  check_mode: false
+  retries: 12
+  delay: 10
+  until: sf_log.stdout is search('NAT type:')
+
+- name: Report the proxy's NAT type
+  ansible.builtin.debug:
+    msg: "Snowflake: {{ sf_log.stdout_lines | join(' | ') }}"

@@ -324,3 +324,31 @@ Actions runners for `synis-ai/synis-ai` in one unprivileged system container, `c
   container's disk.
 - **Credentials**: registration tokens are made per provisioning run on the laptop and passed on
   stdin; the runners hold only their own runner credentials, as any self-hosted runner does.
+
+## Snowflake
+
+`roles/snowflake` (on when `snowflake_enabled`) runs Tor's standalone Snowflake proxy, which relays
+censored users' WebRTC connections to Tor's Snowflake bridge. It is not a Tor relay or exit node:
+traffic goes only to Tor's bridge, never to arbitrary sites on a user's behalf.
+
+- **Host network, deliberately.** Behind a Docker bridge the extra NAT layer makes Snowflake
+  measure its NAT as `strict` (tested: bridge `strict`, host network `restricted`), so Tor matches
+  it with far fewer users. It is the one compose service allowed `network_mode: host`
+  (ci/check_templates.py rule 9, `HOST_NETWORK_SERVICES`). It publishes no port: WebRTC is
+  outbound with STUN, and ufw still refuses every new inbound connection.
+- **Fenced by uid.** The proxy runs as uid 64999, used by nothing else on the host.
+  `/etc/snowflake-guard.nft` (its own nftables table, loaded by `snowflake-guard.service` before
+  Docker starts) rejects that uid's packets to loopback, 0/8, 10/8, 100.64/10 (the tailnet),
+  169.254/16, 172.16/12, 192.168/16, multicast and reserved space, and on IPv6 to loopback,
+  unique-local (Tailscale's range too), link-local and multicast. Only the systemd-resolved stub
+  (127.0.0.53/54, port 53) and the public internet stay reachable. So it cannot reach this
+  host's services, the LAN, the tailnet or any container.
+- **Hardened container**: no capabilities, no-new-privileges, read-only root, a 16 MB `/tmp`,
+  256 processes, 384 MB of memory, log rotation, pinned image (docs/agents.md), no Watchtower label.
+- **Bounded**: `-capacity 10` caps concurrent users; Tor's broker also paces assignments.
+  Typical use is a few hundred kB/s to a few MB/s when busy. Future work if it ever matters:
+  shape its traffic on the host (tc with a cgroup or uid match).
+- **Exempt from the planned no-egress rule** (plans/007): relaying to the internet is its job.
+- **Verify** (`--tags snowflake`): running as 64999:64999 on the host network, the fence loaded,
+  uid 64999 refused at loopback sshd, the LAN address, the tailnet address and Traefik's edge
+  address (curl exit 7) while Tor's broker answers, and the proxy's log showing its NAT type.

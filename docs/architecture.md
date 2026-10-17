@@ -52,13 +52,18 @@ traffic, so the GHCR token's scope and who can push to those repositories are th
 boundary. A rollback pins an app to a digest, which pauses that for the pinned app until
 `resume`.
 
-## Outside the stacks: CI runners
+## Outside the stacks: CI runners and Snowflake
 
-One more thing runs on the host but outside every stack: an Incus system container,
+Two things run on the host but outside every stack. The first is an Incus system container,
 `ci-runners`, with four self-hosted GitHub Actions runners for `synis-ai/synis-ai`
 (roles/ci_runners; docs/host.md, "CI runners"). It is provisioned, never released, sits on its
 own NAT bridge off the tailnet, and the host firewall keeps it from the LAN, the tailnet and
 every Docker network.
+
+The second is Tor's Snowflake proxy (roles/snowflake; docs/host.md, "Snowflake"): one hardened
+container on the host network, the only service allowed there (ci/check_templates.py rule 9), so
+WebRTC NAT traversal works; it publishes no port, and an nftables fence keeps its uid off loopback,
+the LAN, the tailnet and every Docker network. It is provisioned, never released.
 
 ## Provision and release
 

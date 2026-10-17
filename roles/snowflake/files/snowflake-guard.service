@@ -1,0 +1,12 @@
+[Unit]
+Description=Fence the Snowflake proxy off the host's services and private networks
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/snowflake-guard.nft
+ExecStop=/usr/sbin/nft delete table inet snowflake_guard
+
+[Install]
+WantedBy=multi-user.target

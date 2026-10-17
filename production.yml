@@ -95,3 +95,9 @@ hypernova_web_image_repo: ghcr.io/hypernova3643725/hypernova-web
 # the registration token with the owner's gh login, so a run that registers
 # runners needs `gh auth status` to work on the laptop.
 ci_runners_enabled: true
+
+# Tor Snowflake standalone proxy (roles/snowflake, docs/host.md "Snowflake"): relays
+# up to 10 censored users at once to Tor's Snowflake bridge over WebRTC. Host
+# network, fenced by uid off every local and private address. false stops and
+# removes it at the next provisioning run (--tags snowflake).
+snowflake_enabled: true

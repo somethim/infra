@@ -45,6 +45,8 @@
       tags: [beszel]
     - role: ci_runners
       tags: [ci_runners]
+    - role: snowflake
+      tags: [snowflake]
 
   post_tasks:
     - name: Check account access and set the SSH login policy

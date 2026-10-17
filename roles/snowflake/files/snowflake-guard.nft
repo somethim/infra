@@ -1,0 +1,29 @@
+#!/usr/sbin/nft -f
+# Keeps the Snowflake proxy (host networking, uid 64999, used by nothing else)
+# off this host's own services and every private network around it, while it
+# still reaches the public internet. Its own table, beside ufw's and Docker's
+# rules, so neither touches it. Installed by roles/snowflake.
+
+# Recreate the table on every load so a reload never stacks duplicate rules.
+table inet snowflake_guard
+delete table inet snowflake_guard
+
+table inet snowflake_guard {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		# Only packets from uid 64999's sockets. Socketless kernel replies carry
+		# no uid and pass.
+		meta skuid 64999 jump fence
+	}
+
+	chain fence {
+		# Name resolution through the systemd-resolved stub listeners only.
+		ip daddr { 127.0.0.53, 127.0.0.54 } meta l4proto { tcp, udp } th dport 53 accept
+
+		# Loopback, LAN, Docker and Incus bridges, the Tailscale CGNAT range,
+		# link-local, multicast and reserved space.
+		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } counter reject
+		# Loopback, unique-local (Tailscale's fd7a:115c:a1e0::/48 too), link-local, multicast.
+		ip6 daddr { ::/128, ::1/128, fc00::/7, fe80::/10, ff00::/8 } counter reject
+	}
+}

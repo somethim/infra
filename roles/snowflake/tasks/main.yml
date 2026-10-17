@@ -1,0 +1,91 @@
+---
+# See docs/host.md "Snowflake". The fence goes up before the proxy starts and
+# comes down only after the proxy is gone.
+- name: Install nftables for the Snowflake fence
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+  when: snowflake_enabled | bool
+
+- name: Install the Snowflake fence
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: snowflake-guard.nft, dest: /etc/snowflake-guard.nft }
+    - { src: snowflake-guard.service, dest: /etc/systemd/system/snowflake-guard.service }
+  register: snowflake_guard_files
+  when: snowflake_enabled | bool
+
+- name: Load the Snowflake fence now and at every boot
+  ansible.builtin.systemd_service:
+    name: snowflake-guard
+    enabled: true
+    state: "{{ 'restarted' if snowflake_guard_files is changed else 'started' }}"
+    daemon_reload: "{{ snowflake_guard_files is changed }}"
+  when: snowflake_enabled | bool
+
+- name: Create the Snowflake deploy directory
+  ansible.builtin.file:
+    path: /opt/snowflake
+    state: directory
+    mode: "0755"
+  when: snowflake_enabled | bool
+
+- name: Ship the Snowflake compose file
+  ansible.builtin.copy:
+    src: docker-compose.yml
+    dest: /opt/snowflake/docker-compose.yml
+    mode: "0644"
+  when: snowflake_enabled | bool
+
+- name: Bring up the Snowflake proxy
+  ansible.builtin.command: docker compose up -d --remove-orphans
+  args:
+    chdir: /opt/snowflake
+  register: snowflake_up
+  changed_when: >-
+    'Started' in snowflake_up.stderr or 'Created' in snowflake_up.stderr
+    or 'Recreated' in snowflake_up.stderr
+  when: snowflake_enabled | bool
+
+- name: Verify the Snowflake proxy and its fence
+  ansible.builtin.import_tasks: verify.yml
+  when: snowflake_enabled | bool
+
+# Disabled: the proxy goes first, then its fence and files.
+- name: Read whether a Snowflake deployment exists
+  ansible.builtin.stat:
+    path: /opt/snowflake/docker-compose.yml
+  register: snowflake_deployed
+  when: not (snowflake_enabled | bool)
+
+- name: Stop and remove the Snowflake proxy
+  ansible.builtin.command: docker compose down --remove-orphans
+  args:
+    chdir: /opt/snowflake
+  changed_when: true
+  when:
+    - not (snowflake_enabled | bool)
+    - snowflake_deployed.stat.exists
+
+- name: Stop the Snowflake fence
+  ansible.builtin.systemd_service:
+    name: snowflake-guard
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (snowflake_enabled | bool)
+
+- name: Remove the Snowflake files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/snowflake
+    - /etc/snowflake-guard.nft
+    - /etc/systemd/system/snowflake-guard.service
+  when: not (snowflake_enabled | bool)

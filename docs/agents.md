@@ -130,7 +130,9 @@ release's own `docker-compose.yml` names, after reading its release notes, since
 its database on start; an SFTPGo re-pin also needs `FILES_HTML_SHA256` updated once `DRIVE_JS` has
 been checked against the new `webclient/files.html`, which `ci/files-ui.sh` enforces), Traefik,
 Watchtower, autoheal and the socket proxy
-(`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`). `build-bundle.sh` refuses a
+(`roles/{edge,watchtower,autoheal,beszel}/files/docker-compose.yml`), and Tor's Snowflake proxy
+(`roles/snowflake/files/docker-compose.yml`; provision with `--tags snowflake`; its releases are on
+gitlab.torproject.org, the image tags `vX.Y.Z` on containers.torproject.org). `build-bundle.sh` refuses a
 release while any `image:` line there is not, and `infra-compose-guard` refuses an unpinned
 one in a stack on the host. One version per repository: the socket proxy appears in four files, with the same pin.
 

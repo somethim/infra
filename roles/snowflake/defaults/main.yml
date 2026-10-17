@@ -1,0 +1,7 @@
+---
+# Tor Snowflake standalone proxy (docs/host.md "Snowflake"). production.yml sets
+# snowflake_enabled; false stops and removes the proxy and its fence.
+# The relay limit (-capacity 10) and the proxy's uid (64999) are constants in
+# files/docker-compose.yml and files/snowflake-guard.nft (role compose files
+# take no interpolation); change them together.
+snowflake_enabled: false
